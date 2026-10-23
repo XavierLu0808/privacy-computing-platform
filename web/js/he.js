@@ -493,10 +493,11 @@
     items.forEach(function (k) {
       const st = UI.el('span', 'field-col');
       st.style.gap = '2px';
-      st.appendChild(UI.el('span', KEY_ST[k.status][1], KEY_ST[k.status][0]));
+      const ks = KEY_ST[k.status] || KEY_ST.active;
+      st.appendChild(UI.el('span', ks[1], ks[0]));
       if (k.rotated_to) st.appendChild(UI.el('span', 'hint-2', '→ ' + k.rotated_to + (k.rotate_reason === 'auto' ? '（自动）' : '（手动）')));
       if (k.rotated_from && k.status === 'active') st.appendChild(UI.el('span', 'hint-2', '← ' + k.rotated_from));
-      const dist = k.distributed_to.length ? k.distributed_to.map(function (d) { return d.node_id; }).join('、') : '未分发';
+      const dist = (k.distributed_to || []).length ? k.distributed_to.map(function (d) { return d.node_id; }).join('、') : '未分发';
       const ops = UI.el('span', 'he-ops');
       if (k.status === 'active') {
         const d = btn('btn-sm', '分发');
@@ -512,14 +513,15 @@
       } else {
         ops.appendChild(UI.el('span', 'hint-2', UI.datetime(k.destroyed_at) + ' 销毁'));
       }
-      const params = k.key_params.key_size_bits ? k.key_params.key_size_bits + ' bit'
-        : (k.key_params.poly_modulus_degree ? 'N = ' + k.key_params.poly_modulus_degree : k.key_params.parameter_set);
+      const kp = k.key_params || {};
+      const params = kp.key_size_bits ? kp.key_size_bits + ' bit'
+        : (kp.poly_modulus_degree ? 'N = ' + kp.poly_modulus_degree : (kp.parameter_set || '默认参数'));
       const sch = UI.el('span', 'field-col');
       sch.style.gap = '2px';
-      sch.appendChild(UI.el('span', null, SCHEME_CN[k.scheme]));
+      sch.appendChild(UI.el('span', null, SCHEME_CN[k.scheme] || k.scheme_name || k.scheme || '—'));
       sch.appendChild(UI.el('span', 'hint-2', params));
       wrap.appendChild(gridRow('he-key-grid', [
-        UI.el('span', 'cell-strong he-mono', k.key_id), sch, PURPOSE_CN[k.purpose], UI.datetime(k.created_at), st,
+        UI.el('span', 'cell-strong he-mono', k.key_id), sch, PURPOSE_CN[k.purpose] || '—', UI.datetime(k.created_at), st,
         UI.el('span', 'cell-muted', dist), k.next_rotation_at ? UI.datetime(k.next_rotation_at) : '—', ops
       ]));
     });
@@ -551,7 +553,7 @@
     });
   }
   function distributeModal(k) {
-    const have = k.distributed_to.map(function (d) { return d.node_id; });
+    const have = (k.distributed_to || []).map(function (d) { return d.node_id; });
     const checks = nodeChecks(have);
     const body = UI.formRow('分发到节点', checks, '已分发的节点保持不变，新勾选的节点追加分发');
     UI.modal({

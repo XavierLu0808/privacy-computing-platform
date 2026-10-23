@@ -274,3 +274,46 @@ test('[HE-APP-05] 日志：模拟与同态聚合训练的每环节耗时与密�
   assert.equal(await errCode('GET', '/projects/p1/he/logs?source=xx'), 40000);
   await okData('POST', '/fl/jobs/' + cls.job_id + '/actions', { action: 'terminate' });
 });
+
+test('[HE-APP-03] 密钥状态约束加密：已轮换 40901、已销毁 40402，新钥可加密', async (t) => {
+  const { okData, call, errCode } = boot(t);
+  const k = await okData('POST', '/he/keys', { scheme: 'ckks', project_id: 'p1', purpose: 'fl_aggregation' });
+  const vals = { precision: 4, values: [{ name: 'A', value: '41.2356' }] };
+  await okData('POST', '/he/encrypt', { key_id: k.key_id, ...vals });
+  const rot = await okData('POST', '/he/keys/' + k.key_id + '/rotate', {});
+  const r = await call('POST', '/he/encrypt', { key_id: k.key_id, ...vals });
+  assert.equal(r.code, 40901);
+  assert.equal(r.message, '密钥已轮换，只能用于解密历史密文');
+  assert.equal(r.data.rotated_to, rot.new_key.key_id);
+  const enc = await okData('POST', '/he/encrypt', { key_id: rot.new_key.key_id, ...vals });
+  assert.equal(enc.ciphertexts[0].size_kb, 262.1, '与内核 CKKS 密文大小一致');
+  await okData('DELETE', '/he/keys/' + rot.new_key.key_id);
+  assert.equal(await errCode('POST', '/he/encrypt', { key_id: rot.new_key.key_id, ...vals }), 40402);
+  assert.equal(await errCode('POST', '/he/encrypt', { key_id: 'hek_nope', ...vals }), 40402);
+  assert.equal(await errCode('POST', '/he/encrypt', { key_id: k.key_id, precision: 9, values: vals.values }), 40901, '状态检查先于参数校验');
+});
+
+test('[HE-APP-03] 外部模块写入 db.heKeys 的聚合密钥：列表兜底显示，可轮换，外部标记已轮换后拒绝加密', async (t) => {
+  const { M, okData, call } = boot(t);
+  const db = M._db;
+  db.heKeys.hek_fs01 = { key_id: 'hek_fs01', project_id: 'p1', scheme: 'paillier', purpose: 'fl_aggregation',
+    created_at: new Date(Date.now() - 3 * 86400000).toISOString(), node_ids: ['node-shanghai-01', 'node-center-agg'] };
+  db.heKeys.hek_fs02 = { key_id: 'hek_fs02', project_id: 'p1' };   // 字段几乎全缺
+  const { items } = await okData('GET', '/he/keys?project_id=p1');
+  const a = items.find((x) => x.key_id === 'hek_fs01');
+  assert.equal(a.status, 'active');
+  assert.equal(a.purpose, 'fl_aggregation');
+  assert.deepEqual(a.distributed_to.map((d) => d.node_id), ['node-shanghai-01', 'node-center-agg']);
+  assert.ok(a.next_rotation_at);
+  const b = items.find((x) => x.key_id === 'hek_fs02');
+  assert.equal(b.status, 'active');
+  assert.equal(b.purpose, 'session');
+  assert.deepEqual(b.key_params, {});
+  assert.equal(b.next_rotation_at, null);
+  const rot = await okData('POST', '/he/keys/hek_fs01/rotate', {});
+  assert.equal(rot.new_key.distributed_to.length, 2);
+  db.heKeys.hek_fs02.status = 'rotated';
+  assert.equal((await call('POST', '/he/encrypt', { key_id: 'hek_fs02', precision: 2, values: [{ name: 'A', value: '1' }] })).code, 40901);
+  const after = await okData('GET', '/he/keys?project_id=p1&status=rotated');
+  assert.ok(after.items.some((x) => x.key_id === 'hek_fs02'));
+});

@@ -419,13 +419,43 @@
       };
       return key;
     }
+    /**
+     * 其他模块（如 fed-sec 聚合与安全页）直接写进 db.heKeys、没经过本模块的密钥，首次列出时补建元数据。
+     * 识别字段：project_id（必需）、scheme、purpose、status、created_at、distributed_to / node_ids（字符串数组或 {node_id} 数组），缺失时兜底。
+     */
+    function adoptForeign(pid) {
+      Object.keys(k.db.heKeys).forEach(function (id) {
+        const c = k.db.heKeys[id];
+        if (db.keys[id] || !c || c.project_id !== pid) return;
+        const raw = c.distributed_to || c.node_ids || [];
+        db.keys[id] = {
+          key_id: id, project_id: pid, scheme: c.scheme || 'paillier',
+          scheme_name: (algo(c.scheme) || {}).name || c.scheme || '未知方案',
+          purpose: c.purpose === 'fl_aggregation' ? 'fl_aggregation' : 'session',
+          status: ['active', 'rotated', 'destroyed'].indexOf(c.status) >= 0 ? c.status : 'active',
+          storage: '平台密钥服务（KMS）托管，私钥不出域', source: c.source || 'external',
+          distributed_to: (Array.isArray(raw) ? raw : []).map(function (d) {
+            return typeof d === 'string' ? { node_id: d, distributed_at: c.created_at || null } : { node_id: d.node_id, distributed_at: d.distributed_at || c.created_at || null };
+          }).filter(function (d) { return d.node_id; }),
+          rotated_from: c.rotated_from || null, rotated_to: c.rotated_to || null, rotated_at: c.rotated_at || null,
+          rotate_reason: c.rotate_reason || null, destroyed_at: null
+        };
+      });
+    }
+    function adoptOne(id) { const c = k.db.heKeys[id]; if (c && !db.keys[id] && c.project_id) adoptForeign(c.project_id); }
+    /** 状态以本模块元数据为准；外部模块事后改了 db.heKeys[id].status 也同步过来。 */
+    function syncStatus(m) {
+      const c = k.db.heKeys[m.key_id];
+      if (c && c.status && c.status !== m.status && ['rotated', 'destroyed'].indexOf(c.status) >= 0 && m.status === 'active') m.status = c.status;
+    }
     function keyView(id) {
       const m = db.keys[id];
-      const core = k.db.heKeys[id] || m.snapshot;
+      syncStatus(m);
+      const core = Object.assign({ key_params: {}, created_at: null, expires_at: null, public_key_preview: null }, k.db.heKeys[id] || m.snapshot);
       const pol = policyOf(m.project_id);
       return Object.assign({}, core, m, {
         snapshot: undefined,
-        next_rotation_at: m.status === 'active' && m.purpose === 'fl_aggregation' && pol.enabled
+        next_rotation_at: m.status === 'active' && m.purpose === 'fl_aggregation' && pol.enabled && core.created_at
           ? new Date(Date.parse(core.created_at) + pol.period_days * DAY).toISOString() : null
       });
     }
@@ -437,7 +467,7 @@
     function rotate(id, reason, at) {
       const m = db.keys[id];
       const old = k.db.heKeys[id];
-      const nk = newKey(m.project_id, m.scheme, { purpose: m.purpose, rotated_from: id, key_size_bits: old.key_params.key_size_bits, created_at: at });
+      const nk = newKey(m.project_id, algo(m.scheme) ? m.scheme : 'paillier', { purpose: m.purpose, rotated_from: id, key_size_bits: old && old.key_params ? old.key_params.key_size_bits : undefined, created_at: at });
       distribute(db.keys[nk.key_id], m.distributed_to.map(function (d) { return d.node_id; }), at);
       m.status = 'rotated'; m.rotated_to = nk.key_id; m.rotated_at = at || k.NOW(); m.rotate_reason = reason;
       return nk.key_id;
@@ -459,7 +489,9 @@
       Object.keys(db.keys).forEach(function (id) {
         const m = db.keys[id];
         if (m.project_id !== pid || m.status !== 'active' || m.purpose !== 'fl_aggregation') return;
-        if (Date.now() - Date.parse(k.db.heKeys[id].created_at) >= pol.period_days * DAY) rotate(id, 'auto');
+        const c = k.db.heKeys[id];
+        if (!c || !c.created_at || Number.isNaN(Date.parse(c.created_at))) return;
+        if (Date.now() - Date.parse(c.created_at) >= pol.period_days * DAY) rotate(id, 'auto');
       });
     }
 
@@ -486,18 +518,53 @@
       Object.keys(k.db.heCiphers).forEach(function (c) { if (k.db.heCiphers[c].key_id === p.key_id) delete k.db.heCiphers[c]; });
       return k.ok({ key_id: p.key_id, destroyed: true });
     });
+    // 加密前检查密钥状态：已轮换 40901，已销毁 / 不存在 40402。其余逻辑与内核 /he/encrypt 一致（内核路由无法透传，故原样重写）
+    k.routeFirst('POST', '/he/encrypt', function (p, q, body) {
+      const key = k.db.heKeys[body.key_id];
+      const m = db.keys[body.key_id];
+      if (m) syncStatus(m);
+      if (!key || (m && m.status === 'destroyed')) return k.err(40402, '密钥不存在、已销毁或已过期');
+      if ((m && m.status === 'rotated') || key.status === 'rotated') {
+        return k.err(40901, '密钥已轮换，只能用于解密历史密文', { status: 'rotated', rotated_to: m ? m.rotated_to : (key.rotated_to || null) });
+      }
+      const prec = body.precision;
+      if (typeof prec !== 'number' || prec < 0 || prec > 8) return k.err(40003, '精度必须在 0 – 8 之间');
+      if (!Array.isArray(body.values) || !body.values.length) return k.err(40000, 'values 至少 1 个');
+      const perf = PERF[key.scheme] || PERF.paillier;
+      const scale = Math.pow(10, prec);
+      const cts = [];
+      for (let i = 0; i < body.values.length; i++) {
+        const v = body.values[i];
+        const num = parseFloat(v.value);
+        if (Number.isNaN(num)) return k.err(40002, '明文 ' + v.name + ' 不是合法数值：' + v.value);
+        const ctId = k.nextId('hec');
+        const encoded = Math.round(num * scale);
+        k.db.heCiphers[ctId] = { ciphertext_id: ctId, key_id: key.key_id, plain: num, precision: prec };
+        cts.push({
+          name: v.name, ciphertext_id: ctId,
+          preview: k.hashHex(v.name + encoded + key.scheme, 5).slice(0, 56),
+          size_kb: perf.ct_kb,
+          encoded_integer: key.scheme === 'paillier' ? String(encoded) : null
+        });
+      }
+      return k.ok({ ciphertexts: cts, scale_exponent: prec, elapsed_ms: Number((perf.enc * body.values.length).toFixed(1)) });
+    });
     k.route('GET', '/he/keys', function (p, q) {
       if (!q.project_id || !project(q.project_id)) return k.err(40000, 'project_id 必填且必须是已有项目');
       seedKeys(q.project_id);
+      adoptForeign(q.project_id);
       autoRotate(q.project_id);
       let ids = Object.keys(db.keys).filter(function (id) { return db.keys[id].project_id === q.project_id; });
+      ids.forEach(function (id) { syncStatus(db.keys[id]); });
       if (q.status) ids = ids.filter(function (id) { return q.status.split(',').indexOf(db.keys[id].status) >= 0; });
       if (q.purpose) ids = ids.filter(function (id) { return db.keys[id].purpose === q.purpose; });
-      const items = ids.map(keyView).sort(function (x, y) { return Date.parse(y.created_at) - Date.parse(x.created_at); });
+      const items = ids.map(keyView).sort(function (x, y) { return (Date.parse(y.created_at) || 0) - (Date.parse(x.created_at) || 0); });
       return k.ok({ items: items, total: items.length, policy: policyOf(q.project_id) });
     });
     k.route('POST', '/he/keys/{key_id}/distribute', function (p, q, body) {
+      adoptOne(p.key_id);
       const m = db.keys[p.key_id];
+      if (m) syncStatus(m);
       if (!m) return k.err(40402, '密钥不存在');
       if (m.status !== 'active') return k.err(40901, '只有使用中的密钥可以分发，当前状态 ' + m.status, { status: m.status });
       const ids = body.node_ids;
@@ -509,7 +576,9 @@
       return k.ok(keyView(p.key_id));
     });
     k.route('POST', '/he/keys/{key_id}/rotate', function (p) {
+      adoptOne(p.key_id);
       const m = db.keys[p.key_id];
+      if (m) syncStatus(m);
       if (!m) return k.err(40402, '密钥不存在');
       if (m.status !== 'active') return k.err(40901, '只有使用中的密钥可以轮换，当前状态 ' + m.status, { status: m.status });
       const nid = rotate(p.key_id, 'manual');

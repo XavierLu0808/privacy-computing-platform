@@ -210,20 +210,23 @@
       "对密钥点「销毁」并确认，状态变为已销毁",
       "把轮换周期改为 7 天并保存策略，12 天前生成的聚合密钥被自动轮换（标注自动）"
     ],
-    "expected": "密钥全生命周期可操作且状态正确；非使用中的密钥不能分发 / 轮换（40901）；自动轮换按周期生效",
+    "expected": "密钥全生命周期可操作且状态正确；非使用中的密钥不能分发 / 轮换（40901）；自动轮换按周期生效；已轮换密钥拒绝新加密（40901），已销毁拒绝（40402）",
     "api": [
       "GET /he/keys",
       "POST /he/keys",
       "POST /he/keys/{key_id}/distribute",
       "POST /he/keys/{key_id}/rotate",
+      "POST /he/encrypt",
       "DELETE /he/keys/{key_id}",
       "GET /projects/{project_id}/he/rotation-policy",
       "PUT /projects/{project_id}/he/rotation-policy"
     ],
     "tests": [
-      "tests/he.test.mjs: [HE-APP-03] 密钥管理：播种在用 + 已轮换；生成、分发、轮换、销毁与自动轮换策略"
+      "tests/he.test.mjs: [HE-APP-03] 密钥管理：播种在用 + 已轮换；生成、分发、轮换、销毁与自动轮换策略",
+      "tests/he.test.mjs: [HE-APP-03] 密钥状态约束加密：已轮换 40901、已销毁 40402，新钥可加密",
+      "tests/he.test.mjs: [HE-APP-03] 外部模块写入 db.heKeys 的聚合密钥：列表兜底显示，可轮换，外部标记已轮换后拒绝加密"
     ],
-    "impl": "密钥元数据存 k.db.he.keys（status、purpose、distributed_to[{node_id, distributed_at}]、rotated_from / rotated_to / rotate_reason、destroyed_at），公钥与参数仍在内核 db.heKeys，私钥标注由平台 KMS 托管不出域。轮换 = 生成同方案同参数新钥并继承分发节点，旧钥保留用于解密历史密文；销毁删除密钥与其密文并留记录。自动轮换策略 { enabled, period_days 1–365 } 按项目存储，GET 列表与 PUT 策略时检查 fl_aggregation 密钥是否已满周期并自动轮换；会话密钥 24 小时过期，不参与轮换。首次访问项目播种 1 把在用聚合密钥及其已轮换前身。",
+    "impl": "密钥元数据存 k.db.he.keys（status、purpose、distributed_to[{node_id, distributed_at}]、rotated_from / rotated_to / rotate_reason、destroyed_at），公钥与参数仍在内核 db.heKeys，私钥标注由平台 KMS 托管不出域。轮换 = 生成同方案同参数新钥并继承分发节点，旧钥保留用于解密历史密文；销毁删除密钥与其密文并留记录。自动轮换策略 { enabled, period_days 1–365 } 按项目存储，GET 列表与 PUT 策略时检查 fl_aggregation 密钥是否已满周期并自动轮换；会话密钥 24 小时过期，不参与轮换。首次访问项目播种 1 把在用聚合密钥及其已轮换前身。 POST /he/encrypt 以 routeFirst 包一层：已轮换密钥返回 40901「密钥已轮换，只能用于解密历史密文」，已销毁返回 40402，其余逻辑与内核一致。fed-sec 等模块直接写入 db.heKeys 的密钥在列表时补建元数据（缺失字段兜底），同样受分发、轮换与状态约束。",
     "status": "done"
   },
   "HE-APP-04": {

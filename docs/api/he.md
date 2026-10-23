@@ -234,7 +234,15 @@ DELETE /he/keys/{key_id}
 
 删除密钥与其下全部密文，列表保留 `destroyed` 记录。重复销毁 `40402`。
 
-### H.7.6 自动轮换策略
+### H.7.6 加密前的密钥状态检查（包装 API.md §3.3）
+
+`POST /he/encrypt` 由 mock 扩展以 routeFirst 接管，请求与响应字段不变，加密前先检查密钥状态：已轮换返回 `40901`「密钥已轮换，只能用于解密历史密文」（`data = { status: 'rotated', rotated_to }`），已销毁或不存在返回 `40402`。状态检查先于参数校验。解密（§3.5）不受影响，已轮换密钥仍可解密历史密文。
+
+### H.7.7 外部模块写入的密钥
+
+其他模块（如 fed-sec 聚合与安全页）可直接写 `db.heKeys[key_id]`，本模块在列表、分发、轮换时为其补建元数据。识别字段：`project_id`（必需）、`scheme`（缺省 `paillier`）、`purpose`（只有 `fl_aggregation` 受轮换策略管理，其余视为 `session`）、`status`（`active` / `rotated` / `destroyed`，缺省 `active`；外部事后把 `status` 改为 `rotated` / `destroyed` 会同步过来）、`created_at`（缺失时不参与自动轮换）、`distributed_to` 或 `node_ids`（字符串数组或 `{ node_id, distributed_at }` 数组）、`key_params`（缺省 `{}`）、可选 `rotated_from` / `rotated_to`。
+
+### H.7.8 自动轮换策略
 
 ```
 GET /projects/{project_id}/he/rotation-policy
@@ -306,6 +314,7 @@ CSV 列：`来源,任务或测试 ID,名称,轮次,环节,方案,节点或参与
 | GET | `/he/keys` | HE-APP-03 |
 | POST | `/he/keys/{key_id}/distribute` | HE-APP-03 |
 | POST | `/he/keys/{key_id}/rotate` | HE-APP-03 |
+| POST | `/he/encrypt`（加密前检查密钥状态） | HE-APP-01、HE-APP-03 |
 | DELETE | `/he/keys/{key_id}`（保留销毁记录） | HE-APP-01、HE-APP-03 |
 | GET / PUT | `/projects/{project_id}/he/rotation-policy` | HE-APP-03 |
 | POST / GET | `/projects/{project_id}/he/simulations` | HE-APP-04 |
