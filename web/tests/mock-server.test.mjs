@@ -2,32 +2,9 @@
 // 在 vm 沙箱里加载 js/mock-server.js，计时器用 node:test 的 mock.timers 驱动。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
+import { boot } from './_boot.mjs';
 
-const SRC = readFileSync(new URL('../js/mock-server.js', import.meta.url), 'utf8');
-
-function boot(t) {
-  t.mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
-  const window = { APP_CONFIG: { mockLatencyMs: 0 } };
-  const sandbox = {
-    window, URLSearchParams, console,
-    setTimeout: (...a) => setTimeout(...a), clearTimeout: (x) => clearTimeout(x),
-    setInterval: (...a) => setInterval(...a), clearInterval: (x) => clearInterval(x)
-  };
-  vm.runInNewContext(SRC, sandbox);
-  const M = window.MockServer;
-  // vm 沙箱里的对象原型与本 realm 不同，JSON 往返后再比较（也顺带验证响应可序列化）
-  const call = async (method, url, body) => JSON.parse(JSON.stringify(await M.handle(method, url, body)));
-  const okData = async (method, url, body) => {
-    const r = await call(method, url, body);
-    assert.equal(r.code, 0, `${method} ${url} → ${r.code} ${r.message}`);
-    return r.data;
-  };
-  return { M, call, okData, tick: (ms) => t.mock.timers.tick(ms) };
-}
-
-const NODES = ['node-shanghai-01', 'node-hangzhou-02', 'node-center-agg'];
+const NODES = ['node-shanghai-01', 'node-hangzhou-02', 'node-ganzhou-03', 'node-center-agg'];
 const TS_BODY = {
   name: '流量预测', task_type: 'timeseries', algorithm: 'tcn', aggregation: 'ss', total_rounds: 10, node_ids: NODES,
   dataset_source: { type: 'dataset', dataset_ids: ['ds_p1_a_txn_ts'] },
@@ -112,10 +89,10 @@ test('时序任务全流程：创建 → 启动 → 每轮推送 RMSE/MAE → �
   assert.equal(rounds.length, 3);
   assert.ok('rmse' in rounds[0].global_metrics && !('loss' in rounds[0].global_metrics));
   assert.ok(rounds[2].global_metrics.rmse < rounds[0].global_metrics.rmse, 'RMSE 应随轮次下降');
-  assert.equal(rounds[0].node_metrics.length, 3);
+  assert.equal(rounds[0].node_metrics.length, 4);
 
   const met = await okData('GET', '/fl/jobs/' + job.job_id + '/metrics?scope=nodes');
-  assert.equal(met.series.length, 4);
+  assert.equal(met.series.length, 5);
   assert.deepEqual(Object.keys(met.series[0].points[0]).sort(), ['mae', 'recorded_at', 'rmse', 'round']);
 
   tick(650 * 8);
@@ -145,8 +122,8 @@ test('分类任务指标字段保持向后兼容（global_loss / global_accuracy
 test('数据接入：校验、接入中→就绪、重名、文件来源、详情脱敏、删除', async (t) => {
   const { call, okData, tick } = boot(t);
   const seed = await okData('GET', '/projects/p1/datasets');
-  assert.equal(seed.total, 3);
-  assert.equal((await okData('GET', '/projects/p1/datasets?has_time_column=true')).total, 1);
+  assert.equal(seed.total, 4);
+  assert.equal((await okData('GET', '/projects/p1/datasets?has_time_column=true')).total, 2);
   assert.equal((await okData('GET', '/projects/p1/datasets?party_id=party-b')).total, 1);
 
   const base = { name: '新表', party_id: 'party-b', source_type: 'database', source: { jdbc_url: 'jdbc:mysql://1.2.3.4:3306/x', table: 't' }, id_column: 'phone_hash' };

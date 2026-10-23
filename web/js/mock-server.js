@@ -74,14 +74,15 @@
       version: '1.0.0'
     },
     projects: [
-      { project_id: 'p1', name: '风控联合建模 · 2026Q3', type: 'production', created_at: '2026-07-01T10:00:00+08:00' },
-      { project_id: 'p2', name: '营销人群拓展 · 试点', type: 'pilot', created_at: '2026-08-12T09:30:00+08:00' },
-      { project_id: 'p3', name: '跨机构反欺诈 · 沙箱', type: 'sandbox', created_at: '2026-09-01T14:20:00+08:00' }
+      { project_id: 'p1', name: '稀土氧化物价格联合预测 · 2026Q4', type: 'production', created_at: '2026-07-01T10:00:00+08:00' },
+      { project_id: 'p2', name: '稀土供应链风险联合建模 · 试点', type: 'pilot', created_at: '2026-08-12T09:30:00+08:00' },
+      { project_id: 'p3', name: '稀土产品溯源核验 · 沙箱', type: 'sandbox', created_at: '2026-09-01T14:20:00+08:00' }
     ],
     nodes: {
       p1: [
         { node_id: 'node-shanghai-01', ip: '10.22.6.14', port: 8471, role: 'trainer', role_label: '参与方 / 训练节点', data_partition: 'part-A', online: true },
         { node_id: 'node-hangzhou-02', ip: '10.31.8.27', port: 8471, role: 'trainer', role_label: '参与方 / 训练节点', data_partition: 'part-B', online: true },
+        { node_id: 'node-ganzhou-03', ip: '10.79.3.21', port: 8471, role: 'trainer', role_label: '参与方 / 训练节点', data_partition: 'part-C', online: true },
         { node_id: 'node-center-agg', ip: '10.10.1.5', port: 9090, role: 'aggregator', role_label: '聚合方 / 协调节点', data_partition: null, online: true }
       ],
       p2: [
@@ -139,6 +140,15 @@
       source: { path: 'hdfs://10.22.6.14:8020/warehouse/txn_daily' },
       row_count: 3650000, id_column: 'phone_hash', time_column: 'txn_date',
       columns: [{ name: 'phone_hash', type: 'string' }, { name: 'txn_date', type: 'date' }, { name: 'txn_amount', type: 'float' }].concat(featureCols('ts_feat', 8))
+    },
+    {
+      // 合同技术指标用数据：三类稀土氧化物日度价格（元/吨），按参与方纵向切分后联邦训练
+      key: 'ree_price', party_id: 'party-a', name: '稀土氧化物日度价格（Nd₂O₃ / CeO₂ / La₂O₃）', source_type: 'database',
+      source: { jdbc_url: 'jdbc:mysql://10.22.6.14:3306/ree_market', table: 'oxide_price_daily' },
+      row_count: 5844, id_column: 'series_id', time_column: 'trade_date',
+      columns: [{ name: 'series_id', type: 'string' }, { name: 'trade_date', type: 'date' },
+        { name: 'nd2o3_price', type: 'float' }, { name: 'ceo2_price', type: 'float' }, { name: 'la2o3_price', type: 'float' }]
+        .concat(featureCols('mkt_feat', 6))
     }
   ];
 
@@ -297,9 +307,9 @@
       };
     });
     const ts = createJob(projectId, {
-      name: '日交易额预测 · LSTM', task_type: 'timeseries', algorithm: 'lstm', aggregation: 'ss', total_rounds: 20,
-      dataset_source: { type: 'dataset', dataset_ids: ['ds_' + projectId + '_a_txn_ts'] },
-      timeseries: { time_column: 'txn_date', window_size: 30, horizon: 7 }
+      name: '稀土氧化物价格预测 · LSTM', task_type: 'timeseries', algorithm: 'lstm', aggregation: 'ss', total_rounds: 20,
+      dataset_source: { type: 'dataset', dataset_ids: ['ds_' + projectId + '_ree_price'] },
+      timeseries: { time_column: 'trade_date', window_size: 30, horizon: 7 }
     });
     ts.created_at = new Date(Date.now() - 3 * day).toISOString();
     ts.started_at = new Date(Date.now() - 3 * day + 60000).toISOString();
@@ -309,7 +319,7 @@
     ts.status = 'Success';
     ts.finished_at = new Date(Date.now() - 3 * day + 150000).toISOString();
     createJob(projectId, {
-      name: '违约预测 · XGBoost',
+      name: '供应商违约预测 · XGBoost',
       dataset_source: { type: 'dataset', dataset_ids: ['ds_' + projectId + '_a_user', 'ds_' + projectId + '_b_user'] }
     });
   }
@@ -1432,5 +1442,36 @@
     throw new Error('导出接口不存在：' + parsed.path);
   }
 
-  window.MockServer = { handle: handle, subscribe: subscribe, download: download, _db: db };
+  /* ================= 扩展 ================= */
+
+  /**
+   * 各页面模块的 mock 路由放在 js/mock/*.js，通过 MockServer.extend(fn) 注册，避免多人同改本文件。
+   * fn 收到内核工具集 k：
+   *   k.route(method, pattern, handler)       追加路由（内核路由优先）
+   *   k.routeFirst(method, pattern, handler)  前置路由（覆盖同路径的内核路由，用于升级旧接口）
+   *   k.download(rx, build)                    追加文件下载（build(m, query) → { fileName, contentType, content }）
+   *   k.ok / k.err / k.db / k.nextId / k.NOW / k.hashHex / k.emit / k.subscribe / k.sleep
+   *   以及内核常量与函数（见下方对象），只读使用；需要改内核行为请用 routeFirst 包一层。
+   */
+  function extend(fn) {
+    fn({
+      route: route,
+      routeFirst: function (method, pattern, handler) {
+        route(method, pattern, handler);
+        routes.unshift(routes.pop());
+      },
+      download: function (rx, build) { downloads.push({ rx: rx, build: build }); },
+      ok: ok, err: err, db: db, nextId: nextId, NOW: NOW, hashHex: hashHex,
+      emit: emit, subscribe: subscribe, sleep: sleep,
+      TOTAL_ROUNDS: TOTAL_ROUNDS, ALGO_CN: ALGO_CN, TASK_TYPES: TASK_TYPES, taskTypeOf: taskTypeOf,
+      HE_SCHEMES: HE_SCHEMES, MPC_OPERATORS: MPC_OPERATORS, MPC_EST: MPC_EST, MPC_PARTY_DEFS: MPC_PARTY_DEFS,
+      MPC_HISTORY: MPC_HISTORY, PSI_PROTOCOLS: PSI_PROTOCOLS, PSI_PARTIES: PSI_PARTIES, DATASET_SEED: DATASET_SEED,
+      seedProject: seedProject, jobsOfProject: jobsOfProject, jobOfProject: jobOfProject, jobView: jobView,
+      createJob: createJob, validateJobBody: validateJobBody, flAction: flAction, jobNodes: jobNodes,
+      metricsAt: metricsAt, datasetView: datasetView, dpEstimate: dpEstimate, defaultDp: defaultDp,
+      pipelineView: pipelineView, mpcView: mpcView
+    });
+  }
+
+  window.MockServer = { handle: handle, subscribe: subscribe, download: download, extend: extend, _db: db };
 })();

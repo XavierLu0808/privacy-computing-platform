@@ -390,3 +390,30 @@ h1 { margin: 0; font-size: 22px; font-weight: 700; }
 .preview-table th, .preview-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line-row); white-space: nowrap; }
 .preview-table th { color: var(--muted-2); font-weight: 600; }
 .cols-wrap { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ---------- 侧边二级导航（v1.2） ---------- */
+.sidebar { overflow-y: auto; }
+.nav-tree { display: flex; flex-direction: column; gap: 2px; }
+.nav-group { display: flex; flex-direction: column; }
+.nav-item { width: 100%; }
+.nav-chev {
+  margin-left: auto; width: 7px; height: 7px; flex-shrink: 0;
+  border-right: 1.6px solid var(--muted-2); border-bottom: 1.6px solid var(--muted-2);
+  transform: rotate(-45deg); transition: transform .15s;
+}
+.nav-group.open .nav-chev { transform: rotate(45deg); margin-top: -3px; }
+.nav-item.active .nav-chev { border-color: var(--primary); }
+.nav-sub { display: none; flex-direction: column; gap: 1px; padding: 2px 0 6px 28px; }
+.nav-group.open .nav-sub { display: flex; }
+.nav-sub-item {
+  height: 34px; padding: 0 12px; border: 0; border-radius: 5px; background: transparent;
+  text-align: left; font-size: 13px; color: var(--muted-3); cursor: pointer;
+  position: relative;
+}
+.nav-sub-item::before {
+  content: ""; position: absolute; left: -10px; top: 9px; bottom: 9px; width: 2px;
+  background: var(--line); border-radius: 1px;
+}
+.nav-sub-item:hover { background: #F7F9FB; }
+.nav-sub-item.active { color: var(--primary); font-weight: 700; background: var(--primary-soft); }
+.nav-sub-item.active::before { background: var(--primary); }

@@ -38,9 +38,7 @@
     $('psiGoFed').addEventListener('click', function () {
       window.App.go('fed', { focusJobId: pipeline && pipeline.fl_job_id });
     });
-    $('psiTabData').addEventListener('click', function () { switchTab('data'); });
-    $('psiTabPipe').addEventListener('click', function () { switchTab('pipe'); });
-    $('psiToData').addEventListener('click', function () { switchTab('data'); });
+    $('psiToData').addEventListener('click', function () { window.App.go('psi', { sub: 'data' }); });
     $('dsNew').addEventListener('click', openImport);
     $('dsPartyFilter').addEventListener('change', renderDatasets);
     $('dsDetailClose').addEventListener('click', function () { $('dsDetail').hidden = true; });
@@ -50,12 +48,9 @@
     ['psiKeyA', 'psiKeyB'].forEach(function (id) { $(id).addEventListener('change', renderDsNote); });
   }
 
+  /** 数据接入与求交流水线分属两个二级页面（screen-psi-data / screen-psi-pipe），由 App 路由切换。 */
   function switchTab(name) {
     tab = name;
-    $('psiTabData').classList.toggle('on', name === 'data');
-    $('psiTabPipe').classList.toggle('on', name === 'pipe');
-    $('psiPanelData').hidden = name !== 'data';
-    $('psiPanelPipe').hidden = name !== 'pipe';
     if (name === 'pipe') renderPartySel();
   }
 
@@ -514,8 +509,9 @@
 
   let lastProject = null;
 
-  async function mount(c) {
+  async function mount(c, el, opts) {
     ctx = c;
+    tab = (opts && opts.sub) || 'data';
     if (lastProject !== c.projectId) {   // 换项目后清掉上一个项目的流水线展示
       if (sse) { sse.close(); sse = null; }
       pipeline = null;
