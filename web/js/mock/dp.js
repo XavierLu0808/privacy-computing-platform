@@ -175,6 +175,9 @@
       ['accountant', 'clip_mode', 'policy_id', 'policy_dimension'].forEach(function (key) {
         if (patch[key] !== undefined) next[key] = patch[key];
       });
+      // 从固定切到自适应时记住原固定 C，自适应对比始终以它为基准；切回固定则清空
+      if (patch.clip_mode === 'adaptive' && job.dp.clip_mode !== 'adaptive') next.clip_norm_fixed = job.dp.clip_norm;
+      else if (next.clip_mode !== 'adaptive') next.clip_norm_fixed = null;
       job.dp = next;
       job.dp_enabled = next.enabled;
       return next;
@@ -227,6 +230,42 @@
         });
       }
       res.noise_multiplier = round(cal.scale, 3);
+      return withMetrics(res, body, eq, T);
+    }
+
+    /**
+     * 按任务类型给出效用指标（metrics_spec）。分类：Accuracy（越高越好，沿用 v1.1 公式）。
+     * 时序：RMSE / MAE（归一化，越低越好）= 无噪声基线 × (1 + κ · e^(−ε_eq / 2.2))，κ = 1.2，拉普拉斯再乘 1.05；
+     * 基线取内核 metricsAt('timeseries', T, 0)，即该任务无噪声训练 T 轮后的全局指标。e^(−ε/2.2) 与分类公式的饱和项相同。
+     */
+    function tsFactor(eps, mech) { return (1 + 1.2 * Math.exp(-eps / 2.2)) * (mech === 'laplace' ? 1.05 : 1); }
+    function taskTypeOfBody(body) {
+      const job = body.baseline_job_id && db.flJobs[body.baseline_job_id];
+      return (job && job.task_type) || body.task_type || 'classification';
+    }
+    function withMetrics(res, body, eq, T) {
+      const tt = taskTypeOfBody(body);
+      const spec = (k.taskTypeOf(tt) || k.TASK_TYPES[0]).metrics;
+      res.task_type = tt;
+      if (tt !== 'timeseries') {
+        res.primary_metric = 'accuracy';
+        res.metrics = [{ key: 'accuracy', label: 'Accuracy', better: 'higher', baseline: res.baseline_accuracy, estimated: res.estimated_accuracy,
+          change_pct: round((res.estimated_accuracy - res.baseline_accuracy) / res.baseline_accuracy * 100, 2) }];
+        return res;
+      }
+      const base = k.metricsAt('timeseries', T, 0);
+      const f = tsFactor(eq, body.mechanism);
+      res.primary_metric = 'rmse';
+      res.metrics = spec.map(function (m) {
+        const est = round(base[m.key] * f, 4);
+        return { key: m.key, label: m.label, better: m.better, baseline: base[m.key], estimated: est, change_pct: round((f - 1) * 100, 2) };
+      });
+      // 时序任务没有 Accuracy：分类口径字段置空，避免误读
+      res.baseline_accuracy = null; res.estimated_accuracy = null; res.accuracy_loss = null;
+      res.curve.forEach(function (pt) {
+        pt.estimated_accuracy = null;
+        pt.estimated_rmse = round(base.rmse * tsFactor(eq * pt.round / T, body.mechanism), 4);
+      });
       return res;
     }
 
@@ -247,13 +286,26 @@
       const grid = Array.isArray(body.epsilons) && body.epsilons.length ? body.epsilons : TRADEOFF_GRID;
       if (grid.some(function (e) { return !(e >= 0.05 && e <= 20); })) return k.err(40003, 'ε 取值必须在 0.05 – 20 之间');
       const maxLoss = body.max_accuracy_loss || 0.03;
+      const maxInc = body.max_metric_increase_pct || 10;
+      const tt = taskTypeOfBody(body);
       const points = grid.map(function (e) {
         const r = estimate(Object.assign({}, body, { epsilon_total: e }));
-        return { epsilon_total: e, noise_scale: r.noise_scale, estimated_accuracy: r.estimated_accuracy, accuracy_loss: r.accuracy_loss };
+        const pm = r.metrics[0];
+        return {
+          epsilon_total: e, noise_scale: r.noise_scale, estimated_accuracy: r.estimated_accuracy, accuracy_loss: r.accuracy_loss,
+          metric_value: pm.estimated, metric_change_pct: pm.change_pct
+        };
       });
-      const hit = points.filter(function (x) { return x.accuracy_loss <= maxLoss; })[0];
+      const ok = tt === 'timeseries'
+        ? function (x) { return x.metric_change_pct <= maxInc; }
+        : function (x) { return x.accuracy_loss <= maxLoss; };
+      const hit = points.filter(ok)[0];
+      const first = estimate(Object.assign({}, body, { epsilon_total: grid[0] })).metrics[0];
       return k.ok({
-        accountant: body.accountant || 'rdp', baseline_accuracy: 0.921, max_accuracy_loss: maxLoss,
+        accountant: body.accountant || 'rdp', task_type: tt,
+        metric: { key: first.key, label: first.label, better: first.better, baseline: first.baseline },
+        baseline_accuracy: tt === 'timeseries' ? null : 0.921, max_accuracy_loss: maxLoss, max_metric_increase_pct: maxInc,
+        rule: tt === 'timeseries' ? 'RMSE 相对无噪声基线增幅 ≤ ' + maxInc + '%' : 'Accuracy 损失 ≤ ' + (maxLoss * 100) + ' 个百分点',
         points: points, recommended_epsilon: hit ? hit.epsilon_total : null
       });
     });
@@ -372,10 +424,10 @@
     k.download(/^\/fl\/jobs\/([^/]+)\/dp\/audit\/export/, function (m) {
       const job = db.flJobs[m[1]];
       if (!job) return null;
-      let csv = 'job_id,round,accountant,mechanism,epsilon_spent,epsilon_cumulative,noise_scale,noise_multiplier,delta,clip_norm,clip_ratio_pct,noise_l2,recorded_at\n';
+      let csv = 'job_id,round,accountant,mechanism,epsilon_spent,epsilon_cumulative,noise_scale,noise_multiplier,delta,clip_norm,clip_ratio_pct,noise_l2,recorded_at(UTC+8)\n';
       rowsOf(job).forEach(function (a) {
         csv += [job.job_id, a.round, a.accountant, a.mechanism, a.epsilon_spent, a.epsilon_cumulative, a.noise_scale,
-          a.noise_multiplier, a.delta || '', a.clip_norm, (a.clip_ratio * 100).toFixed(1), a.noise_l2, a.recorded_at || ''].join(',') + '\n';
+          a.noise_multiplier, a.delta || '', a.clip_norm, (a.clip_ratio * 100).toFixed(1), a.noise_l2, k.fmtLocal(a.recorded_at)].join(',') + '\n';
       });
       return { fileName: job.job_id + '_dp_audit.csv', contentType: 'text/csv;charset=utf-8', content: '﻿' + csv };
     });
@@ -496,27 +548,32 @@
       const cal = calibrate(dp);
       const T = dp.total_rounds;
       const series = [];
+      // 固定基准：已启用自适应时用切换前的固定 C，否则用当前 C；自适应首轮用当前 C（初始 C）
+      const Cf = dp.clip_mode === 'adaptive' && dp.clip_norm_fixed ? dp.clip_norm_fixed : dp.clip_norm;
+      const C0 = dp.clip_norm;
       let sumF = 0, sumA = 0, nzF = 0, nzA = 0;
       for (let r = 1; r <= T; r++) {
         const m = gradMedian(r);
-        const ca = r <= 1 ? dp.clip_norm : gradMedian(r - 1);
-        const rf = 1 - Phi((Math.log(dp.clip_norm) - Math.log(m)) / GRAD_S);
+        const ca = r <= 1 ? C0 : gradMedian(r - 1);
+        const rf = 1 - Phi((Math.log(Cf) - Math.log(m)) / GRAD_S);
         const ra = 1 - Phi((Math.log(ca) - Math.log(m)) / GRAD_S);
-        sumF += rf; sumA += ra; nzF += cal.scale * dp.clip_norm; nzA += cal.scale * ca;
+        sumF += rf; sumA += ra; nzF += cal.scale * Cf; nzA += cal.scale * ca;
         series.push({
-          round: r, update_norm_median: round(m, 4), clip_fixed: dp.clip_norm, clip_adaptive: round(ca, 4),
+          round: r, update_norm_median: round(m, 4), clip_fixed: Cf, clip_adaptive: round(ca, 4),
           clip_ratio_fixed: round(rf, 4), clip_ratio_adaptive: round(ra, 4),
-          noise_fixed: round(cal.scale * dp.clip_norm, 3), noise_adaptive: round(cal.scale * ca, 3)
+          noise_fixed: round(cal.scale * Cf, 3), noise_adaptive: round(cal.scale * ca, 3)
         });
       }
       const rec = Math.max(0.2, Math.min(4, Math.round(gradMedian(Math.ceil(T / 2)) * 10) / 10));
       return {
         target: 'gradient', job_id: job.job_id, mechanism: dp.mechanism, accountant: dp.accountant,
+        clip_mode: dp.clip_mode, fixed_clip_norm: Cf, initial_clip_norm: C0,
         noise_multiplier: round(cal.scale, 3), target_quantile: 0.5, series: series,
         summary: {
           clip_ratio_fixed_avg: round(sumF / T, 4), clip_ratio_adaptive_avg: round(sumA / T, 4),
           noise_fixed_avg: round(nzF / T, 3), noise_adaptive_avg: round(nzA / T, 3),
-          noise_reduction_pct: round((1 - nzA / nzF) * 100, 1)
+          noise_reduction_pct: round((1 - nzA / nzF) * 100, 1),
+          adaptive_better: nzA < nzF
         },
         recommended_clip_norm: rec
       };

@@ -22,6 +22,8 @@
 - `advanced` / `rdp`：对噪声倍数 z（或 λ）二分求解，使 T 轮累计 ε 恰为 `ε_总`。
 - 每轮噪声尺度 `σ = z · C`（拉普拉斯 `b = λ · C`），C 为裁剪阈值（梯度 L2 敏感度）。「单轮机制 ε」= 把单轮单独看作 (ε, δ)-DP 时的 ε₀ = `√(2 ln(1.25/δ)) / z`。
 
+**时序任务效用**：RMSE / MAE = 无噪声基线 × (1 + 1.2 · e^(−ε_eq / 2.2))，拉普拉斯再乘 1.05；基线取内核 `metricsAt('timeseries', T, 0)`（该任务无噪声训练 T 轮后的全局指标）。e^(−ε/2.2) 与分类公式的饱和项相同。
+
 **模型效用估算**：沿用 v1.1 的 `utility(ε) = 0.62 + 0.30 · (1 − e^(−ε/2.2))`（拉普拉斯再减 0.015），但 ε 取「与当前噪声相同的基础组合等效总 ε」`ε_eq = ε₀ · T`，即效用随实际注入的噪声大小变化，而不是随账面 ε。
 
 **任务 DP 配置扩展字段**（`GET / PUT /fl/jobs/{job_id}/dp`，不传则保持原值）：
@@ -82,6 +84,9 @@ POST /dp/estimate
 | `epsilon_per_round_avg` | ε_总 / T |
 | `delta_total` | 按会计方式的累计 δ |
 | `curve[].cumulative_epsilon` | 按会计方式累计 |
+| `task_type` / `primary_metric` | 由 `baseline_job_id` 对应任务（或 body.task_type）决定：分类 `accuracy`，时序 `rmse` |
+| `metrics[]` | 按任务 `metrics_spec`：`{ key, label, better, baseline, estimated, change_pct }`；分类为 Accuracy（越高越好），时序为 RMSE / MAE（归一化，越低越好） |
+| `curve[].estimated_rmse` | 仅时序任务；此时 `estimated_accuracy`、`baseline_accuracy`、`accuracy_loss` 均为 `null` |
 
 显式 `accountant = basic` 时 `noise_scale`、`estimated_accuracy`、`curve` 与 v1.1 逐位一致；注意 v1.1 调用方不传该字段时现在按 RDP 计算。错误码：`40000` mechanism 非法、高斯缺 δ、accountant 非法、ε / C / T 非正数。
 
@@ -120,7 +125,7 @@ GET /fl/jobs/{job_id}/dp/audit/export        （文件下载，CSV，UTF-8 BOM�
 | `noise_l2` / `signal_l2` / `snr` | 见 6.11 |
 | `source` | `engine` 训练引擎逐轮写入；`seed_history` 播种的历史任务按其配置回放 |
 
-CSV 列：`job_id,round,accountant,mechanism,epsilon_spent,epsilon_cumulative,noise_scale,noise_multiplier,delta,clip_norm,clip_ratio_pct,noise_l2,recorded_at`。错误码：`40400`、`40002`（limit 非法）。
+CSV 列：`job_id,round,accountant,mechanism,epsilon_spent,epsilon_cumulative,noise_scale,noise_multiplier,delta,clip_norm,clip_ratio_pct,noise_l2,recorded_at(UTC+8)`，时间用内核 `fmtLocal` 写成 `2026-10-23 22:10:05 +08:00`。错误码：`40400`、`40002`（limit 非法）。
 
 ### 6.6 机制目录
 
@@ -145,7 +150,9 @@ POST /dp/tradeoff
 | `mechanism` / `clip_norm` / `delta` / `total_rounds` | 是 | 同 6.3 |
 | `accountant` | 否 | 默认 `rdp`；显式传 `basic` 按基础组合 |
 | `epsilons` | 否 | ε 网格，默认 `[0.2, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 10]`，每个 0.05–20 |
-| `max_accuracy_loss` | 否 | 平衡点阈值，默认 0.03（3 个百分点） |
+| `max_accuracy_loss` | 否 | 分类平衡点阈值，默认 0.03（3 个百分点） |
+| `max_metric_increase_pct` | 否 | 时序平衡点阈值：RMSE 相对基线增幅，默认 10（%） |
+| `baseline_job_id` / `task_type` | 否 | 决定按 Accuracy 还是 RMSE 评估 |
 
 ```json
 { "accountant": "rdp", "baseline_accuracy": 0.921, "max_accuracy_loss": 0.03,
@@ -153,7 +160,7 @@ POST /dp/tradeoff
   "recommended_epsilon": 1 }
 ```
 
-`recommended_epsilon` = 效用损失 ≤ 阈值的最小 ε，没有则 `null`。错误码：`40000`、`40003`（网格越界）。
+响应增补 `task_type`、`metric`（主指标 `{ key, label, better, baseline }`）、`rule`（平衡点规则文字）、`points[].metric_value`、`points[].metric_change_pct`；时序任务 `baseline_accuracy = null`。`recommended_epsilon` = 满足 `rule` 的最小 ε，没有则 `null`。错误码：`40000`、`40003`（网格越界）。
 
 ### 6.8 自适应噪声注入
 
@@ -179,7 +186,7 @@ POST /dp/adaptive-noise
 
 响应：`stats`（`median`、`mean`、`p01`、`p05`、`p95`、`p99`、`log_sd`、`public_lower`、`public_upper`）、`fixed` 与 `adaptive`（`lower`、`upper`、`sensitivity`、`epsilon_used`、`noise_scale`、`noise_std`、`bias`、`rmse`、`rel_error_pct`）、`candidates[]`、`recommended`（`adaptive` / `fixed`）、`noise_reduction_pct`、`rmse_reduction_pct`、`unit`、`group_size`。
 
-**梯度模式** `target = gradient`，`job_id` 必填：样本梯度 L2 范数中位数按 `m(r) = 0.25 + 0.9·e^(−r/12)`、对数标准差 0.5 建模；返回逐轮 `update_norm_median`、`clip_fixed`、`clip_adaptive`、`clip_ratio_fixed`、`clip_ratio_adaptive`、`noise_fixed`、`noise_adaptive`，以及 `summary` 和 `recommended_clip_norm`（第 ⌈T/2⌉ 轮中位数，取一位小数，夹在 0.2–4）。
+**梯度模式** `target = gradient`，`job_id` 必填：样本梯度 L2 范数中位数按 `m(r) = 0.25 + 0.9·e^(−r/12)`、对数标准差 0.5 建模；返回逐轮 `update_norm_median`、`clip_fixed`、`clip_adaptive`、`clip_ratio_fixed`、`clip_ratio_adaptive`、`noise_fixed`、`noise_adaptive`，以及 `fixed_clip_norm`（固定基准：已启用自适应时为切换前的固定 C，记在 `job.dp.clip_norm_fixed`）、`initial_clip_norm`、`summary`（含 `adaptive_better`；`noise_reduction_pct` 为负表示自适应噪声更多，界面显示「噪声增加」）和 `recommended_clip_norm`（第 ⌈T/2⌉ 轮中位数，取一位小数，夹在 0.2–4）。
 
 错误码：`40400` 数据集 / 任务不存在；`40901` 数据集未导入完成；`40000` 字段不存在、参数非法；`40001` 字段不是数值型；`40003` ε 越界；`40002` δ 非法。
 

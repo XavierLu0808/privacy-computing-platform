@@ -233,6 +233,9 @@ test('[DP-EVAL-03] 历史审计：每轮 ε 增量与噪声详情、查看全部
   assert.equal(csv.fileName, `${created.job_id}_dp_audit.csv`);
   assert.equal(csv.content.trim().split('\n').length, 4);
   assert.match(csv.content, /epsilon_spent,epsilon_cumulative/);
+  // 导出时间按 UTC+8 书写（D07）
+  assert.match(csv.content, /recorded_at\(UTC\+8\)/);
+  assert.match(csv.content.trim().split('\n')[1], /,\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00$/);
   assert.equal(await errCode('GET', `/fl/jobs/${created.job_id}/dp/audit?limit=-1`), 40002);
   assert.equal(await errCode('GET', '/fl/jobs/fl_none/dp/audit'), 40400);
 });
@@ -305,6 +308,54 @@ test('[DP-EVAL-01][DP-FW-02] SSE round_completed 的 ε 与 DP 页同一会计�
   assert.equal(seen[3].epsilon_used, a.items[0].epsilon_cumulative);
   assert.equal(seen[3].epsilon_spent, a.items[0].epsilon_spent);
   assert.ok(Math.abs(seen[3].epsilon_used - b.epsilon_used) < 1e-3);
+});
+
+test('[DP-MECH-03] 启用自适应裁剪后仍以原固定 C 为对照；自适应不占优时如实给出噪声增加（D15）', async (t) => {
+  const { okData } = boot(t);
+  const { created } = await jobsOf(okData);
+  const id = created.job_id;
+  const before = await okData('POST', '/dp/adaptive-noise', { target: 'gradient', job_id: id });
+  assert.equal(before.fixed_clip_norm, 1);
+  assert.ok(before.summary.noise_reduction_pct > 0 && before.summary.adaptive_better);
+  await okData('PUT', `/fl/jobs/${id}/dp`, { ...GAUSS, accountant: 'rdp', clip_norm: before.recommended_clip_norm, clip_mode: 'adaptive' });
+  const after = await okData('POST', '/dp/adaptive-noise', { target: 'gradient', job_id: id });
+  assert.equal(after.fixed_clip_norm, 1, '对照仍是启用前的固定 C');
+  assert.equal(after.initial_clip_norm, before.recommended_clip_norm);
+  assert.ok(after.summary.noise_reduction_pct > 0);
+  // 再切回固定裁剪：对照清空为当前 C
+  await okData('PUT', `/fl/jobs/${id}/dp`, { ...GAUSS, accountant: 'rdp', clip_norm: 0.3, clip_mode: 'fixed' });
+  assert.equal((await okData('GET', `/fl/jobs/${id}/dp`)).clip_norm_fixed, null);
+  // 固定 C 很小时自适应 C（中位数）更大，噪声增加：adaptive_better = false，百分比为负，界面改写为「噪声增加」
+  const worse = await okData('POST', '/dp/adaptive-noise', { target: 'gradient', job_id: id });
+  assert.equal(worse.summary.adaptive_better, false);
+  assert.ok(worse.summary.noise_reduction_pct < 0);
+});
+
+test('[DP-EVAL-01][DP-EVAL-02] 时序任务按 metrics_spec 展示 RMSE / MAE（越低越好），平衡分析同口径（D16）', async (t) => {
+  const { okData } = boot(t);
+  const { created, done } = await jobsOf(okData);
+  assert.equal(done.task_type, 'timeseries');
+  const cfg = await okData('GET', `/fl/jobs/${done.job_id}/dp`);
+  const e = await okData('POST', '/dp/estimate', { ...cfg, baseline_job_id: done.job_id });
+  assert.equal(e.task_type, 'timeseries');
+  assert.equal(e.estimated_accuracy, null);
+  assert.deepEqual(e.metrics.map((m) => m.key), ['rmse', 'mae']);
+  e.metrics.forEach((m) => { assert.equal(m.better, 'lower'); assert.ok(m.estimated >= m.baseline); });
+  assert.ok(e.metrics[0].change_pct <= 10, `默认配置 RMSE 增幅 ${e.metrics[0].change_pct}%`);
+  assert.ok(e.curve.every((p) => p.estimated_rmse > 0 && p.estimated_accuracy === null));
+  // 噪声越大误差越大
+  const basic = await okData('POST', '/dp/estimate', { ...cfg, accountant: 'basic', baseline_job_id: done.job_id });
+  assert.ok(basic.metrics[0].estimated > e.metrics[0].estimated);
+  const tr = await okData('POST', '/dp/tradeoff', { ...cfg, baseline_job_id: done.job_id });
+  assert.equal(tr.metric.key, 'rmse');
+  assert.match(tr.rule, /RMSE/);
+  const vals = tr.points.map((p) => p.metric_value);
+  for (let i = 1; i < vals.length; i++) assert.ok(vals[i] <= vals[i - 1]);
+  assert.equal(tr.recommended_epsilon, tr.points.find((p) => p.metric_change_pct <= 10).epsilon_total);
+  // 分类任务仍是 Accuracy
+  const c = await okData('POST', '/dp/estimate', { ...GAUSS, total_rounds: 30, baseline_job_id: created.job_id });
+  assert.equal(c.primary_metric, 'accuracy');
+  assert.equal(c.metrics[0].estimated, c.estimated_accuracy);
 });
 
 test('[DP-FW-03] DP 指标：每轮裁剪比例、噪声 L2 范数、信噪比与噪声直方图', async (t) => {

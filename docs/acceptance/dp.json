@@ -61,9 +61,10 @@
     ],
     "tests": [
       "tests/dp.test.mjs: [DP-MECH-03] 自适应噪声：按字段分布选裁剪区间，重尾字段噪声显著下降；梯度自适应裁剪；非数值字段被拒",
-      "tests/dp.test.mjs: [DP-MECH-03] 统计查询发布：只返回加噪结果，结果在裁剪区间内"
+      "tests/dp.test.mjs: [DP-MECH-03] 统计查询发布：只返回加噪结果，结果在裁剪区间内",
+      "tests/dp.test.mjs: [DP-MECH-03] 启用自适应裁剪后仍以原固定 C 为对照；自适应不占优时如实给出噪声增加（D15）"
     ],
-    "impl": "字段按对数正态拟合（中位数、对数标准差），敏感度 Δ = (U − L)/n。固定裁剪用业务公开取值范围（不看数据），自适应裁剪在 P1–P99、P2.5–P97.5、P5–P95、P10–P90 中按 RMSE = √(噪声方差 + 截断偏差²) 最小选取，截断偏差用对数正态截断期望解析计算，10% 预算用于差分隐私分位数估计。梯度侧按 Andrew 等（2021）的目标分位裁剪：每轮 C 取上一轮参与方更新 L2 范数中位数，σ = z·C 随之下降。",
+    "impl": "字段按对数正态拟合（中位数、对数标准差），敏感度 Δ = (U − L)/n。固定裁剪用业务公开取值范围（不看数据），自适应裁剪在 P1–P99、P2.5–P97.5、P5–P95、P10–P90 中按 RMSE = √(噪声方差 + 截断偏差²) 最小选取，截断偏差用对数正态截断期望解析计算，10% 预算用于差分隐私分位数估计。梯度侧按 Andrew 等（2021）的目标分位裁剪：每轮 C 取上一轮参与方更新 L2 范数中位数，σ = z·C 随之下降。 启用自适应后对照基准仍为切换前的固定 C（job.dp.clip_norm_fixed）；自适应噪声更多时如实显示「噪声增加」。",
     "status": "done"
   },
   "DP-MECH-04": {
@@ -106,9 +107,11 @@
       "GET /projects/{project_id}/fl/jobs"
     ],
     "tests": [
-      "tests/dp.test.mjs: [DP-EVAL-01] 效果展示：预算按会计方式累计；basic 与内核数值一致"
+      "tests/dp.test.mjs: [DP-EVAL-01] 效果展示：预算按会计方式累计；basic 与内核数值一致",
+      "tests/dp.test.mjs: [DP-EVAL-01][DP-FW-02] SSE round_completed 的 ε 与 DP 页同一会计方式；默认配置效用损失 ≤ 3 个百分点",
+      "tests/dp.test.mjs: [DP-EVAL-01][DP-EVAL-02] 时序任务按 metrics_spec 展示 RMSE / MAE（越低越好），平衡分析同口径（D16）"
     ],
-    "impl": "已消耗 ε 按任务的会计方式对已完成轮次累计（basic 与 v1.1 一致：ε_总 × r / T），used_pct = ε_used / ε_总；训练运行期间的配置存快照，结束后改配置不影响该次运行的预算。模型效用沿用 v1.1 公式，但 ε 取与当前噪声等效的基础组合总 ε，因此 RDP 下同样总预算噪声更小、效用更高。",
+    "impl": "已消耗 ε 按任务的会计方式对已完成轮次累计（basic 与 v1.1 一致：ε_总 × r / T），used_pct = ε_used / ε_总；训练运行期间的配置存快照，结束后改配置不影响该次运行的预算。模型效用沿用 v1.1 公式，但 ε 取与当前噪声等效的基础组合总 ε，因此 RDP 下同样总预算噪声更小、效用更高。 时序任务按 metrics_spec 展示 RMSE / MAE（归一化，越低越好）= 无噪声基线 × (1 + 1.2·e^(−ε_eq/2.2))，基线取内核该任务无噪声训练 T 轮后的指标。",
     "status": "done"
   },
   "DP-EVAL-02": {
@@ -125,9 +128,10 @@
       "POST /dp/tradeoff"
     ],
     "tests": [
-      "tests/dp.test.mjs: [DP-EVAL-02] 效用曲线 + 效用-隐私平衡：ε 增大效用单调不降，给出平衡点"
+      "tests/dp.test.mjs: [DP-EVAL-02] 效用曲线 + 效用-隐私平衡：ε 增大效用单调不降，给出平衡点",
+      "tests/dp.test.mjs: [DP-EVAL-01][DP-EVAL-02] 时序任务按 metrics_spec 展示 RMSE / MAE（越低越好），平衡分析同口径（D16）"
     ],
-    "impl": "趋势曲线用 /dp/estimate 的 curve（累计 ε 按会计方式计算），两条曲线各自归一化。平衡分析对 ε 网格 0.2–10 逐点按同一机制、C、δ、会计方式反解噪声并估算效用，recommended_epsilon = 效用损失 ≤ max_accuracy_loss（默认 0.03）的最小 ε；RDP 达到同样效用所需 ε 明显小于基础组合。",
+    "impl": "趋势曲线用 /dp/estimate 的 curve（累计 ε 按会计方式计算），两条曲线各自归一化。平衡分析对 ε 网格 0.2–10 逐点按同一机制、C、δ、会计方式反解噪声并估算效用，recommended_epsilon = 效用损失 ≤ max_accuracy_loss（默认 0.03）的最小 ε；RDP 达到同样效用所需 ε 明显小于基础组合。 时序任务平衡点改为 RMSE 相对基线增幅 ≤ 10% 的最小 ε。",
     "status": "done"
   },
   "DP-EVAL-03": {
@@ -146,7 +150,7 @@
     "tests": [
       "tests/dp.test.mjs: [DP-EVAL-03] 历史审计：每轮 ε 增量与噪声详情、查看全部、导出 CSV；快照不随后改配置变化"
     ],
-    "impl": "训练引擎每轮聚合后写入审计（内核 dp_audit 提供轮次与时间），读取时按该次运行的配置快照补齐会计方式下的 ε 增量 = 累计ε(r) − 累计ε(r−1)、噪声尺度、自适应 C、裁剪比例与噪声 L2 范数；播种的历史任务按其配置回放并标记 source = seed_history。limit 支持整数与 all，CSV 带 UTF-8 BOM。",
+    "impl": "训练引擎每轮聚合后写入审计（内核 dp_audit 提供轮次与时间），读取时按该次运行的配置快照补齐会计方式下的 ε 增量 = 累计ε(r) − 累计ε(r−1)、噪声尺度、自适应 C、裁剪比例与噪声 L2 范数；播种的历史任务按其配置回放并标记 source = seed_history。limit 支持整数与 all，CSV 带 UTF-8 BOM。 导出时间列 recorded_at(UTC+8)，按 fmtLocal 写成「2026-10-23 22:10:05 +08:00」。",
     "status": "done"
   },
   "DP-FW-01": {
@@ -182,7 +186,8 @@
       "GET /fl/jobs/{job_id}"
     ],
     "tests": [
-      "tests/dp.test.mjs: [DP-FW-02] DP 初始化：启用 DP 的任务启动后 hook 链在聚合前逐轮调用；未启用时 DP 步骤跳过"
+      "tests/dp.test.mjs: [DP-FW-02] DP 初始化：启用 DP 的任务启动后 hook 链在聚合前逐轮调用；未启用时 DP 步骤跳过",
+      "tests/dp.test.mjs: [DP-EVAL-01][DP-FW-02] SSE round_completed 的 ε 与 DP 页同一会计方式；默认配置效用损失 ≤ 3 个百分点"
     ],
     "impl": "任务 start 时若 dp_enabled 且 job.dp.enabled，训练引擎按当前实现初始化 DP 策略对象，并在每轮梯度聚合前依次调用裁剪、加噪（各参与方加 N(0, σ²/n)，聚合后总噪声 N(0, σ²)）与记账。hook 状态由任务状态与已完成轮次推出，调用次数按参与方数累计，页面每 2 秒检测任务轮次变化后刷新。",
     "status": "done"

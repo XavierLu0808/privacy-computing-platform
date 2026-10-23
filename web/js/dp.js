@@ -154,6 +154,23 @@
     return out;
   }
 
+  /** 按任务类型给出效用展示文案：分类用 Accuracy（越高越好），时序用 RMSE / MAE（归一化，越低越好）。 */
+  function utilText(res) {
+    if (res.task_type === 'timeseries') {
+      const r = res.metrics[0], m = res.metrics[1];
+      return {
+        name: '模型误差（预估 ' + r.key.toUpperCase() + '，归一化，越低越好）', value: r.estimated.toFixed(4),
+        sub: '无噪声基线 ' + r.baseline.toFixed(4) + ' · 增幅 ' + r.change_pct.toFixed(1) + '%' + (m ? '；' + m.label + ' ' + m.estimated.toFixed(4) + '（基线 ' + m.baseline.toFixed(4) + '）' : ''),
+        short: r.label + ' ' + r.estimated.toFixed(4) + '（无噪声基线 ' + r.baseline.toFixed(4) + '，增幅 ' + r.change_pct.toFixed(1) + '%）'
+      };
+    }
+    return {
+      name: '模型效用（预估 Accuracy）', value: pct(res.estimated_accuracy),
+      sub: '无噪声基线 ' + pct(res.baseline_accuracy) + ' · 损失 ' + (res.accuracy_loss * 100).toFixed(1) + ' 个百分点',
+      short: 'Accuracy ' + pct(res.estimated_accuracy) + '（无噪声基线 ' + pct(res.baseline_accuracy) + '）'
+    };
+  }
+
   /** 取整到 1 / 2 / 5 × 10^k 的刻度。 */
   function niceTicks(lo, hi, n) {
     const raw = (hi - lo) / n;
@@ -216,7 +233,7 @@
     MECH_CN: MECH_CN, ACC_CN: ACC_CN, STATUS_CN: STATUS_CN, COLORS: COLORS,
     listJobs: listJobs, pickJob: pickJob, setJob: setJob, jobField: jobField,
     fmtDelta: fmtDelta, pct: pct, money: money, chart: chart, legend: legend, ticks: ticks, niceTicks: niceTicks,
-    cardHead: cardHead, btn: btn, seg: seg, numInput: numInput
+    cardHead: cardHead, btn: btn, seg: seg, numInput: numInput, utilText: utilText
   };
 
   /* ================= 效果评估页 DP ================= */
@@ -270,6 +287,8 @@
     const metricNames = sec.querySelectorAll('.dp-right .metric-grid-3 .metric-name');
     metricNames[0].textContent = '已消耗隐私预算（累计 ε）';
     metricNames[1].textContent = '模型效用（预估 Accuracy）';
+    dom.utilName = metricNames[1];
+    dom.utilSub = $('dpBaseline').parentNode;
     dom.perRoundName = metricNames[2];
     dom.usedSub = $('dpUsedPct').parentNode;
 
@@ -277,6 +296,7 @@
     trend.setAttribute('data-acc', 'DP-EVAL-02');
     const trendHint = trend.querySelector('.hint');
     trendHint.textContent = '横轴为迭代轮次；两条曲线按各自量纲归一化绘制，虚线为当前已完成轮次';
+    dom.utilLegend = Array.prototype.filter.call(trend.querySelectorAll('.legend-item'), function (x) { return x.textContent.indexOf('模型效用') >= 0; })[0];
     dom.trendMax = Array.prototype.filter.call(trend.querySelectorAll('text'), function (t) { return t.textContent === '30'; })[0];
 
     // 效用-隐私平衡分析
@@ -380,9 +400,12 @@
     $('dpFormula').textContent = acc === 'basic' ? res.formula
       : '按' + ACC_CN[acc] + '反解：使 ' + body.total_rounds + ' 轮累计 ε 恰为 ' + body.epsilon_total.toFixed(2) + ' 的噪声倍数 z，σ = z · C';
 
-    $('dpUtil').textContent = pct(res.estimated_accuracy);
-    $('dpBaseline').textContent = pct(res.baseline_accuracy);
-    $('dpUtilLoss').textContent = (res.accuracy_loss * 100).toFixed(1) + ' 个百分点';
+    const u = utilText(res);
+    dom.utilName.textContent = u.name;
+    $('dpUtil').textContent = u.value;
+    UI.clear(dom.utilSub);
+    dom.utilSub.appendChild(document.createTextNode(u.sub));
+    if (dom.utilLegend) dom.utilLegend.lastChild.textContent = res.task_type === 'timeseries' ? '模型误差 RMSE（越低越好）' : '模型效用 Accuracy';
     dom.perRoundName.textContent = acc === 'basic' ? '每轮 ε 消耗（ε_总 / 轮数）' : '单轮机制 ε（单独看一轮）';
     $('dpPerRound').textContent = res.epsilon_per_round.toFixed(4);
     $('dpMechName').textContent = MECH_CN[body.mechanism] + ' · ' + ACC_CN[acc];
@@ -391,7 +414,8 @@
 
     // 两条曲线各自归一化到 0–1
     const maxEps = res.curve[res.curve.length - 1].cumulative_epsilon || 1;
-    const accs = res.curve.map(function (p) { return p.estimated_accuracy; });
+    const key = res.task_type === 'timeseries' ? 'estimated_rmse' : 'estimated_accuracy';
+    const accs = res.curve.map(function (p) { return p[key]; });
     const lo = Math.min.apply(null, accs), hi = Math.max.apply(null, accs);
     const span = (hi - lo) || 1;
 
@@ -399,7 +423,7 @@
       res.curve.map(function (p) { return { x: p.round, y: p.cumulative_epsilon / maxEps }; }),
       Object.assign({ ymin: 0, ymax: 1, xmax: body.total_rounds }, CHART)));
     $('dpUtilLine').setAttribute('points', UI.polyline(
-      res.curve.map(function (p) { return { x: p.round, y: (p.estimated_accuracy - lo) / span }; }),
+      res.curve.map(function (p) { return { x: p.round, y: (p[key] - lo) / span }; }),
       Object.assign({ ymin: 0, ymax: 1, xmax: body.total_rounds }, CHART)));
 
     const hist = $('dpHist');
@@ -420,7 +444,7 @@
       const body = currentConfig();
       const res = await Api.post('/dp/tradeoff', {
         mechanism: body.mechanism, clip_norm: body.clip_norm, delta: body.delta,
-        total_rounds: body.total_rounds, accountant: cfg.accountant || 'rdp'
+        total_rounds: body.total_rounds, accountant: cfg.accountant || 'rdp', baseline_job_id: jobId
       });
       if (my === seq) renderTradeoff(res, body);
     } catch (e) { UI.fail(e); }
@@ -428,32 +452,40 @@
 
   function renderTradeoff(res, body) {
     const pts = res.points;
-    const accs = pts.map(function (p) { return p.estimated_accuracy; });
-    const lo = Math.floor(Math.min.apply(null, accs.concat([res.baseline_accuracy])) * 10) / 10;
-    const markers = [{ x: body.epsilon_total, color: COLORS.amber, label: '当前 ε = ' + body.epsilon_total.toFixed(2) }];
+    const ts = res.task_type === 'timeseries';
+    const base = res.metric.baseline;
+    const vals = pts.map(function (p) { return p.metric_value; }).concat([base]);
+    let lo, hi, yTicks, yFmt;
+    if (ts) {
+      lo = 0; hi = niceTicks(0, Math.max.apply(null, vals) * 1.05, 4).slice(-1)[0];
+      yTicks = niceTicks(0, hi, 4); yFmt = function (v) { return v.toFixed(2); };
+    } else {
+      lo = Math.floor(Math.min.apply(null, vals) * 10) / 10; hi = 1;
+      yTicks = ticks(lo, 1, Math.round((1 - lo) * 10)); yFmt = function (v) { return (v * 100).toFixed(0) + '%'; };
+    }
     UI.clear(dom.tradeChart);
     dom.tradeChart.appendChild(legend([
-      { color: COLORS.primary, label: '预估模型效用（Accuracy，%）' },
-      { color: COLORS.muted, label: '无噪声基线 ' + pct(res.baseline_accuracy) },
+      { color: COLORS.primary, label: ts ? '预估 ' + res.metric.label + '（越低越好）' : '预估模型效用（Accuracy，%）' },
+      { color: COLORS.muted, label: '无噪声基线 ' + (ts ? base.toFixed(4) : pct(base)) },
       { color: COLORS.amber, label: '当前总预算' }
     ]));
     dom.tradeChart.appendChild(chart({
-      w: 820, h: 210, xmin: 0, xmax: 10, ymin: lo, ymax: 1,
-      xTicks: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], yTicks: ticks(lo, 1, Math.round((1 - lo) * 10)),
-      xFmt: function (v) { return v.toFixed(0); }, yFmt: function (v) { return (v * 100).toFixed(0) + '%'; },
-      xLabel: '总隐私预算 ε', aria: '不同总隐私预算下的预估模型效用',
+      w: 820, h: 210, xmin: 0, xmax: 10, ymin: lo, ymax: hi,
+      xTicks: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], yTicks: yTicks,
+      xFmt: function (v) { return v.toFixed(0); }, yFmt: yFmt,
+      xLabel: '总隐私预算 ε', yLabel: ts ? res.metric.label : null, aria: '不同总隐私预算下的预估模型效用',
       series: [
-        { color: COLORS.muted, dash: '4 4', width: 1.4, points: [{ x: 0, y: res.baseline_accuracy }, { x: 10, y: res.baseline_accuracy }] },
-        { color: COLORS.primary, dots: true, points: pts.map(function (p) { return { x: p.epsilon_total, y: p.estimated_accuracy }; }) }
+        { color: COLORS.muted, dash: '4 4', width: 1.4, points: [{ x: 0, y: base }, { x: 10, y: base }] },
+        { color: COLORS.primary, dots: true, points: pts.map(function (p) { return { x: p.epsilon_total, y: p.metric_value }; }) }
       ],
-      markers: markers
+      markers: [{ x: body.epsilon_total, color: COLORS.amber, label: '当前 ε = ' + body.epsilon_total.toFixed(2) }]
     }));
     const rec = res.recommended_epsilon;
     dom.tradeNote.textContent = rec === null
-      ? '在 ε ≤ 10 范围内，效用损失都超过 ' + (res.max_accuracy_loss * 100).toFixed(0) + ' 个百分点；可改用 RDP 会计或放宽裁剪阈值。'
-      : '平衡点：效用损失不超过 ' + (res.max_accuracy_loss * 100).toFixed(0) + ' 个百分点的最小总预算为 ε = ' + rec.toFixed(2) +
+      ? '在 ε ≤ 10 范围内都达不到「' + res.rule + '」；可改用 RDP 会计或放宽裁剪阈值。'
+      : '平衡点：满足「' + res.rule + '」的最小总预算为 ε = ' + rec.toFixed(2) +
         '（' + ACC_CN[res.accountant] + '）。当前 ε = ' + body.epsilon_total.toFixed(2) +
-        (body.epsilon_total < rec ? '，隐私更强但效用损失超出该阈值。' : '，已达到该效用要求；继续增大 ε 效用提升有限，隐私保护减弱。');
+        (body.epsilon_total < rec ? '，隐私更强但效用未达到该要求。' : '，已达到该效用要求；继续增大 ε 效用提升有限，隐私保护减弱。');
   }
 
   function renderAccLine() {

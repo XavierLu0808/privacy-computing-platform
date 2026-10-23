@@ -298,7 +298,7 @@
         const g = b.mechanism === 'gaussian';
         t1.textContent = '每轮噪声 ' + (g ? 'σ' : 'b') + ' = ' + r.noise_scale.toFixed(3) + '（噪声倍数 z = ' + (g ? 'σ' : 'b') + ' / C = ' + r.noise_multiplier.toFixed(3) +
           '）；单轮机制 ε = ' + r.epsilon_per_round.toFixed(4) + '；' + cfg.total_rounds + ' 轮累计 ε = ' + r.curve[r.curve.length - 1].cumulative_epsilon.toFixed(3) +
-          '，累计 δ = ' + D.fmtDelta(r.delta_total) + '；预估模型效用 ' + D.pct(r.estimated_accuracy) + '（无噪声基线 ' + D.pct(r.baseline_accuracy) + '）';
+          '，累计 δ = ' + D.fmtDelta(r.delta_total) + '；预估' + D.utilText(r).short;
         t2.textContent = b.accountant === 'basic' ? r.formula + '，ε_每轮 = ε_总 / 轮数'
           : D.ACC_CN[b.accountant] + '：二分求解噪声倍数 z，使 ' + cfg.total_rounds + ' 轮累计 ε 等于 ε_总；' + (g ? 'σ' : 'b') + ' = z · C';
       } catch (e) { t1.textContent = e.message; }
@@ -533,13 +533,17 @@
     if (!job) { card.appendChild(el('div', 'table-empty', '当前项目没有训练任务')); return; }
     const r = await Api.post('/dp/adaptive-noise', { target: 'gradient', job_id: jobId });
     if (my !== seq) return;
-    card.appendChild(el('div', 'banner-note', '任务「' + job.name + '」：样本梯度的 L2 范数随训练下降。固定裁剪沿用 C = ' + cfg.clip_norm +
+    card.appendChild(el('div', 'banner-note', '任务「' + job.name + '」：样本梯度的 L2 范数随训练下降。固定裁剪基准 C = ' + r.fixed_clip_norm +
+      (r.clip_mode === 'adaptive' ? '（启用自适应前的固定 C）' : '') + '，自适应初始 C = ' + r.initial_clip_norm +
       '；自适应裁剪每轮把 C 设为上一轮样本梯度范数的中位数（目标分位 0.5，Andrew 等 2021），噪声 σ = z · C 随之下降，z = ' + r.noise_multiplier.toFixed(3) + '（' + D.ACC_CN[r.accountant] + '）。'));
     const mg = el('div', 'metric-grid');
     mg.appendChild(metric('平均裁剪比例 · 固定', D.pct(r.summary.clip_ratio_fixed_avg), '被裁剪的样本梯度占比，越高偏差越大'));
     mg.appendChild(metric('平均裁剪比例 · 自适应', D.pct(r.summary.clip_ratio_adaptive_avg), '稳定在目标分位 50% 附近'));
     mg.appendChild(metric('平均每轮噪声 σ', r.summary.noise_fixed_avg.toFixed(2) + ' → ' + r.summary.noise_adaptive_avg.toFixed(2), '固定 → 自适应，按 ' + r.series.length + ' 轮平均'));
-    mg.appendChild(metric('噪声降低', r.summary.noise_reduction_pct.toFixed(1) + '%', '相同 ε 下注入的噪声总量减少'));
+    const red = r.summary.noise_reduction_pct;
+    mg.appendChild(red >= 0
+      ? metric('噪声降低', red.toFixed(1) + '%', '相同 ε 下自适应裁剪注入的噪声总量更少')
+      : metric('噪声增加', (-red).toFixed(1) + '%', '自适应 C（样本梯度范数中位数）高于固定 C = ' + r.fixed_clip_norm + '，本配置下自适应不占优，建议保持固定裁剪'));
     card.appendChild(mg);
     const T = r.series.length;
     const maxC = Math.max(cfg.clip_norm, r.series[0].update_norm_median) * 1.15;
