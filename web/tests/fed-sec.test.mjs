@@ -395,6 +395,7 @@ test('[FL-EVAL-03] 精度衰减：MNIST 0.5–1.0、CIFAR-10 1.5–2.5 个百分
   const [mn, cf] = d.result.datasets;
   assert.equal(mn.dataset, 'MNIST');
   assert.equal(cf.dataset, 'CIFAR-10');
+  assert.match(d.result.scenario.model_note, /评估用网络结构.*LeNet-5.*不是同一模型/);
   assert.ok(mn.drop_pp >= 0.5 && mn.drop_pp <= 1.0, 'mnist ' + mn.drop_pp);
   assert.ok(cf.drop_pp >= 1.5 && cf.drop_pp <= 2.5, 'cifar ' + cf.drop_pp);
   assert.ok(Math.abs((mn.centralized_accuracy - mn.federated_accuracy) * 100 - mn.drop_pp) < 0.02);

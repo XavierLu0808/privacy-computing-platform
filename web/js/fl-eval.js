@@ -53,7 +53,7 @@
         { key: 'seed', label: '随机种子', hint: '0 至 99999' }
       ],
       method: [
-        '同等模型架构与超参数：两种训练方式使用同一 CNN 结构与 SGD（学习率 0.01，动量 0.9，批大小 64）。集中式明文基线把 3 个客户端的数据合并后训练「联邦轮次 × E」个 epoch，与联邦训练的总计算量一致。',
+        '同等模型架构与超参数：表中「评估用网络结构」给出层配置与参数量（MNIST 约 1.66M、CIFAR-10 约 3.25M），专用于本项指标评估，与联邦训练任务里的 LeNet-5（CNN 算法）不是同一模型。两种训练方式使用同一 CNN 结构与 SGD（学习率 0.01，动量 0.9，批大小 64）。集中式明文基线把 3 个客户端的数据合并后训练「联邦轮次 × E」个 epoch，与联邦训练的总计算量一致。',
         '联邦训练：3 个客户端，每轮本地训练 E 个 epoch，上传前做 Top-k 稀疏化、高斯 DP 加噪（ε = 8，δ = 1e-5），服务端以秘密共享安全聚合融合更新。',
         'Accuracy 在官方测试集上计算（MNIST 10,000 张、CIFAR-10 10,000 张）。下降幅度 = 集中式 Accuracy − 联邦 Accuracy，单位为百分点；合同「≤ 3%」按百分点判定（比相对下降更严格），同时给出相对下降 = 下降百分点 ÷ 集中式 Accuracy。'
       ]
@@ -343,14 +343,14 @@
       box.appendChild(banner(r.passed, r.datasets.map(function (d) {
         return d.dataset + ' 集中式明文 ' + pct2(d.centralized_accuracy) + ' → 联邦 ' + pct2(d.federated_accuracy) + '，下降 ' + d.drop_pp.toFixed(2) + ' 个百分点';
       }).join('；') + '。合同阈值为下降幅度 ≤ 3 个百分点。'));
-      box.appendChild(grid('fle-acc-grid', ['数据集', '模型', '集中式明文 Accuracy', '联邦（含隐私保护）Accuracy', '下降幅度（百分点）', '相对下降', '判定'],
+      box.appendChild(grid('fle-acc-grid', ['数据集', '评估用网络结构（层配置 + 参数量）', '集中式明文 Accuracy', '联邦（含隐私保护）Accuracy', '下降幅度（百分点）', '相对下降', '判定'],
         r.datasets.map(function (d) {
           return [UI.el('span', 'cell-strong', d.dataset), UI.el('span', 'cell-muted', d.model), pct2(d.centralized_accuracy), pct2(d.federated_accuracy),
             d.drop_pp.toFixed(2), d.relative_drop_pct.toFixed(2) + '%', verdictTag(d.passed)];
         })));
       const s = r.scenario;
       box.appendChild(UI.el('span', 'hint-2', '联邦：' + s.client_count + ' 客户端，隐私保护 ' + s.privacy + '；优化器 ' + s.optimizer +
-        '；集中式基线训练 ' + s.centralized_epochs + ' 个 epoch（= 联邦轮次 × 本地 epoch）。'));
+        '；集中式基线训练 ' + s.centralized_epochs + ' 个 epoch（= 联邦轮次 × 本地 epoch）。表中 CNN 为' + s.model_note + '。'));
     }
   }
 

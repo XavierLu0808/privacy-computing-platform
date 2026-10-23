@@ -664,7 +664,8 @@
         scenario: {
           client_count: 3, privacy: 'Top-k 稀疏化 + 秘密共享安全聚合 + 高斯 DP（ε = 8，δ = 1e-5）',
           optimizer: 'SGD（学习率 0.01，动量 0.9，批大小 64）',
-          centralized_epochs: c.rounds * c.local_epochs
+          centralized_epochs: c.rounds * c.local_epochs,
+          model_note: '评估用网络结构（层配置 + 参数量），与联邦训练任务里的 LeNet-5（CNN 算法）不是同一模型'
         },
         datasets: [mn, cf],
         max_drop_pp_required: 3,
@@ -780,7 +781,7 @@
           '\n本算法,' + r.utility.ours.rmse + ',' + r.utility.ours.mae + '\n相对 FedAvg 变化,+' + r.utility.rmse_increase_pct + '%,+' + r.utility.mae_increase_pct + '%\n';
         body += '\n合同要求,单轮平均通信压缩比 ≥ 6\n判定,' + (r.passed ? '达标' : '未达标') + '\n';
       } else {
-        body += '数据集,模型,集中式明文 Accuracy,联邦（含隐私保护）Accuracy,下降幅度(百分点),相对下降,判定\n';
+        body += '说明,' + r.scenario.model_note + '\n数据集,评估用网络结构（层配置 + 参数量）,集中式明文 Accuracy,联邦（含隐私保护）Accuracy,下降幅度(百分点),相对下降,判定\n';
         r.datasets.forEach(function (d) {
           body += d.dataset + ',"' + d.model + '",' + (d.centralized_accuracy * 100).toFixed(2) + '%,' + (d.federated_accuracy * 100).toFixed(2) + '%,' +
             d.drop_pp.toFixed(2) + ',' + d.relative_drop_pct.toFixed(2) + '%,' + (d.passed ? '达标' : '未达标') + '\n';
