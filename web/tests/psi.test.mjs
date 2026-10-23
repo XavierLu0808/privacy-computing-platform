@@ -1,7 +1,16 @@
 // 隐私求交：数据接入 / 算法配置 / 平台集成。接口见 docs/api/psi.md。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 import { boot } from './_boot.mjs';
+
+// 页面模块里的纯函数（csvProfile）在 vm 里加载，UI 只需提供 $
+function loadPsiPage() {
+  const window = {};
+  vm.runInNewContext(readFileSync(new URL('../js/psi.js', import.meta.url), 'utf8'), { window, UI: { $: () => null } });
+  return window.PSI;
+}
 
 const NODES = ['node-shanghai-01', 'node-hangzhou-02', 'node-center-agg'];
 const DB_BASE = { name: '采购台账', party_id: 'party-b', source_type: 'database',
@@ -72,6 +81,69 @@ test('[PSI-DATA-03] 状态流转与删除保护：接入中→已就绪；被运
   await okData('POST', '/psi/pipelines/' + pipe.pipeline_id + '/cancel');
   assert.equal((await okData('DELETE', '/datasets/ds_p1_b_user')).deleted, true);
   assert.equal((await call('DELETE', '/datasets/ds_p1_b_user')).code, 40400);
+});
+
+test('[PSI-DATA-01] 文件来源行数（D13）：按前端解析的行数与表头登记；无解析值时按文件大小估算并标注；表头缺求交键被拒', async (t) => {
+  const { okData, call, tick } = boot(t);
+  const PSI = loadPsiPage();
+  const csv = '\uFEFFsupplier_hash,trade_date,ceo2_price,grade\r\na91f03,2026-09-18,7350.5,4N\r\n\r\n';
+  const prof = JSON.parse(JSON.stringify(PSI.csvProfile(csv)));   // vm 沙箱对象，JSON 往返后再比较
+  assert.equal(prof.row_count, 1, '表头 + 1 行 = 1 行数据，末尾空行不计');
+  assert.deepEqual(prof.columns.map((c) => c.type), ['string', 'date', 'float', 'string']);
+  assert.match(PSI.csvProfile('').error, /为空/);
+  assert.match(PSI.csvProfile('供应商,价格\n1,2').error, /不合法/);
+  assert.match(PSI.csvProfile('a,a\n1,2').error, /重复/);
+
+  const f = await okData('POST', '/files', { file: { name: 'ceo2_price.csv', size: 82 }, purpose: 'dataset', project_id: 'p1' });
+  const base = { name: '氧化铈报价', party_id: 'party-b', source_type: 'file', source: { file_id: f.file_id, file_name: f.file_name },
+    id_column: 'supplier_hash', time_column: 'trade_date' };
+  const ds = await okData('POST', '/projects/p1/datasets', { ...base, row_count: prof.row_count, columns: prof.columns });
+  tick(1200);
+  const v = await okData('GET', '/datasets/' + ds.dataset_id);
+  assert.equal(v.row_count, 1);
+  assert.deepEqual(v.columns.map((c) => c.name), ['supplier_hash', 'trade_date', 'ceo2_price', 'grade']);
+  assert.equal(v.source.row_count_basis, 'parsed');
+  assert.equal(v.feature_count, 2);
+
+  const est = await okData('POST', '/projects/p1/datasets', { ...base, name: '氧化铈报价（Parquet）' });
+  assert.equal(est.row_count, null);
+  tick(1200);
+  const ev = await okData('GET', '/datasets/' + est.dataset_id);
+  assert.equal(ev.source.row_count_basis, 'size_estimate');
+  assert.equal(ev.row_count, Math.round(82 / 64), '估算口径：文件大小 ÷ 64 字节 / 行');
+
+  const bads = [
+    [{ ...base, name: 'x1', row_count: 1, columns: [{ name: 'price', type: 'float' }] }, 40000, /没有求交键列 supplier_hash/],
+    [{ ...base, name: 'x2', row_count: -1, columns: prof.columns }, 40002, /row_count/],
+    [{ ...base, name: 'x3', row_count: 1, columns: [{ name: 'supplier_hash', type: 'blob' }] }, 40002, /类型/],
+    [{ ...base, name: 'x4', time_column: 'ts', row_count: 1, columns: prof.columns }, 40000, /没有时间列 ts/]
+  ];
+  for (const [body, code, rx] of bads) {
+    const r = await call('POST', '/projects/p1/datasets', body);
+    assert.equal(r.code, code, r.message);
+    assert.match(r.message, rx);
+  }
+});
+
+test('[PSI-DATA-03][PSI-PIPE-02] 删除数据集不改写已完成流水线（D14）：统计量与数据集名在完成后固化', async (t) => {
+  const { okData, call, tick } = boot(t);
+  await okData('GET', '/projects/p1/datasets');
+  const pipe = await okData('POST', '/projects/p1/psi/pipelines', pipeBody());
+  tick(30 * 160);
+  const before = await okData('GET', '/psi/pipelines/' + pipe.pipeline_id);
+  assert.equal(before.status, 'finished');
+  assert.ok(before.stats_snapshot_at);
+
+  await okData('DELETE', '/datasets/ds_p1_b_user');
+  const after = await okData('GET', '/psi/pipelines/' + pipe.pipeline_id);
+  assert.deepEqual(after.stages.map((s) => s.stats), before.stages.map((s) => s.stats));
+  assert.ok(after.stages[0].stats.right_rows > 0 && after.stages[0].stats.intersection_rows > 0, '删除后不归零');
+  assert.equal(after.parties[1].dataset_name, before.parties[1].dataset_name);
+  assert.ok(after.parties[1].dataset_name);
+  const hist = (await okData('GET', '/projects/p1/psi/pipelines')).items;
+  assert.deepEqual(hist.find((x) => x.pipeline_id === pipe.pipeline_id).stages[1].stats, before.stages[1].stats);
+  // 被删的数据集不能再用于新流水线
+  assert.equal((await call('POST', '/projects/p1/psi/pipelines', pipeBody())).code, 40400);
 });
 
 /* ---------- 算法配置 ---------- */
@@ -241,7 +313,7 @@ test('[PSI-PIPE-02] 进度跟踪：各阶段状态、进度、执行时长、数
   let v = await okData('GET', '/psi/pipelines/' + pipe.pipeline_id);
   assert.equal(v.stages[0].status, 'finished');
   assert.equal(v.stages[0].duration_sec, 46);
-  assert.equal(v.stages[0].stats.intersection_rows, 412000);
+  assert.ok(v.stages[0].stats.intersection_rows > 0 && v.stages[0].stats.intersection_rows <= Math.min(v.stages[0].stats.left_rows, v.stages[0].stats.right_rows));
   assert.equal(v.stages[1].status, 'running');
   assert.ok(v.stages[1].progress_pct > 0 && v.stages[1].progress_pct < 100);
   assert.equal(v.stages[1].stats.feature_dim, 68);

@@ -4,6 +4,24 @@ v1.2 起隐私求交拆为三个二级页面：数据接入 `#/psi/data`、算�
 
 协议与参数只在算法配置页维护，保存为项目的「当前配置」（5.7）。平台集成页读取当前配置或某个已保存模板来启动流水线。
 
+### 5.0.3 接入数据集（v1.2 差异，缺陷 D13）
+
+验收编号：PSI-DATA-01。`POST /projects/{project_id}/datasets` 在 API.md 5.0.3 基础上，`source_type = file` 时可多传两个字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `row_count` | int | 否 | 前端解析文件得到的数据行数（CSV：非空行数 − 1 行表头），≥ 0 |
+| `columns[]` | array | 与 `row_count` 同传 | `{ name, type }`，`name` 符合 `[A-Za-z_][A-Za-z0-9_]*` 且不重复，`type` 为 `string` / `int` / `float` / `date` |
+
+- 前端对 `.csv` 且 ≤ 256 MB 的文件在浏览器内读取：首行为表头，按前 200 行推断类型（全整数 `int`、全数值 `float`、`YYYY-MM-DD` 或 `YYYY/MM/DD` 开头 `date`，其余 `string`）；提交时求交键列强制 `string`、时间列强制 `date`。表头列名不合法或重复时不上传，弹窗内提示。
+- 传了 `row_count` / `columns`：求交键列、时间列须在 `columns` 内，否则 `40000`；`row_count` 非非负整数、`columns` 格式不对 `40002`。数据集按提交值登记，`source.row_count_basis = "parsed"`。
+- 未传（Parquet、超大 CSV）：行数 = round(文件字节数 ÷ 64)，`source.row_count_basis = "size_estimate"`，界面行数显示「约 N（估算）」，详情注明「按文件大小 ÷ 64 字节 / 行估算」。
+- 文件来源的 `source` 另带 `file_name`、`size_bytes`。真实后端应以服务端解析结果为准，可用前端值做一致性复核。
+
+### 5.4 流水线详情（v1.2 差异，缺陷 D14）
+
+验收编号：PSI-DATA-03、PSI-PIPE-02。流水线 `finished` 后，`stages[].stats`（两方行数、交集条数、对齐条数与特征维度）与 `parties[].dataset_name` 固化为快照，不再随数据集变化；`GET /psi/pipelines/{pipeline_id}` 与 `GET /projects/{project_id}/psi/pipelines` 多返回 `stats_snapshot_at`（快照时间，未完成时无此字段）。`DELETE /datasets/{dataset_id}` 删除前先为引用它的已完成流水线生成快照；被运行中流水线引用时仍返回 `40901`。
+
 ### 5.1 协议列表与默认参数（v1.2 升级）
 
 验收编号：PSI-ALGO-01、PSI-ALGO-02。对应：算法配置页「PSI 协议」三张单选卡、安全强度说明框、「参数调优」各控件；平台集成页「求交配置」摘要。

@@ -16,6 +16,39 @@
 
   const SRC_CN = { file: '文件上传', database: '数据库', hdfs: 'HDFS' };
   const DS_ST = { ready: ['已就绪', 'st-ready'], importing: ['接入中', 'st-importing'], failed: ['失败', 'st-failed'] };
+  const CSV_PARSE_MAX_BYTES = 256 * 1048576;   // 超过此大小不在浏览器里读全文件，改由后端按文件大小估算行数
+  const COL_RX = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+  /**
+   * 解析 CSV 文本：首行为表头，其余非空行计为数据行；列类型按前 200 行推断（int / float / date / string）。
+   * 返回 { row_count, columns } 或 { error }。不处理引号内换行。
+   */
+  function csvProfile(text) {
+    const lines = String(text).replace(/^\uFEFF/, '').split(/\r?\n/).filter(function (l) { return l.trim() !== ''; });
+    if (!lines.length) return { error: '文件为空，至少需要表头行' };
+    const split = function (l) { return l.split(',').map(function (x) { return x.trim().replace(/^"(.*)"$/, '$1'); }); };
+    const head = split(lines[0]);
+    const badName = head.filter(function (h) { return !COL_RX.test(h); })[0];
+    if (badName !== undefined) return { error: '表头列名「' + badName + '」不合法，列名只能用英文字母、数字和下划线，且不以数字开头' };
+    if (head.some(function (h, i) { return head.indexOf(h) !== i; })) return { error: '表头有重复列名' };
+    const sample = lines.slice(1, 201).map(split);
+    const columns = head.map(function (name, i) {
+      const vals = sample.map(function (r) { return r[i]; }).filter(function (v) { return v !== undefined && v !== ''; });
+      let type = 'string';
+      if (vals.length && vals.every(function (v) { return /^-?\d+$/.test(v); })) type = 'int';
+      else if (vals.length && vals.every(function (v) { return /^-?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(v); })) type = 'float';
+      else if (vals.length && vals.every(function (v) { return /^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(v); })) type = 'date';
+      return { name: name, type: type };
+    });
+    return { row_count: lines.length - 1, columns: columns };
+  }
+
+  /** 行数展示：文件来源且后端按文件大小估算时标注「估算」。 */
+  function rowsText(d) {
+    if (d.row_count === null || d.row_count === undefined) return '—';
+    const est = d.source && d.source.row_count_basis === 'size_estimate';
+    return (est ? '约 ' : '') + UI.rows(d.row_count) + (est ? '（估算）' : '');
+  }
 
   let ctx = null;
   let protocols = [];
@@ -93,7 +126,7 @@
       addr.style.cssText = 'overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
       addr.title = sourceText(d);
       row.appendChild(addr);
-      row.appendChild(UI.el('span', 'cell-muted', d.row_count === null ? '—' : UI.rows(d.row_count)));
+      row.appendChild(UI.el('span', 'cell-muted', rowsText(d)));
       row.appendChild(UI.el('span', 'cell-muted', d.id_column + (d.time_column ? ' / ' + d.time_column : '')));
       const st = DS_ST[d.status] || [d.status, ''];
       row.appendChild(UI.el('span', st[1], st[0]));
@@ -125,7 +158,10 @@
       const d = await Api.get('/datasets/' + id);
       $('dsDetail').hidden = false;
       $('dsDetailTitle').textContent = d.name;
-      $('dsDetailMeta').textContent = d.party_name + ' · ' + SRC_CN[d.source_type] + ' · ' + UI.rows(d.row_count) + '行 · 特征 ' + d.feature_count + ' 列';
+      const basis = d.source && d.source.row_count_basis;
+      $('dsDetailMeta').textContent = d.party_name + ' · ' + SRC_CN[d.source_type] + ' · ' + rowsText(d) + ' 行' +
+        (basis === 'parsed' ? '（按上传文件实际解析）' : (basis === 'size_estimate' ? '（按文件大小 ÷ 64 字节 / 行估算）' : '')) +
+        ' · 特征 ' + d.feature_count + ' 列';
       $('dsColCount').textContent = d.columns.length;
       const cols = $('dsCols');
       UI.clear(cols);
@@ -164,7 +200,7 @@
   }
 
   function openImport() {
-    let fileId = null, fileName = null;
+    let fileId = null, fileName = null, profile = null;
     const body = UI.el('div');
     body.style.cssText = 'display:flex; flex-direction:column; gap:14px;';
     const two = UI.el('div', 'form-2col');
@@ -192,13 +228,28 @@
     body.appendChild(hdfsRow);
     body.appendChild(fileRow);
     fileIn.addEventListener('change', async function () {
-      fileId = null;
-      if (!fileIn.files[0]) return;
+      fileId = null; profile = null;
+      const file = fileIn.files[0];
+      if (!file) return;
       try {
+        // 先在本地解析 CSV 表头与行数，表头不合法时不上传
+        let parseNote = '';
+        if (/\.csv$/i.test(file.name) && file.size <= CSV_PARSE_MAX_BYTES) {
+          profile = csvProfile(await file.text());
+          if (profile.error) { fileNote.textContent = profile.error; profile = null; fileIn.value = ''; return; }
+          parseNote = ' · 解析得到 ' + UI.rows(profile.row_count) + ' 行 × ' + profile.columns.length + ' 列（表头：' +
+            profile.columns.map(function (c) { return c.name; }).join('、') + '）';
+          const names = profile.columns.map(function (c) { return c.name; });
+          if (names.indexOf($('diKey').value.trim()) < 0) {
+            $('diKey').value = names.filter(function (n) { return /hash|_id$|^id$/i.test(n); })[0] || names[0];
+          }
+        } else {
+          parseNote = ' · 浏览器不解析' + (/\.csv$/i.test(file.name) ? '超过 256 MB 的 CSV' : ' Parquet') + '，行数将按文件大小估算';
+        }
         fileNote.textContent = '上传中…';
-        const f = await Api.upload('/files', fileIn.files[0], { purpose: 'dataset', project_id: ctx.projectId });
+        const f = await Api.upload('/files', file, { purpose: 'dataset', project_id: ctx.projectId });
         fileId = f.file_id; fileName = f.file_name;
-        fileNote.textContent = '已上传 ' + f.file_name + '（' + UI.bytes(f.size_bytes) + '）';
+        fileNote.textContent = '已上传 ' + f.file_name + '（' + UI.bytes(f.size_bytes) + '）' + parseNote;
       } catch (e) { fileNote.textContent = e.message; }
     });
 
@@ -227,6 +278,13 @@
         };
         const t = $('diTime').value.trim();
         if (t) req.time_column = t;
+        if (type === 'file' && profile) {
+          // 求交键按字符串、时间列按日期登记，其余列沿用推断类型
+          req.row_count = profile.row_count;
+          req.columns = profile.columns.map(function (c) {
+            return { name: c.name, type: c.name === req.id_column ? 'string' : (c.name === t ? 'date' : c.type) };
+          });
+        }
         const ds = await Api.post('/projects/' + ctx.projectId + '/datasets', req);
         UI.toast('「' + ds.name + '」接入中，schema 探测完成后可用于求交');
         await loadDatasets();
@@ -254,7 +312,7 @@
       }
       list.forEach(function (d) {
         const o = document.createElement('option');
-        o.value = d.dataset_id; o.textContent = d.name + '（' + UI.rows(d.row_count) + '行）';
+        o.value = d.dataset_id; o.textContent = d.name + '（' + rowsText(d) + ' 行）';
         sel.appendChild(o);
       });
       if (list.some(function (d) { return d.dataset_id === keep; })) sel.value = keep;
@@ -543,5 +601,5 @@
     clearTimeout(pollTimer);
   }
 
-  window.PSI = { mount: mount, unmount: unmount };
+  window.PSI = { mount: mount, unmount: unmount, csvProfile: csvProfile };
 })();

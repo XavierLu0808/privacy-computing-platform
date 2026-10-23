@@ -367,5 +367,156 @@
       });
       return k.ok({ items: items, model_note: '估算值，与 POST /psi/route-advice 同一估算模型，非实测。' });
     });
+
+    /* ---------- 数据集登记（升级内核接口，D13） ---------- */
+
+    // 内核登记接口对文件来源随机生成行数与列；这里整体接管 POST，校验文案与内核一致，
+    // 文件来源优先使用前端解析文件得到的 row_count / columns，解析不了时按文件大小估算并在 source.row_count_basis 标注。
+    const NAME_RX = /^[A-Za-z_][A-Za-z0-9_]*$/;
+    const COL_TYPES = ['string', 'int', 'float', 'date'];
+    const EST_BYTES_PER_ROW = 64;   // 估算口径：CSV / Parquet 平均每行 64 字节
+
+    function featureCols(prefix, n) {
+      const out = [];
+      for (let i = 1; i <= n; i++) out.push({ name: prefix + '_' + String(i).padStart(2, '0'), type: 'float' });
+      return out;
+    }
+
+    function checkColumns(cols) {
+      if (!Array.isArray(cols) || !cols.length) return 'columns 必须是非空数组';
+      const seen = {};
+      for (let i = 0; i < cols.length; i++) {
+        const c = cols[i] || {};
+        if (!NAME_RX.test(c.name || '')) return '列名不合法：' + c.name;
+        if (COL_TYPES.indexOf(c.type) < 0) return '列 ' + c.name + ' 的类型必须是 ' + COL_TYPES.join(' / ');
+        if (seen[c.name]) return '列名重复：' + c.name;
+        seen[c.name] = true;
+      }
+      return null;
+    }
+
+    k.routeFirst('POST', '/projects/{project_id}/datasets', function (p, q, body) {
+      k.seedProject(p.project_id);
+      if (!body.name) return k.err(40000, '数据集名称必填');
+      if (!k.PSI_PARTIES.some(function (x) { return x.party_id === body.party_id; })) return k.err(40000, '未知参与方 ' + body.party_id);
+      const src = Object.assign({}, body.source || {});
+      let file = null;
+      if (body.source_type === 'file') {
+        file = k.db.files[src.file_id];
+        if (!file) return k.err(40400, '文件不存在，请先上传');
+        if (file.purpose !== 'dataset') return k.err(40000, '该文件不是数据集文件');
+      } else if (body.source_type === 'database') {
+        if (!/^jdbc:(mysql|postgresql|oracle|hive2):\/\//.test(src.jdbc_url || '')) return k.err(40000, 'JDBC 地址格式不正确，例：jdbc:mysql://10.0.0.1:3306/db');
+        if (!src.table) return k.err(40000, '表名必填');
+      } else if (body.source_type === 'hdfs') {
+        if (!/^hdfs:\/\//.test(src.path || '')) return k.err(40000, 'HDFS 路径必须以 hdfs:// 开头');
+      } else {
+        return k.err(40000, 'source_type 必须是 file / database / hdfs');
+      }
+      if (!body.id_column || !NAME_RX.test(body.id_column)) return k.err(40000, '求交键列名不合法');
+      if (body.time_column && !NAME_RX.test(body.time_column)) return k.err(40000, '时间列名不合法');
+
+      // 文件来源：前端解析值
+      let rows = null, cols = null;
+      if (file && (body.row_count !== undefined || body.columns !== undefined)) {
+        if (!Number.isInteger(body.row_count) || body.row_count < 0) return k.err(40002, 'row_count 必须是非负整数');
+        const bad = checkColumns(body.columns);
+        if (bad) return k.err(40002, bad);
+        cols = body.columns.map(function (c) { return { name: c.name, type: c.type }; });
+        if (!cols.some(function (c) { return c.name === body.id_column; })) return k.err(40000, '文件表头中没有求交键列 ' + body.id_column);
+        if (body.time_column && !cols.some(function (c) { return c.name === body.time_column; })) return k.err(40000, '文件表头中没有时间列 ' + body.time_column);
+        rows = body.row_count;
+        src.row_count_basis = 'parsed';
+      }
+
+      const dup = Object.keys(k.db.datasets).some(function (id) {
+        const d = k.db.datasets[id];
+        return d.project_id === p.project_id && d.party_id === body.party_id && d.name === body.name;
+      });
+      if (dup) return k.err(40902, '该参与方下已存在同名数据集');
+
+      const id = k.nextId('ds');
+      if (!cols) {
+        cols = [{ name: body.id_column, type: 'string' }];
+        if (body.time_column) cols.push({ name: body.time_column, type: 'date' });
+        cols = cols.concat(featureCols('feat', 6 + (k.db.seq % 10)));
+      }
+      if (rows === null) {
+        if (file) {
+          rows = Math.max(1, Math.round(file.size_bytes / EST_BYTES_PER_ROW));
+          src.row_count_basis = 'size_estimate';
+        } else {
+          // 数据库 / HDFS：mock 无法连库，沿用内核的稳定伪随机行数（同 ID 同值）
+          rows = 50000 + (parseInt(k.hashHex(id, 1).slice(0, 4), 16) % 900) * 1000;
+        }
+      }
+      if (file) { src.file_name = src.file_name || file.file_name; src.size_bytes = file.size_bytes; }
+      const ds = {
+        dataset_id: id, project_id: p.project_id, name: body.name, party_id: body.party_id,
+        source_type: body.source_type, source: src, status: 'importing',
+        row_count: rows, columns: cols,
+        id_column: body.id_column, time_column: body.time_column || null, created_at: k.NOW()
+      };
+      k.db.datasets[id] = ds;
+      setTimeout(function () { ds.status = 'ready'; }, 1200);  // 模拟后台导入 + schema 探测
+      return k.ok(k.datasetView(ds));
+    });
+
+    /* ---------- 流水线统计快照（D14） ---------- */
+
+    // 内核 pipelineView 每次按 db.datasets 现算统计量，数据集删除后历史结果会变。
+    // 这里在流水线完成后（首次读取时）或其引用的数据集被删除前，把两方行数、交集、特征维度和数据集名固化到 pipe._snapshot。
+    function liveStats(pipe) {
+      const a = k.db.datasets[pipe.parties[0].dataset_id];
+      const b = k.db.datasets[pipe.parties[1].dataset_id];
+      const left = a ? a.row_count : 0, right = b ? b.row_count : 0;
+      const inter = Math.round(Math.min(left, right) * 0.4769 / 1000) * 1000;   // 与内核 pipelineStats 同一口径
+      const dim = (a ? k.datasetView(a).feature_count : 0) + (b ? k.datasetView(b).feature_count : 0);
+      return {
+        stats: {
+          intersect: { left_rows: left, right_rows: right, intersection_rows: inter },
+          align: { rows: inter, feature_dim: dim },
+          train: { rows: inter }
+        },
+        dataset_names: [a ? a.name : null, b ? b.name : null]
+      };
+    }
+
+    function snapshot(pipe) {
+      if (!pipe._snapshot) pipe._snapshot = Object.assign(liveStats(pipe), { taken_at: k.NOW() });
+    }
+
+    function snapView(pipe) {
+      if (pipe.status === 'finished') snapshot(pipe);
+      const v = k.pipelineView(pipe);
+      const s = pipe._snapshot;
+      if (!s) return v;
+      v.stages.forEach(function (st) { if (st.progress_pct > 0) st.stats = s.stats[st.stage]; });
+      v.parties.forEach(function (pt, i) { if (!pt.dataset_name) pt.dataset_name = s.dataset_names[i]; });
+      v.stats_snapshot_at = s.taken_at;
+      return v;
+    }
+
+    k.routeFirst('GET', '/psi/pipelines/{pipeline_id}', function (p) {
+      const pipe = k.db.psiPipelines[p.pipeline_id];
+      if (!pipe) return k.err(40400, '流水线不存在');
+      return k.ok(snapView(pipe));
+    });
+    k.routeFirst('GET', '/projects/{project_id}/psi/pipelines', function (p, q) {
+      const items = Object.keys(k.db.psiPipelines).map(function (id) { return k.db.psiPipelines[id]; })
+        .filter(function (x) { return x.project_id === p.project_id && (!q.status || x.status === q.status); })
+        .map(snapView);
+      return k.ok({ items: items, page: 1, page_size: 20, total: items.length });
+    });
+    k.routeFirst('DELETE', '/datasets/{dataset_id}', function (p) {
+      const ds = k.db.datasets[p.dataset_id];
+      if (!ds) return k.err(40400, '数据集不存在');
+      const refs = Object.keys(k.db.psiPipelines).map(function (id) { return k.db.psiPipelines[id]; })
+        .filter(function (x) { return x.parties.some(function (pt) { return pt.dataset_id === p.dataset_id; }); });
+      if (refs.some(function (x) { return x.status === 'running'; })) return k.err(40901, '数据集正被运行中的求交流水线使用');
+      refs.forEach(function (x) { if (x.status === 'finished') snapshot(x); });
+      delete k.db.datasets[p.dataset_id];
+      return k.ok({ dataset_id: p.dataset_id, deleted: true });
+    });
   });
 })();

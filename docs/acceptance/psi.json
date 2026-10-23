@@ -7,17 +7,19 @@
       "填写数据集名称、所属参与方，数据来源分别选数据库（JDBC）/ HDFS 路径 / 上传文件",
       "填写求交键列与可选时间列后点击「开始接入」"
     ],
-    "expected": "列表出现新数据集，来源、来源地址、求交键与填写一致；JDBC 地址格式错误、HDFS 路径不以 hdfs:// 开头、同参与方重名时弹窗底部给出错误且不关闭",
+    "expected": "列表出现新数据集，来源、来源地址、求交键与填写一致；JDBC 地址格式错误、HDFS 路径不以 hdfs:// 开头、同参与方重名时弹窗底部给出错误且不关闭；上传 CSV 时按文件实际内容登记行数与列（首行为表头），Parquet 等无法在浏览器解析的文件行数显示「约 N（估算）」",
     "api": [
       "GET /psi/parties",
       "POST /files",
       "POST /projects/{project_id}/datasets",
-      "GET /projects/{project_id}/datasets"
+      "GET /projects/{project_id}/datasets",
+      "POST /projects/{project_id}/datasets（row_count / columns）"
     ],
     "tests": [
-      "tests/psi.test.mjs: [PSI-DATA-01] 数据集登记：JDBC / HDFS / 文件上传三种来源，非法来源与重名被拒"
+      "tests/psi.test.mjs: [PSI-DATA-01] 数据集登记：JDBC / HDFS / 文件上传三种来源，非法来源与重名被拒",
+      "tests/psi.test.mjs: [PSI-DATA-01] 文件来源行数（D13）：按前端解析的行数与表头登记；无解析值时按文件大小估算并标注；表头缺求交键被拒"
     ],
-    "impl": "数据集只登记元数据：source_type 取 database / hdfs / file，source 分别保存 jdbc_url + table、HDFS path、file_id + file_name，原始数据留在参与方节点。后端校验 JDBC 前缀（mysql / postgresql / oracle / hive2）、hdfs:// 前缀、列名正则 [A-Za-z_][A-Za-z0-9_]*，同项目同参与方重名返回 40902。文件来源先经 POST /files（purpose = dataset）上传到本参与方节点，再以 file_id 登记。",
+    "impl": "数据集只登记元数据：source_type 取 database / hdfs / file，source 分别保存 jdbc_url + table、HDFS path、file_id + file_name，原始数据留在参与方节点。后端校验 JDBC 前缀（mysql / postgresql / oracle / hive2）、hdfs:// 前缀、列名正则 [A-Za-z_][A-Za-z0-9_]*，同项目同参与方重名返回 40902。文件来源先经 POST /files（purpose = dataset）上传到本参与方节点，再以 file_id 登记。 文件来源时前端在浏览器内解析 CSV（≤ 256 MB）：首行为表头、非空行数减 1 为行数、按前 200 行推断列类型，随登记请求提交 row_count / columns，后端校验求交键与时间列在表头内；无法解析时按文件字节数 ÷ 64 估算并在 source.row_count_basis 标注 size_estimate。",
     "status": "done"
   },
   "PSI-DATA-02": {
@@ -45,7 +47,7 @@
       "在平台集成页启动流水线后回到数据接入页，删除流水线所用数据集",
       "流水线结束或重置后再次删除"
     ],
-    "expected": "接入中时页面自动轮询，就绪后行数出现；运行中流水线引用的数据集删除时弹窗提示「数据集正被运行中的求交流水线使用」，流水线结束后可删除",
+    "expected": "接入中时页面自动轮询，就绪后行数出现；运行中流水线引用的数据集删除时弹窗提示「数据集正被运行中的求交流水线使用」，流水线结束后可删除；删除已完成流水线用过的数据集后，该流水线的两方行数、交集条数、特征维度与数据集名保持不变",
     "api": [
       "GET /projects/{project_id}/datasets",
       "DELETE /datasets/{dataset_id}",
@@ -53,9 +55,10 @@
       "POST /psi/pipelines/{pipeline_id}/cancel"
     ],
     "tests": [
-      "tests/psi.test.mjs: [PSI-DATA-03] 状态流转与删除保护：接入中→已就绪；被运行中流水线引用时 40901，结束后可删"
+      "tests/psi.test.mjs: [PSI-DATA-03] 状态流转与删除保护：接入中→已就绪；被运行中流水线引用时 40901，结束后可删",
+      "tests/psi.test.mjs: [PSI-DATA-03][PSI-PIPE-02] 删除数据集不改写已完成流水线（D14）：统计量与数据集名在完成后固化"
     ],
-    "impl": "数据集状态机 importing → ready / failed，接入后后台做连通性检查与 schema 探测（mock 1.2 秒），ready 前 row_count 为 null，前端存在 importing 时每 800 ms 轮询列表。未就绪数据集不能用于求交（40901）。删除前检查所有 status = running 的流水线 parties[].dataset_id，被引用返回 40901；删除确认用 UI.modal，错误留在弹窗内。",
+    "impl": "数据集状态机 importing → ready / failed，接入后后台做连通性检查与 schema 探测（mock 1.2 秒），ready 前 row_count 为 null，前端存在 importing 时每 800 ms 轮询列表。未就绪数据集不能用于求交（40901）。删除前检查所有 status = running 的流水线 parties[].dataset_id，被引用返回 40901；删除确认用 UI.modal，错误留在弹窗内。 流水线完成后把各阶段统计量与两方数据集名固化为快照（stats_snapshot_at），删除数据集前先为引用它的已完成流水线生成快照，历史结果不随删除变化。",
     "status": "done"
   },
   "PSI-ALGO-01": {
@@ -178,7 +181,8 @@
       "POST /psi/pipelines/{pipeline_id}/cancel"
     ],
     "tests": [
-      "tests/psi.test.mjs: [PSI-PIPE-02] 进度跟踪：各阶段状态、进度、执行时长、数据量随 SSE 推进；取消后归零，不存在的流水线 40400"
+      "tests/psi.test.mjs: [PSI-PIPE-02] 进度跟踪：各阶段状态、进度、执行时长、数据量随 SSE 推进；取消后归零，不存在的流水线 40400",
+      "tests/psi.test.mjs: [PSI-DATA-03][PSI-PIPE-02] 删除数据集不改写已完成流水线（D14）：统计量与数据集名在完成后固化"
     ],
     "impl": "进度经 SSE 事件 stage_progress（单阶段视图）与 pipeline_finished 推送，前端按 stage 键替换对应阶段并重绘。阶段统计来自所选数据集：left_rows / right_rows 为两方 row_count，交集按较小集合估算，特征维度为两方 feature_count 之和。离开页面时关闭 SSE，回到页面时先按 pipeline_id 拉详情（无记录则取项目流水线历史最后一条），running 时重新订阅；取消后状态 canceled、进度归零。",
     "status": "done"
