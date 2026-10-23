@@ -61,10 +61,11 @@
   /** ISO 时间 → "2026-09-18 16:42"（按 +08:00 展示） */
   function datetime(iso) {
     if (!iso) return '—';
-    const d = new Date(iso);
+    // 固定按 UTC+8 展示，不依赖浏览器本地时区
+    const d = new Date(new Date(iso).getTime() + 8 * 3600000);
     const p = function (x) { return String(x).padStart(2, '0'); };
-    return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
-      ' ' + p(d.getHours()) + ':' + p(d.getMinutes());
+    return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) +
+      ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes());
   }
 
   /**
