@@ -172,7 +172,11 @@ def col_widths(rows, ncols):
         tok = max((disp_len(t) for r in rows if j < len(r)
                    for t in re.split(r'[\s，。；、（）/]+', re.sub(r'[*`\\]', '', r[j]))), default=0)
         mins.append(max(1.9, min(tok * 0.24 + 0.5, 5.0)))
-    # 过窄的列顶到下限，从最宽的列扣除
+    # 列多时下限之和可能超过版心宽度：等比缩小下限（每列不小于 1.2 cm）
+    if sum(mins) > TEXT_WIDTH_CM * 0.95:
+        k = TEXT_WIDTH_CM * 0.95 / sum(mins)
+        mins = [max(1.2, m * k) for m in mins]
+    # 过窄的列顶到下限，差额从高于下限的列按富余量比例扣除
     for _ in range(ncols):
         short = [i for i, w in enumerate(widths) if w < mins[i] - 1e-6]
         if not short:
@@ -180,8 +184,12 @@ def col_widths(rows, ncols):
         need = sum(mins[i] - widths[i] for i in short)
         for i in short:
             widths[i] = mins[i]
-        wide = max(range(ncols), key=lambda i: widths[i])
-        widths[wide] -= need
+        spare = {i: widths[i] - mins[i] for i in range(ncols) if i not in short and widths[i] > mins[i]}
+        tot = sum(spare.values())
+        if tot <= 0:
+            break
+        for i, s in spare.items():
+            widths[i] -= need * s / tot
     return widths
 
 
