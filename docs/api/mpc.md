@@ -104,7 +104,8 @@ POST 请求：
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `steps[]` | array | 是 | 计算流程，同 M.5 |
-| `party_count` | int | 否 | 3–8，默认 3；给了 `parties[]` 时取其长度 |
+| `party_count` | int | 否 | 3–8，默认 3，此时按 n 方都是输入 + 计算方估算 |
+| `parties[]` | array | 否 | `[{ party_id, roles }]`，给出时取其长度为 n，并按角色计算输入分享；无输入方或无计算方 `40000` |
 | `data_rows` | int | 否 | 每个输入方的数据行数 m，1–100,000,000，默认 1,200,000 |
 | `bandwidth_mbps` | number | 否 | 单方链路带宽，1–10,000 Mbps，默认 100 |
 | `rtt_ms` | number | 否 | 往返时延，0–1,000 ms，默认 20 |
@@ -132,7 +133,7 @@ GET 兼容 §4.1：只传 `protocol`（+ 可选 `operator`）时按该算子的�
 
 | 步骤 | 通信字节 | 轮数 | 单方计算 |
 |---|---|---|---|
-| 输入分享（首步为 ss 且作用于各方数据） | n(n−1) · w · m | 1 | m × 0.5 µs × ℓ/64 |
+| 输入分享（首步为 ss 且作用于各方数据） | [I × (C − 1) + I₀] · w · m：只有输入方发送份额，每个输入方拆成 C 份（C = 计算方数），兼任计算方的自留 1 份；I = 输入方数，I₀ = 不兼任计算方的输入方数（v1.2.1 修正 D26，原为 n(n−1) · w · m） | 1 | m × 0.5 µs × ℓ/64 |
 | ss 求和 | 0（本地） | 0 | 元素数 × n × 0.4 µs |
 | ss 求均值 | n(n−1) · w × 输出元素数（定点截断 1 次打开） | 1 | 同求和 + 截断 1.5 µs / 元素 |
 | ss 求积（各方数据） | 2 · n(n−1) · w · m · (n−1)（每次 Beaver 乘法打开 2 个值） | 2⌈log₂ n⌉ | m × (n−1) × 2 µs |
@@ -253,6 +254,7 @@ GET /mpc/tasks/{task_id}
 | `estimate` | object | `est_compute_sec`、`est_comm_sec`、`est_comm_mb`、`rounds` |
 | `anomaly_rule` | object | `threshold_pct`、`min_ticks`（5）、`metrics`（`comm_bytes`、`compute_sec`）、`description` |
 | `parties[].roles` | string[] | 全部角色；`role` 保留为第一个 |
+| `parties[].status` | string | 跟随任务：`abnormal` 优先，其次 `running` / `stopped`（任务停止后，累计指标保留）/ `pending` / `finished` |
 | `parties[].node_id` | string | 节点 ID |
 | `parties[].comm_bytes` | int | 累计发送字节 |
 | `parties[].compute_sec` | number | 累计本地计算耗时（秒） |
@@ -315,7 +317,7 @@ GET /projects/{project_id}/mpc/tasks/compare?task_ids=A,B
 GET /projects/{project_id}/mpc/reports/export?format=csv&protocol=&start_time=&end_time=&task_ids=
 ```
 
-过滤参数同 M.9。响应 CSV（UTF-8 BOM），列：任务 ID、任务名称、计算流程、协议、参与方数、数据规模(行)、总通信量(MB)、单方平均通信量(MB)、总耗时(秒)、轮次交互数(轮)、异常告警数(条)、开始时间、结束时间、状态。`task_ids` 恰为 2 个时追加对比段（指标、单位、两任务值、差异 %）。§4.6 的 `/mpc/tasks/export` 在内核中只输出固定历史，前端 v1.2 改用本接口；真实后端可二者合一。
+过滤参数同 M.9。响应 CSV（UTF-8 BOM），列：任务 ID、任务名称、计算流程、协议（中文，多协议用「 + 」连接）、参与方数、数据规模(行)、总通信量(MB)、单方平均通信量(MB)、总耗时(秒)、轮次交互数(轮)、异常告警数(条)、开始时间(UTC+8)、结束时间(UTC+8)、状态（中文：待执行 / 执行中 / 已停止 / 已结束 / 失败）。时间用内核 `k.fmtLocal` 写成 `2026-10-23 22:58:02 +08:00`。带 `task_ids` 时明细行按请求顺序输出；恰为 2 个时追加对比段，表头「任务 A：… / 任务 B：… / 差异 (B − A) / A (%)」，A / B 顺序与数值与 M.10 对比接口一致（v1.2.1 修正 D07、D12）。§4.6 的 `/mpc/tasks/export` 在内核中只输出固定历史，前端 v1.2 改用本接口；真实后端可二者合一。
 
 ## M.12 接口清单
 

@@ -107,6 +107,7 @@
     };
 
     const ROLE_KEYS = ['input', 'compute', 'output'];
+    const TASK_ST_CN = { pending: '待执行', running: '执行中', stopped: '已停止', finished: '已结束', failed: '失败' };
     const ROLE_CN = { input: '输入方', compute: '计算方', output: '输出方' };
 
     /** 演示用链路降级节点：该节点参与时通信量 ×2.4、计算耗时 ×2.2，用于展示异常检测（p3 无降级节点）。 */
@@ -390,15 +391,30 @@
         name: 'Y2A 份额转换（混淆电路 → 秘密共享）', formula: '每元素 b 次 OT，每次 16 + 2 · ℓ/8 字节' };
     }
 
-    function estimateFlow(steps, n, m, P, net) {
+    /**
+     * 输入分享的发送份数：每个输入方把每个元素拆成 C 份（C = 计算方数）分给计算方，
+     * 本方同时是计算方时自留 1 份，只发 C − 1 份。roleSets 缺省时视为 n 方都是输入 + 计算方。
+     */
+    function shareSends(n, roleSets) {
+      const sets = roleSets || Array.apply(null, Array(n)).map(function () { return ['input', 'compute']; });
+      const C = sets.filter(function (r) { return r.indexOf('compute') >= 0; }).length;
+      const inputs = sets.filter(function (r) { return r.indexOf('input') >= 0; });
+      const sends = inputs.reduce(function (sum, r) { return sum + C - (r.indexOf('compute') >= 0 ? 1 : 0); }, 0);
+      return { I: inputs.length, C: C, pure: inputs.filter(function (r) { return r.indexOf('compute') < 0; }).length, sends: sends };
+    }
+
+    function estimateFlow(steps, n, m, P, net, roleSets) {
       const items = [];
       let bytes = 0, us = 0, rounds = 0;
       if (steps[0].protocol === 'ss' && steps[0].in_type === 'parties') {
         const w = P.ss.ring_bits / 8;
         const mal = P.ss.security_model === 'malicious' ? 2 : 1;
-        const x = { bytes: n * (n - 1) * w * m * mal, compute_us: m * 0.5 * P.ss.ring_bits / 64, rounds: 1 };
+        const sh = shareSends(n, roleSets);
+        const x = { bytes: sh.sends * w * m * mal, compute_us: m * 0.5 * P.ss.ring_bits / 64, rounds: 1 };
         items.push({ index: 0, name: '输入分享', protocol: 'ss', bytes: x.bytes, compute_sec: round(x.compute_us / 1e6, 3), rounds: 1,
-          formula: '每方把 m 个元素拆成 n 份发给其余 n−1 方：n(n−1) · ℓ/8 · m 字节，1 轮' });
+          formula: '只有输入方发送份额：输入方 ' + sh.I + ' 个、计算方 ' + sh.C + ' 个，每个输入方把 m 个元素拆成 C 份，兼任计算方的自留 1 份；' +
+            '通信 = [输入方数 × (C − 1) + 不兼任计算方的输入方数] · ℓ/8 · m = (' + sh.I + ' × ' + (sh.C - 1) + ' + ' + sh.pure + ') × ' + w + ' × ' + m.toLocaleString('en-US') + ' 字节' +
+            (mal > 1 ? ' × 2（恶意模型 MAC）' : '') + '，1 轮' });
         bytes += x.bytes; us += x.compute_us; rounds += 1;
       }
       steps.forEach(function (s, i) {
@@ -471,7 +487,17 @@
       const m = parseRows(src.data_rows, DEFAULT_ROWS);
       if (isErr(m)) return m;
       let n = parseCount(src.party_count);
-      if (Array.isArray(src.parties)) n = src.parties.length < 3 ? parseCount(src.parties.length) : Math.min(src.parties.length, 8);
+      let roleSets = null;
+      if (Array.isArray(src.parties)) {
+        n = parseCount(src.parties.length);
+        if (isErr(n)) return n;
+        roleSets = src.parties.map(function (x) {
+          const r = Array.isArray(x.roles) ? x.roles : (x.role ? [x.role] : []);
+          return r.filter(function (y) { return ROLE_KEYS.indexOf(y) >= 0; });
+        });
+        const sh = shareSends(n, roleSets);
+        if (!sh.I || !sh.C) return fail(40000, '至少需要 1 个输入方和 1 个计算方才能预估', { field: 'parties' });
+      }
       if (isErr(n)) return n;
       const net = parseNet(src);
       if (isErr(net)) return net;
@@ -479,7 +505,7 @@
       if (isErr(P)) return P;
       const steps = validateFlow(rawSteps, m);
       if (isErr(steps)) return steps;
-      return Object.assign({ steps_input: steps, params: P }, estimateFlow(steps, n, m, P, net));
+      return Object.assign({ steps_input: steps, params: P }, estimateFlow(steps, n, m, P, net, roleSets));
     }
 
     /* ================= 试运行（确定性小数据） ================= */
@@ -600,7 +626,7 @@
         };
       });
       const reveal = function (x) { return typeof x === 'number' ? round(x, 2) : x; };
-      const est = estimateFlow(steps, pv.parties.length, TRIAL_ROWS, P, DEFAULT_NET);
+      const est = estimateFlow(steps, pv.parties.length, TRIAL_ROWS, P, DEFAULT_NET, pv.parties.map(function (p) { return p.roles; }));
       return {
         trial_rows: TRIAL_ROWS,
         dataset_note: '演示数据：各输入方 4 行氧化钕 Nd₂O₃ 月度成交价（元/吨），按项目与参与方种子确定性生成，明文不出本方',
@@ -632,7 +658,7 @@
     }
 
     function buildTask(projectId, cfg) {
-      const est = estimateFlow(cfg.steps, cfg.parties.length, cfg.data_rows, cfg.params, cfg.net);
+      const est = estimateFlow(cfg.steps, cfg.parties.length, cfg.data_rows, cfg.params, cfg.net, cfg.parties.map(function (p) { return p.roles; }));
       const task = {
         task_id: cfg.task_id || nextTaskId(),
         project_id: projectId,
@@ -698,7 +724,8 @@
         return {
           party_id: r.p.party_id, tag: r.p.tag, name: r.p.name, node_id: r.p.node_id, ip: r.p.ip,
           roles: r.p.roles, role: r.p.roles[0],
-          status: anom ? 'abnormal' : (task.status === 'running' ? 'running' : (task.tick === 0 ? 'pending' : 'finished')),
+          // 参与方状态跟随任务：异常优先，其次 执行中 / 已停止 / 待执行 / 已结束（停止后保留累计指标）
+          status: anom ? 'abnormal' : (task.status === 'running' ? 'running' : task.status === 'stopped' ? 'stopped' : (task.tick === 0 ? 'pending' : 'finished')),
           comm_bytes: r.comm, compute_sec: r.time, comm_sec: r.comm_sec, interaction_rounds: r.rounds,
           comm_deviation_pct: round(devC, 1), compute_deviation_pct: round(devT, 1)
         };
@@ -1052,16 +1079,19 @@
     k.download(/^\/projects\/([^/]+)\/mpc\/reports\/export$/, function (m, q) {
       const list = filterTasks(m[1], q);
       if (isErr(list)) throw new Error(list.__err.message);
-      const items = list.map(itemOf);
-      let csv = '任务 ID,任务名称,计算流程,协议,参与方数,数据规模(行),总通信量(MB),单方平均通信量(MB),总耗时(秒),轮次交互数(轮),异常告警数(条),开始时间,结束时间,状态\n';
+      let items = list.map(itemOf);
+      // 带 task_ids 时按请求顺序输出（与界面对比面板的任务 A / B 一致）
+      const ids = q.task_ids ? q.task_ids.split(',') : null;
+      if (ids) items = ids.map(function (id) { return items.filter(function (t) { return t.task_id === id; })[0]; }).filter(Boolean);
+      let csv = '任务 ID,任务名称,计算流程,协议,参与方数,数据规模(行),总通信量(MB),单方平均通信量(MB),总耗时(秒),轮次交互数(轮),异常告警数(条),开始时间(UTC+8),结束时间(UTC+8),状态\n';
       items.forEach(function (t) {
-        csv += [t.task_id, t.name, t.flow, t.protocols.join('+'), t.party_count, t.data_rows,
+        csv += [t.task_id, t.name, t.flow, t.protocols.map(function (x) { return PROTO[x].name; }).join(' + '), t.party_count, t.data_rows,
           (t.total_comm_bytes / 1048576).toFixed(1), (t.mean_comm_bytes / 1048576).toFixed(1),
           t.total_duration_sec.toFixed(1), t.interaction_rounds, t.alarm_count,
-          t.started_at || '', t.finished_at || '', t.status].map(csvCell).join(',') + '\n';
+          k.fmtLocal(t.started_at), k.fmtLocal(t.finished_at), TASK_ST_CN[t.status] || t.status].map(csvCell).join(',') + '\n';
       });
       if (items.length === 2 && q.task_ids) {
-        csv += '\n对比指标,单位,' + items[0].task_id + ',' + items[1].task_id + ',差异(后者相对前者 %)\n';
+        csv += '\n对比指标,单位,任务 A：' + items[0].task_id + ',任务 B：' + items[1].task_id + ',差异 (B − A) / A (%)\n';
         compare(items).forEach(function (x) {
           csv += [x.label, x.unit, x.values[0], x.values[1], x.diff_pct === null ? '' : x.diff_pct].map(csvCell).join(',') + '\n';
         });

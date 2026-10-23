@@ -352,6 +352,7 @@
         cb.addEventListener('change', function () {
           st.roles = ROLE_KEYS.filter(function (k) { return k === r ? cb.checked : st.roles.indexOf(k) >= 0; });
           renderParties();
+          scheduleEstimate();
         });
         row.appendChild(cb);
       });
@@ -643,10 +644,10 @@
     }
     const my = gen;
     const n = Math.max(3, selectedParties().length);
-    $('mpcpEstN').textContent = n + ' 方（取自参与方配置，不足 3 方按 3 方估算）';
+    $('mpcpEstN').textContent = n + ' 方（取自参与方配置与角色，不足 3 方按 3 方全角色估算）';
     const body = payload();
-    delete body.parties;
-    body.party_count = n;
+    // 参与方够 3 方时按实际角色预估（输入分享只计输入方发出的份额），否则按 3 方全角色估算
+    if (body.parties.length < 3) { delete body.parties; body.party_count = n; }
     body.data_rows = Number($('mpcpRows').value);
     body.bandwidth_mbps = Number($('mpcpBw').value);
     body.rtt_ms = Number($('mpcpRtt').value);

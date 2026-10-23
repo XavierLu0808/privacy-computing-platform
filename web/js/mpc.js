@@ -12,7 +12,7 @@
   const PROTO_CN = { ss: '秘密共享', gc: '混淆电路', ot: '不经意传输扩展' };
   const ROLE_CN = { input: '输入方', compute: '计算方', output: '输出方' };
   const TASK_ST = { pending: '待执行', running: '执行中', stopped: '已停止', finished: '已结束', failed: '失败' };
-  const PARTY_ST = { pending: '待执行', running: '执行中', finished: '已结束', abnormal: '异常' };
+  const PARTY_ST = { pending: '待执行', running: '执行中', stopped: '已停止', finished: '已结束', abnormal: '异常' };
 
   let ctx = null;
   let root = null;

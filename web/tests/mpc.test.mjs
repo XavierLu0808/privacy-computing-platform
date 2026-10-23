@@ -212,6 +212,18 @@ test('[MPC-PROTO-07] 性能预估：随参与方数 / 数据规模单调增长�
   assert.equal(legacy.party_count, 3);
   assert.ok(legacy.est_compute_sec > 0 && legacy.est_comm_sec > 0);
 
+  // 输入分享只计输入方发出的份额：A / B 输入 + 计算，C 计算 + 输出 → 2 × (3 − 1) × 8 × m
+  const byRole = await okData('POST', '/projects/p1/mpc/estimate', { steps: FLOW, parties: ROLES3, data_rows: 1200000 });
+  const share = (r) => r.steps.find((s) => s.name === '输入分享').bytes;
+  assert.equal(share(byRole), 2 * 2 * 8 * 1200000);
+  // 再加只做输入方的 D：D 不兼任计算方，要发出全部 3 份 → (2 × 2 + 3) × 8 × m
+  const withD = await okData('POST', '/projects/p1/mpc/estimate', { steps: FLOW, parties: ROLES3.concat([{ party_id: 'party-d', roles: ['input'] }]), data_rows: 1200000 });
+  assert.equal(share(withD), (2 * 2 + 3) * 8 * 1200000);
+  assert.match(byRole.steps[0].formula, /只有输入方发送份额/);
+  // 任务详情里的预估与按角色口径一致
+  const task = await createTask(okData);
+  assert.equal(task.estimate.est_comm_mb, byRole.est_comm_mb);
+  assert.equal(await errCode('POST', '/projects/p1/mpc/estimate', { steps: FLOW, parties: ROLES3.map((p) => ({ party_id: p.party_id, roles: ['output'] })) }), 40000);
   assert.equal(await errCode('POST', '/projects/p1/mpc/estimate', { steps: FLOW, party_count: 2 }), 40000);
   assert.equal(await errCode('POST', '/projects/p1/mpc/estimate', { steps: FLOW, data_rows: 0 }), 40003);
   assert.equal(await errCode('POST', '/projects/p1/mpc/estimate', { steps: FLOW, data_rows: 'abc' }), 40002);
@@ -237,6 +249,10 @@ test('[MPC-OPS-01][MPC-OPS-02][MPC-OPS-03] 实时监控：每方通信量、计�
 
   const stopped = await okData('POST', '/mpc/tasks/' + task.task_id + '/actions', { action: 'stop' });
   assert.equal(stopped.status, 'stopped');
+  // 停止后参与方状态跟随任务为 stopped（降级节点 C 仍标异常），累计指标保留不清零
+  assert.ok(stopped.parties.filter((p) => p.party_id !== 'party-c').every((p) => p.status === 'stopped'));
+  assert.ok(stopped.parties.every((p) => p.status !== 'finished'));
+  assert.deepEqual(stopped.parties.map((p) => p.comm_bytes), mid.parties.map((p) => p.comm_bytes));
   tick(420 * 5);
   assert.equal((await okData('GET', '/mpc/tasks/' + task.task_id)).progress_pct, 20, '停止后不再推进');
   await okData('POST', '/mpc/tasks/' + task.task_id + '/actions', { action: 'start' });
@@ -326,8 +342,20 @@ test('[MPC-OPS-05] 历史任务：按协议 / 时间筛选、两任务对比、�
   const lines = file.content.trim().split('\n');
   assert.match(lines[0], /总通信量\(MB\)/);
   assert.equal(lines.length - 1, (await okData('GET', '/projects/p1/mpc/tasks?protocol=ss')).total);
-  const cfile = await download('/projects/p1/mpc/reports/export?format=csv&task_ids=' + a + ',' + b);
-  assert.match(cfile.content, /对比指标/);
+  assert.match(lines[0], /开始时间\(UTC\+8\),结束时间\(UTC\+8\)/);
+  assert.match(lines[1], /,\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00,\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00,已结束$/);
+  assert.ok(!/finished|T\d{2}:\d{2}|Z,/.test(file.content), '导出不含英文状态码与 ISO/UTC 时间');
+  // 对比报表：按勾选顺序 b, a 请求，CSV 的任务顺序与差异方向和界面（compare 接口）一致
+  const ui = await okData('GET', '/projects/p1/mpc/tasks/compare?task_ids=' + b + ',' + a);
+  const cfile = await download('/projects/p1/mpc/reports/export?format=csv&task_ids=' + b + ',' + a);
+  const cl = cfile.content.trim().split('\n');
+  assert.ok(cl[1].startsWith(b + ',') && cl[2].startsWith(a + ','), '明细行按 A / B 顺序');
+  assert.match(cfile.content, new RegExp('对比指标,单位,任务 A：' + b + ',任务 B：' + a));
+  const commRow = cl.find((x) => x.startsWith('总通信量,'));
+  const uiComm = ui.metrics.find((m) => m.key === 'total_comm_bytes');
+  assert.equal(commRow, ['总通信量', 'MB', uiComm.values[0], uiComm.values[1], uiComm.diff_pct].join(','));
+  assert.match(cfile.content, /秘密共享 \+ 混淆电路|秘密共享|混淆电路/);
+  assert.ok(!/,ss|,gc|,ot|\+gc/.test(cfile.content));
 
   // 失败：对比数量不对 / 任务不存在 / 日期格式错 / 起止颠倒 / 历史任务只读
   assert.equal(await errCode('GET', '/projects/p1/mpc/tasks/compare?task_ids=' + a), 40000);
