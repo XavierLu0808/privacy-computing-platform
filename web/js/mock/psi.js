@@ -538,7 +538,9 @@
       const a = k.db.datasets[pipe.parties[0].dataset_id];
       const b = k.db.datasets[pipe.parties[1].dataset_id];
       const left = a ? a.row_count : 0, right = b ? b.row_count : 0;
-      const inter = Math.round(Math.min(left, right) * 0.4769 / 1000) * 1000;   // 与内核 pipelineStats 同一口径
+      // 交集估算：较小集合的 47.69%；n_min ≥ 10 000 时按千取整（与内核种子结果一致），更小的表按条取整，避免恒为 0
+      const nMin = Math.min(left, right);
+      const inter = nMin < 10000 ? Math.round(nMin * 0.4769) : Math.round(nMin * 0.4769 / 1000) * 1000;
       const dim = (a ? k.datasetView(a).feature_count : 0) + (b ? k.datasetView(b).feature_count : 0);
       return {
         stats: {
@@ -557,9 +559,10 @@
     function snapView(pipe) {
       if (pipe.status === 'finished' || pipe.status === 'failed') snapshot(pipe);
       const v = k.pipelineView(pipe);
-      const s = pipe._snapshot;
-      if (s) {
-        v.stages.forEach(function (st) { if (st.progress_pct > 0) st.stats = s.stats[st.stage]; });
+      // 统计量统一用本模块口径（liveStats），完成后用快照
+      const s = pipe._snapshot || Object.assign(liveStats(pipe), { taken_at: null });
+      v.stages.forEach(function (st) { if (st.progress_pct > 0) st.stats = s.stats[st.stage]; });
+      if (pipe._snapshot) {
         v.parties.forEach(function (pt, i) { if (!pt.dataset_name) pt.dataset_name = s.dataset_names[i]; });
         v.stats_snapshot_at = s.taken_at;
       }

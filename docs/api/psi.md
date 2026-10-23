@@ -229,6 +229,7 @@ GET /psi/benchmarks
 验收编号：PSI-PIPE-01、PSI-PIPE-02。
 
 - 请求校验与 API.md 5.3 一致，另外：`params` 按「参数校验规则」校验（`40000` / `40002` / `40003`）；传 `template_id` 时模板须属于本项目（否则 `40400`）、协议一致（否则 `40000`），模板参数与 `params` 合并（`params` 覆盖同名键）。
+- 交集估算（mock）：n_min = 两方较小行数，n_min < 10 000 时交集 = round(n_min × 0.4769)，否则按千取整 round(n_min × 0.4769 ÷ 1000) × 1000；真实后端为实际求交结果。
 - 安全求交阶段结束时，交集条数少于 **100 条**（联合训练最少对齐样本数）时流水线 `status = failed`，`error` 写明交集条数、阈值和两方求交键，`stages[0].status = failed`，特征对齐与联合训练 `status = skipped`（`progress_pct = 0`，`duration_sec = null`，`stats = {}`），`fl_job_id = null`，不生成训练任务；该流水线不能作为 FL 任务的 `dataset_source`（`40901`）。
 - SSE `pipeline_finished` 在失败时也会推送：`{ "pipeline_id", "status": "failed", "fl_job_id": null, "target_project": null, "error": "求交结果 0 条，少于联合训练所需的最少 100 条对齐样本…" }`。页面显示红色失败说明，「一键启动」变为「重新执行」。
 - 演示环境刷新中断（内核把运行中流水线置 `failed` 并写 `error`）时，当时未完成的阶段标 `failed`，之后的阶段标 `skipped`。

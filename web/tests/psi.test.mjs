@@ -198,18 +198,32 @@ test('[PSI-PIPE-01][PSI-PIPE-02] 交集不足时求交阶段失败（D37）：�
   tick(30 * 160);
   assert.equal(ev.status, 'failed');
   assert.equal(ev.fl_job_id, null);
-  assert.match(ev.error, /求交结果 0 条/);
+  assert.match(ev.error, /求交结果 1 条，少于联合训练所需的最少 100 条/);   // 2 行 → round(2 × 0.4769) = 1
   assert.ok(!seen.includes('align:running'), '特征对齐不应开始');
   const v = await okData('GET', '/psi/pipelines/' + pipe.pipeline_id);
   assert.equal(v.status, 'failed');
   assert.deepEqual(v.stages.map((s) => s.status), ['failed', 'skipped', 'skipped']);
-  assert.equal(v.stages[0].stats.intersection_rows, 0);
+  assert.equal(v.stages[0].stats.intersection_rows, 1);
   assert.equal(v.fl_job_id, null);
   assert.equal((await okData('GET', '/projects/p1/fl/jobs')).total, jobsBefore, '不生成训练任务');
   // 失败的流水线不能作为训练数据来源
   const r = await call('POST', '/projects/p1/fl/jobs', { task_type: 'classification', algorithm: 'xgb', aggregation: 'he', node_ids: NODES,
     dataset_source: { type: 'psi_pipeline', pipeline_id: pipe.pipeline_id } });
   assert.equal(r.code, 40901);
+  // 小表交集不再按千取整：5 000 行 × 120 万行 → round(5000 × 0.4769) = 2385 条，≥ 100 可继续
+  const f2 = await okData('POST', '/files', { file: { name: 'mid.csv', size: 4096 }, purpose: 'dataset', project_id: 'p1' });
+  const mid = await okData('POST', '/projects/p1/datasets', { name: '五千行表', party_id: 'party-b', source_type: 'file',
+    source: { file_id: f2.file_id }, id_column: 'credit_code_hash', row_count: 5000,
+    columns: [{ name: 'credit_code_hash', type: 'string' }, { name: 'stock_t', type: 'float' }] });
+  tick(1200);
+  const pm = await okData('POST', '/projects/p1/psi/pipelines', pipeBody({
+    parties: [PARTIES[0], { party_id: 'party-b', dataset_id: mid.dataset_id, id_column: 'credit_code_hash' }] }));
+  tick(30 * 60);
+  const mv = await okData('GET', '/psi/pipelines/' + pm.pipeline_id);
+  assert.equal(mv.stages[0].stats.intersection_rows, 2385);
+  assert.notEqual(mv.status, 'failed');
+  assert.equal(mv.stages[1].stats.rows, 2385);
+  await okData('POST', '/psi/pipelines/' + pm.pipeline_id + '/cancel');
   // 演示环境刷新中断（内核把运行中记录置 failed 并写 error）：在未完成的阶段失败，之后跳过
   const p2 = await okData('POST', '/projects/p1/psi/pipelines', pipeBody());
   tick(30 * 70);
