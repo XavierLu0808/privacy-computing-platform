@@ -1,1 +1,82 @@
-/* mpc 模块样式 */
+/* mpc 模块样式：协议管理（mpc-proto.js）+ 运维监控（mpc.js）。颜色只用 styles.css 的 token 与既有色值。 */
+
+/* ---------- 通用 ---------- */
+.mpc-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.mpc-card-head { display: flex; align-items: center; gap: 12px; }
+.mpc-card-body { display: flex; flex-direction: column; gap: 12px; }
+.mpc-err-text { font-size: 12px; color: var(--danger); }
+.mpc-ok-text { font-size: 12px; color: var(--success); font-weight: 600; }
+.mpc-hex { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12px; color: var(--muted-3); }
+.mpc-input-sm { height: 32px; width: 120px; font-size: 13px; padding: 0 8px; }
+.mpc-input-md { height: 36px; width: 170px; font-size: 13px; }
+.mpc-invalid { border-color: var(--danger); }
+.mpc-static { height: 36px; display: flex; align-items: center; font-size: 13px; color: var(--muted-3); }
+.mpc-metric-value { font-size: 22px; }
+.mpc-metric-bad { border-color: #EFC9BF; }
+.mpc-metric-bad .metric-value { color: var(--danger); }
+.mpc-switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted-3); cursor: pointer; }
+.mpc-switch input { width: 16px; height: 16px; accent-color: var(--primary); }
+.mpc-icon-btn { width: 32px; padding: 0; display: inline-flex; align-items: center; justify-content: center; }
+.mpc-icon-btn:disabled { color: var(--disabled-fg); border-color: var(--disabled-bd); cursor: not-allowed; background: var(--card); }
+.mpc-step-n { width: 24px; height: 24px; border-radius: 12px; background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.mpc-cell-2 { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mpc-up { color: var(--amber); font-weight: 600; }
+.mpc-down { color: var(--teal); font-weight: 600; }
+
+/* ---------- 协议管理 ---------- */
+.mpc-proto-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.mpc-proto-card { gap: 10px; }
+.mpc-proto-card .btn-link { align-self: flex-start; margin-top: auto; }
+.mpc-proto-head { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.mpc-kv { display: flex; flex-direction: column; gap: 4px; }
+.mpc-kv-label { font-size: 12px; font-weight: 700; color: var(--muted-2); }
+.mpc-kv-value { font-size: 13px; line-height: 21px; color: var(--ink); }
+
+.mpc-param-grid { grid-template-columns: 170px 230px minmax(0, 1fr) 110px; }
+.mpc-param-grid .select-sm { width: 100%; }
+.mpc-num { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mpc-num .input { height: 32px; width: 130px; font-size: 13px; }
+
+.mpc-party-cfg-grid { grid-template-columns: 48px 100px minmax(0, 1fr) 120px 70px 70px 70px; }
+.mpc-party-cfg-grid input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary); }
+.table-row.mpc-off span { color: var(--disabled-fg); }
+
+.mpc-step-grid { grid-template-columns: 40px 130px 160px minmax(200px, 1.3fr) minmax(170px, 1fr) 116px; }
+.mpc-step-grid .select-sm { width: 100%; }
+.mpc-operand { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mpc-operand .select-sm { width: auto; }
+.mpc-io { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted-3); }
+.mpc-acts { display: flex; gap: 4px; }
+
+.mpc-dry { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; background: #FAFBFC; border: 1px solid var(--line); border-radius: 7px; }
+.mpc-dry-party { display: flex; flex-direction: column; gap: 6px; font-size: 13px; overflow-x: auto; }
+.mpc-trace { display: flex; flex-direction: column; gap: 6px; }
+.mpc-trace-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+
+.mpc-est-out { display: flex; flex-direction: column; gap: 12px; }
+.mpc-est-grid { grid-template-columns: minmax(150px, 1fr) 110px 100px 90px 60px minmax(240px, 2.2fr); }
+.mpc-formula { flex-direction: column; gap: 2px; }
+.mpc-submit { gap: 16px; align-items: flex-end; }
+.mpc-submit-name { width: 320px; }
+.mpc-submit-thr { width: 200px; }
+
+/* ---------- 运维监控 ---------- */
+.mpc-task-sel { max-width: 420px; }
+.mpc-st { height: 24px; padding: 0 9px; border-radius: 4px; font-size: 12px; font-weight: 600; display: inline-flex; align-items: center; background: #F0F2F5; color: var(--muted-3); flex-shrink: 0; }
+.mpc-st-running { background: #E7F0FA; color: #1A4F8A; }
+.mpc-st-stopped { background: #FCF2E3; color: #8A5B12; }
+.mpc-st-finished { background: #E9F4EF; color: #244A3A; }
+.mpc-st-abnormal, .mpc-st-failed { background: #FBEDEA; color: var(--danger); }
+.mpc-progress { display: flex; align-items: center; gap: 12px; }
+.mpc-progress .bar { flex-grow: 1; }
+.mpc-progress strong { font-size: 13px; width: 52px; text-align: right; }
+.mpc-alarm-wrap { display: flex; flex-direction: column; gap: 10px; }
+.mpc-alarm-wrap .btn-sm { white-space: nowrap; flex-shrink: 0; }
+.mpc-party-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+.mpc-party-grid .party { transition: box-shadow .2s; }
+.mpc-party-grid .party.mpc-flash { box-shadow: 0 0 0 3px rgba(163, 59, 33, .35); }
+.mpc-bar-bad { background: var(--danger) !important; }
+.mpc-hist-grid { grid-template-columns: 34px minmax(150px, 1.2fr) minmax(170px, 1.5fr) 56px 80px 90px 80px 50px 120px 60px; }
+.mpc-hist-grid input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary); }
+.mpc-cmp { display: flex; flex-direction: column; gap: 8px; padding-top: 6px; }
+.mpc-cmp-grid { grid-template-columns: 130px minmax(0, 1fr) minmax(0, 1fr) 90px minmax(0, 1.3fr); }

@@ -1,0 +1,249 @@
+{
+ "MPC-PROTO-01": {
+  "page": "#/mpc/proto",
+  "ui": "协议管理 → 协议目录「秘密共享」卡片；计算流程编排 → 「试运行」结果区",
+  "steps": [
+   "打开多方安全计算 / 协议管理，查看「秘密共享」卡片：原理、安全模型（半诚实默认 / 恶意可选）、适用算子（安全求和、安全求积、安全求均值）、通信轮数特征",
+   "在计算流程编排点示例「各方求和 → 求均值 → 与阈值比较」，点「试运行」",
+   "查看各输入方的输入只以加法份额（模 2^64，定点 16 位小数）形式出现在 3 个计算方，结果区只对输出方 参与方 C 公开",
+   "把第 3 步协议改为「秘密共享」，确认就地提示不兼容，试运行被拒绝"
+  ],
+  "expected": "求积 / 求均值可在秘密共享下试运行；份额表不含任何明文报价；安全比较选秘密共享返回 40001",
+  "api": [
+   "GET /mpc/protocols",
+   "POST /projects/{project_id}/mpc/flows/dry-run"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-PROTO-01] 秘密共享协议：目录含原理 / 安全模型 / 求积求均值算子，试运行份额可还原、不含明文"
+  ],
+  "impl": "加法秘密共享在 Z/2^ℓ 上实现（默认 ℓ = 64，定点小数位 f = 16）：输入 x 编码为 round(x·2^f) mod 2^ℓ，前 C−1 份由 FNV-1a + LCG 种子哈希（project_id|party_id|行号|持有方）生成，最后一份补差，因此 Σ 份额 mod 2^ℓ 可还原编码值，测试用 BigInt 验证还原并断言份额区不含明文。求和为本地运算 0 轮；求均值 = 本地求和 + 除以公开常数后定点截断 1 次打开；求积按 Beaver 三元组，每次乘法打开 2 个值。恶意模型按 SPDZ 风格附加 MAC，预估中通信 ×2、计算 ×2.2。",
+  "status": "done"
+ },
+ "MPC-PROTO-02": {
+  "page": "#/mpc/proto",
+  "ui": "协议管理 → 协议目录「混淆电路」卡片；协议参数 → 混淆电路页签；计算流程编排",
+  "steps": [
+   "查看「混淆电路」卡片：适用算子安全比较、安全最大值、逻辑运算，常数轮特征",
+   "点示例「两方报价比较 → 任一为真」并试运行，结果为布尔值，输入以 128 bit 导线标签形式展示",
+   "打开高级模式，在混淆电路页签关闭 Free-XOR 与半门优化，观察性能预估通信量上升",
+   "把逻辑运算放到第 1 步，确认提示「不能作用于各方私有数据」"
+  ],
+  "expected": "安全比较（逐行比较前两个输入方，百万富翁问题）与 AND / OR / NOT 正常输出；关闭 Free-XOR / 半门后通信量增加；类型不匹配返回 40000",
+  "api": [
+   "GET /mpc/protocols",
+   "POST /projects/{project_id}/mpc/flows/dry-run",
+   "POST /projects/{project_id}/mpc/estimate"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-PROTO-02] 混淆电路协议：安全比较（百万富翁）+ 逻辑运算，Free-XOR / 半门影响通信量"
+  ],
+  "impl": "采用姚氏混淆电路代价模型：b 位比较电路 AND = b、XOR = 3b，k 数取最大值 AND = 2b(k−1)、XOR = 5b(k−1)，AND/OR 归约 m−1 个 AND 门。每个 AND 门半门优化 2κ（GRR3 为 3κ）、XOR 门 Free-XOR 下 0（关闭时 3κ），κ = 128 bit；求值方输入标签经 OT 取得，每比特 3κ。常数 4 轮（基础 OT 3 轮 + 发送混淆表 1 轮）。从秘密共享切换到混淆电路时自动计入 A2Y 份额转换（b 位加法电路，2 轮）。",
+  "status": "done"
+ },
+ "MPC-PROTO-03": {
+  "page": "#/mpc/proto",
+  "ui": "协议管理 → 协议目录「不经意传输扩展」卡片；协议参数 → 不经意传输扩展页签",
+  "steps": [
+   "查看「不经意传输扩展」卡片：IKNP OT 扩展原理，适用算子向量 OT",
+   "点示例「向量 OT 取第 2 行」试运行，输出方得到两个输入方第 2 行组成的向量",
+   "在性能预估把数据规模改为 1,000,000 行，在高级模式把扩展批大小改为 1,024，观察交互轮数从 35 轮升到 1,957 轮",
+   "把行号改为 9 试运行，提示行号应在 1–4 之间"
+  ],
+  "expected": "向量 OT 结果只含所选行；轮数 = 3 + 2·⌈m / 批大小⌉；行号越界 40003、非整数 40002",
+  "api": [
+   "GET /mpc/protocols",
+   "POST /projects/{project_id}/mpc/flows/dry-run",
+   "POST /projects/{project_id}/mpc/estimate",
+   "PUT /projects/{project_id}/mpc/params/{protocol}"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-PROTO-03] 不经意传输扩展：向量 OT 取第 i 行，轮数随扩展批大小变化"
+  ],
+  "impl": "向量 OT 按 m 条并行 1-out-of-2 OT 实现不经意选取：输出方对第 i 行选真实值、其余行选零，发送方不知道 i。IKNP 扩展：k 次基础公钥 OT（默认 k = 128，可配 128–256）扩展成 m 条 OT，每条通信 k/8 + 2×8 字节，基础 OT 每次按 96 字节、0.5 ms 计；轮数 3（基础 OT，可离线）+ 每批 2 轮。恶意模型增加 KOS15 一致性校验，通信 ×1.05。",
+  "status": "done"
+ },
+ "MPC-PROTO-04": {
+  "page": "#/mpc/proto",
+  "ui": "协议管理 → 计算流程编排卡（示例流程、算子 / 协议下拉、算子参数、上移 / 下移 / 删除、添加步骤、试运行）",
+  "steps": [
+   "点示例「各方求和 → 求均值 → 与阈值比较」，确认每步数据形态：各方私有数据 → 密态向量 → 密态标量 → 密态布尔值",
+   "阈值填 1,266,000 元/吨，点「试运行」，结果区显示输出方得到「是 / 否」及判断条件，中间步骤显示「结果保持密态」",
+   "用上移 / 下移交换第 2、3 步，就地提示类型不匹配；删除步骤、添加步骤（自动选取可接上一步输出的算子）",
+   "把第 2 步协议改为混淆电路，试运行与创建均被拒绝"
+  ],
+  "expected": "合法流程试运行得到确定性结果（同输入同输出），结果只对输出方公开；算子与协议不兼容 40001，类型不匹配 40000，比较缺阈值 40002，超过 8 步 40000",
+  "api": [
+   "GET /mpc/protocols",
+   "POST /projects/{project_id}/mpc/flows/dry-run",
+   "POST /projects/{project_id}/mpc/estimate",
+   "POST /projects/{project_id}/mpc/tasks"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-PROTO-04] 基础算子组合：求和 → 求均值 → 阈值比较，结果仅输出方可见；兼容性 / 类型校验"
+  ],
+  "impl": "流程是 1–8 步的列表 { operator, protocol, operand }，服务端按顺序做类型推导：起点类型 parties，每个算子用 io 表把输入类型映射到输出类型（如 secure_sum: parties→vector, vector→scalar），不在表内即拒绝，并逐步检查 protocol ∈ operator.protocols。试运行用 4 行确定性演示数据（氧化钕 Nd₂O₃ 月度成交价，按项目与参与方种子生成）计算明文参考结果，但响应只返回份额、各步可见性和最终结果；ss 步结果超出 2^(ℓ−1−f) 时给出溢出警告。前端本地做同样的类型推导用于就地提示，最终以服务端校验为准。",
+  "status": "done"
+ },
+ "MPC-PROTO-05": {
+  "page": "#/mpc/proto",
+  "ui": "协议管理 → 参与方与角色卡（参与勾选 + 输入方 / 计算方 / 输出方多选）",
+  "steps": [
+   "默认勾选参与方 A（输入 + 计算）、B（输入 + 计算）、C（计算 + 输出），汇总行显示「角色配置满足要求」",
+   "勾选参与方 D（node-center-agg）并只给输入方角色，创建 4 方任务",
+   "取消参与方 C，汇总行提示「至少需要 3 个参与方，当前 2 个；缺少输出方」，点创建被拦截",
+   "只保留 1 个计算方，提示秘密共享 / 混淆电路需要至少 2 个计算方"
+  ],
+  "expected": "≥ 3 方且输入方、计算方、输出方各至少 1 个才能创建；少于 3 方、缺角色、重复参与方返回 40000，参与方不存在 40400",
+  "api": [
+   "GET /projects/{project_id}/mpc/parties",
+   "POST /projects/{project_id}/mpc/tasks",
+   "POST /projects/{project_id}/mpc/flows/dry-run"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-PROTO-05] 3 方计算：≥3 方、角色可动态配置，缺角色 / 少于 3 方拒绝"
+  ],
+  "impl": "参与方候选取自项目节点（db.nodes，node-* ID），按顺序编为参与方 A/B/C/D，项目节点不足 3 个时补虚拟节点。每方 roles 为 input / compute / output 的子集（兼容 §4.2 的单值 role）。校验：参与方 ≥ 3、不重复、存在于候选；每方至少 1 个角色；三类角色各至少 1 个；流程含秘密共享或混淆电路时计算方 ≥ 2（份额与混淆表需分属不共谋的两方，否则单个计算方即可还原明文）。输入方数决定试运行中份额的来源，计算方数决定份额份数，输出方为结果唯一接收者。",
+  "status": "done"
+ },
+ "MPC-PROTO-06": {
+  "page": "#/mpc/proto",
+  "ui": "协议管理 → 协议参数卡（协议页签、高级模式开关、恢复默认、保存参数）",
+  "steps": [
+   "查看秘密共享默认参数：环大小 64 bit、定点小数位 16 bit、半诚实；混淆电路 Free-XOR 开、半门开、位宽 32 bit；OT 基础 OT 数 128 次、扩展批大小 65,536 条 / 批",
+   "打开高级模式，把环大小改为 128 bit，性能预估通信量随之翻倍；定点小数位填 70，就地提示越界、保存返回错误",
+   "改为 24 后保存，页签显示「已自定义」，新建任务采用该值；点「恢复默认」回到 64 / 16"
+  ],
+  "expected": "默认参数可见；高级模式下可修改并按项目保存；越界 40003、格式错 40002、未知参数 40000；恢复默认后 customized = false",
+  "api": [
+   "GET /projects/{project_id}/mpc/params",
+   "PUT /projects/{project_id}/mpc/params/{protocol}",
+   "DELETE /projects/{project_id}/mpc/params/{protocol}",
+   "GET /mpc/protocols"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-PROTO-06] 参数默认配置：默认值、自定义保存、恢复默认、范围校验"
+  ],
+  "impl": "参数表（params_schema）定义 key、类型（enum / int / bool）、范围、单位与默认值；PUT 以平台默认值为底合并并整体校验，额外约束 frac_bits ≤ ring_bits / 2（保证定点乘法截断前不溢出）。保存值存于 k.db.mpc.params[project_id][protocol]，只影响本项目；预估、试运行、建任务在请求未带 params 时使用保存值，带 params 时用请求值（高级模式未保存的编辑）。参数直接进入代价模型：ℓ 决定份额字节数 ℓ/8，半门 / Free-XOR 决定每门密文数，k 与批大小决定 OT 通信与轮数。",
+  "status": "done"
+ },
+ "MPC-PROTO-07": {
+  "page": "#/mpc/proto",
+  "ui": "协议管理 → 性能预估卡（数据规模、带宽、RTT 输入，4 个指标卡，逐步明细表，公式说明）",
+  "steps": [
+   "默认 3 方、1,200,000 行、100 Mbps、20 ms 下查看预估计算耗时、预估通信耗时（传输 + 时延）、预估通信量（MB 与字节数）、交互轮数",
+   "把数据规模改为 2,400,000 行或勾选第 4 个参与方，指标随之增长",
+   "查看逐步明细：输入分享、各算子、A2Y 份额转换的通信量、计算耗时、轮数与公式",
+   "带宽填 0，提示越界"
+  ],
+  "expected": "预估随参与方数与数据规模单调增长，带宽翻倍传输时间减半；每个数字带单位与公式说明；参与方 < 3 返回 40000，行数 / 带宽越界 40003",
+  "api": [
+   "POST /projects/{project_id}/mpc/estimate",
+   "GET /projects/{project_id}/mpc/estimate"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-PROTO-07] 性能预估：随参与方数 / 数据规模单调增长，给出公式与单位"
+  ],
+  "impl": "预估模型按步骤累加：通信量 = Σ 各步全体参与方发送字节（如秘密共享输入分享 n(n−1)·ℓ/8·m、乘法 2·n(n−1)·ℓ/8·m·(n−1)，混淆电路 AND 门 × 2κ + 输入比特 × 3κ，OT n·m·(k/8+16)），计算耗时 = Σ 单方关键路径计算时间（原型标定常数：本地加法 0.4 µs、乘法 2 µs、截断 1.5 µs、AND 门 0.25 µs、OT 0.6 µs），通信耗时 = (通信量 / n)·8 / 带宽 + 总轮数 × RTT。GET 形态兼容 §4.1（protocol + operator），运维监控页任务指标按创建时的预估结果推进，预估与实测口径一致。",
+  "status": "done"
+ },
+ "MPC-OPS-01": {
+  "page": "#/mpc/ops",
+  "ui": "运维监控 → 「总通信量」指标卡；参与方卡片「累计通信量」行（数值 + 条形 + 偏离均值）",
+  "steps": [
+   "在协议管理页点「创建任务并进入监控」，自动跳到运维监控并选中新任务",
+   "观察总通信量（各方累计发送之和，附单方均值）与每张参与方卡片的累计通信量随心跳增长",
+   "点「停止执行」后数值不再变化，「继续执行」继续增长，「重置」清零"
+  ],
+  "expected": "每方通信量从 0 递增到预估值附近（各方 ±6% 扰动），总通信量 = 各方之和；停止后冻结，重置后归零；已结束任务再 start 返回 40901",
+  "api": [
+   "POST /projects/{project_id}/mpc/tasks",
+   "GET /mpc/tasks/{task_id}",
+   "SSE /mpc/tasks/{task_id}/events",
+   "POST /mpc/tasks/{task_id}/actions"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-OPS-01][MPC-OPS-02][MPC-OPS-03] 实时监控：每方通信量、计算耗时、轮次交互数随执行递增；停止 / 继续 / 重置"
+  ],
+  "impl": "任务创建时固化性能预估结果，每 420 ms 一个心跳、共 30 个，第 t 个心跳每方 comm_bytes = 预估总字节 / n × 进度 t/30 × 该方系数（0.94–1.06，种子 task_id|party_id），通过 SSE metrics 事件推送 parties、summary、progress_pct、alarms。前端按 metrics 事件就地刷新，不轮询；status_changed 为 finished 时重新拉详情并刷新历史表。",
+  "status": "done"
+ },
+ "MPC-OPS-02": {
+  "page": "#/mpc/ops",
+  "ui": "运维监控 → 「最长计算耗时」指标卡；参与方卡片「累计计算耗时」行",
+  "steps": [
+   "执行中观察每方累计计算耗时（秒）与条形长度（相对最慢一方）",
+   "指标卡显示最慢一方的累计计算耗时与各方均值",
+   "任务结束后对照摘要卡中的预估计算耗时"
+  ],
+  "expected": "每方计算耗时随进度递增，结束时与预估计算耗时一致（误差为各方扰动系数）",
+  "api": [
+   "GET /mpc/tasks/{task_id}",
+   "SSE /mpc/tasks/{task_id}/events"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-OPS-01][MPC-OPS-02][MPC-OPS-03] 实时监控：每方通信量、计算耗时、轮次交互数随执行递增；停止 / 继续 / 重置"
+  ],
+  "impl": "compute_sec = 预估计算耗时 × 进度 × 该方耗时系数；另给 comm_sec（通信耗时）用于历史表的总耗时（最慢一方 计算 + 通信）。summary 返回 max_compute_sec、mean_compute_sec，前端条形宽度 = 本方 / 最大值，偏离率 = (本方 − 均值) / 均值。",
+  "status": "done"
+ },
+ "MPC-OPS-03": {
+  "page": "#/mpc/ops",
+  "ui": "运维监控 → 「轮次交互数」指标卡；参与方卡片「轮次交互次数」行",
+  "steps": [
+   "执行中观察轮次交互数从 0 增长到预估总轮数（示例流程 8 轮）",
+   "换成向量 OT 且扩展批大小较小的任务，轮数显著增加"
+  ],
+  "expected": "轮次交互数 = round(预估总轮数 × 进度)，结束时等于预估总轮数",
+  "api": [
+   "GET /mpc/tasks/{task_id}",
+   "SSE /mpc/tasks/{task_id}/events"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-OPS-01][MPC-OPS-02][MPC-OPS-03] 实时监控：每方通信量、计算耗时、轮次交互数随执行递增；停止 / 继续 / 重置"
+  ],
+  "impl": "总轮数来自预估模型（秘密共享每次打开 1 轮、乘法深度 2⌈log₂ n⌉，混淆电路常数 4 轮，OT 3 + 2⌈m/B⌉，协议切换 2 轮），interaction_rounds 按进度取整推进，所有参与方同步（MPC 轮次为全体同步的消息往返）。",
+  "status": "done"
+ },
+ "MPC-OPS-04": {
+  "page": "#/mpc/ops",
+  "ui": "运维监控 → 告警条（含「定位节点」按钮）、判定规则说明、「异常节点」指标卡、参与方卡片红色高亮",
+  "steps": [
+   "用默认参与方 A / B / C 创建任务，执行约 2 秒后出现两条告警：参与方 C（node-ganzhou-03）累计通信量为均值的约 1.6 倍（偏离 +6x%），累计计算耗时偏离 +5x%，超过 ±50% 阈值",
+   "参与方 C 卡片边框与条形变红、状态为「异常」，点「定位节点」滚动并闪烁高亮该卡片",
+   "改用 A / B / D 创建对照任务，全程无告警；创建时把异常阈值设为 200%，降级节点也不告警"
+  ],
+  "expected": "偏离均值超过阈值的参与方被高亮并告警，告警给出倍数、偏离率与阈值；正常节点不误报；阈值 < 10% 或 > 200% 返回 40003",
+  "api": [
+   "POST /projects/{project_id}/mpc/tasks",
+   "GET /mpc/tasks/{task_id}",
+   "SSE /mpc/tasks/{task_id}/events"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-OPS-04] 异常节点检测：偏离均值超过 50% 告警并高亮；排除降级节点后无告警；阈值可配"
+  ],
+  "impl": "判定规则：执行满 5 个心跳后，对通信量与计算耗时分别计算全部参与方均值 μ，某方 |x − μ| / μ > 阈值（默认 50%，创建时可配 10%–200%）即标记 abnormal，并产生 comm_anomaly / compute_anomaly 告警（含 ratio_to_mean、deviation_pct、threshold_pct、node_id，raised_at 为首次触发时间）。演示环境把 p1 的 node-ganzhou-03、p2 的 node-chengdu-06 设为链路降级节点（通信 ×2.4、计算 ×2.2），3 方时其通信偏离约 +60%，其余两方约 −30%，不触发。",
+  "status": "done"
+ },
+ "MPC-OPS-05": {
+  "page": "#/mpc/ops",
+  "ui": "运维监控 → 历史 MPC 任务卡（协议筛选、结束日期范围、查询 / 清空筛选、对比勾选、对比所选、导出报表、查看）与任务对比面板",
+  "steps": [
+   "查看 6 条播种历史任务（含名称、计算流程 / 协议、参与方、数据规模、总通信量、总耗时、告警数、结束时间）",
+   "协议选混淆电路、结束日期 2026-10-01 至 2026-10-31，点查询，只剩含混淆电路的 10 月任务",
+   "勾选 2 个任务点「对比所选」，查看总通信量、单方平均通信量、总耗时、轮次交互数、每万行耗时等指标与差异 %；勾第 3 个被拦截",
+   "点「导出报表」得到按当前筛选的 CSV，点「导出对比报表」得到含对比段的 CSV；点某行「查看」在上方监控区展示该任务最终指标"
+  ],
+  "expected": "筛选结果与条件一致；对比只允许 2 个任务；导出文件行数与列表一致；日期格式错 40002、起止颠倒 40000、对比数量不对 40000、任务不存在 40400",
+  "api": [
+   "GET /projects/{project_id}/mpc/tasks",
+   "GET /projects/{project_id}/mpc/tasks/compare",
+   "GET /projects/{project_id}/mpc/reports/export",
+   "GET /mpc/tasks/{task_id}"
+  ],
+  "tests": [
+   "tests/mpc.test.mjs: [MPC-OPS-05] 历史任务：按协议 / 时间筛选、两任务对比、导出报表"
+  ],
+  "impl": "每个项目播种 6 条只读历史任务（2026-09-12 至 2026-10-20，覆盖三种协议与 3 / 4 方），新执行完成的任务自动进入历史。列表按结束时间倒序，protocol 按「流程中任一步使用该协议」匹配，日期按 +08:00 的结束日期过滤。对比接口返回 8 项指标及 diff_pct = (B − A) / A；每万行耗时 = 总耗时 / (行数 / 10,000) 用于消除数据规模差异。报表为 UTF-8 BOM CSV，带 task_ids 且为 2 个时追加对比段。",
+  "status": "done"
+ }
+}

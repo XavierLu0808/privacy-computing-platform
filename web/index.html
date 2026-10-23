@@ -297,55 +297,7 @@
 
       <!-- ========== 多方安全计算 ========== -->
       <section class="screen" id="screen-mpc-proto" hidden></section>
-      <section class="screen" id="screen-mpc-ops" hidden>
-        <div class="page-head">
-          <div class="page-head-text">
-            <span class="crumb">多方安全计算 / 运维监控</span>
-            <h1>协议执行监控</h1>
-          </div>
-          <div class="field">
-            <label class="field-label" for="mpcProto">协议</label>
-            <select class="select select-lg" id="mpcProto">
-              <option value="ss">秘密共享（安全求积、求均值）</option>
-              <option value="gc">混淆电路（安全比较、逻辑运算）</option>
-              <option value="ot">不经意传输扩展（向量 OT）</option>
-            </select>
-          </div>
-          <button type="button" class="btn-primary" id="mpcRun">开始执行</button>
-          <button type="button" class="btn" id="mpcReset">重置</button>
-        </div>
-
-        <div class="card card-row mpc-est">
-          <span style="font-size:13px; font-weight:700; color:var(--ink);">性能预估</span>
-          <span>参与方 <strong id="mpcPartyCount">—</strong> 方</span>
-          <span>数据规模 <strong id="mpcRows">—</strong></span>
-          <span class="divider-v"></span>
-          <span>预估计算耗时 <strong class="hl" id="mpcEstCalc">—</strong></span>
-          <span>预估通信耗时 <strong class="hl" id="mpcEstComm">—</strong></span>
-          <span class="spacer"></span>
-          <span class="hint" id="mpcOpNote">—</span>
-        </div>
-
-        <div class="banner banner-err" id="mpcAlarm" hidden>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#A33B21" stroke-width="1.8" style="flex-shrink:0;" aria-hidden="true"><path d="M12 4.5 21 20H3z"></path><path d="M12 10.5v4M12 17.2v.5"></path></svg>
-          <span class="spacer" id="mpcAlarmText" style="flex-grow:1;"></span>
-          <button type="button" class="btn-sm" id="mpcLocate" style="color:var(--danger); border-color:#E4B4A7;">定位节点</button>
-        </div>
-
-        <div class="party-grid" id="mpcParties"></div>
-
-        <div class="card card-lg">
-          <div style="display:flex; align-items:center; gap:12px;">
-            <span class="card-title">历史 MPC 任务</span>
-            <span class="spacer"></span>
-            <button type="button" class="btn-link" id="mpcExport">导出报表</button>
-          </div>
-          <div class="table-head mpc-history-grid">
-            <span>任务 ID</span><span>协议 / 算子</span><span>参与方</span><span>总通信量</span><span>总耗时</span><span>结束时间</span>
-          </div>
-          <div id="mpcHistory"></div>
-        </div>
-      </section>
+      <section class="screen" id="screen-mpc-ops" hidden></section>
 
       <!-- ========== 隐私求交 ========== -->
       <section class="screen" id="screen-psi-data" hidden>
