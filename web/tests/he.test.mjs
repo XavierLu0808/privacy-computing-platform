@@ -265,7 +265,10 @@ test('[HE-APP-05] 日志：模拟与同态聚合训练的每环节耗时与密�
   const rounds = new Set(j.items.map((x) => x.round));
   assert.equal(rounds.size, 2);
   assert.equal(j.total, 2 * (3 + 1 + 1), '每轮 3 个训练节点加密 + 聚合 + 解密');
-  assert.equal(j.items.find((x) => x.stage === 'encrypt').ciphertext_count, Math.ceil(4096 / 32));
+  const enc = j.items.find((x) => x.stage === 'encrypt');
+  assert.equal(enc.ciphertext_count, Math.ceil(2176 / 32), 'xgb 单次上传 2176 维 → 68 条密文');
+  assert.equal(enc.ciphertext_kb, Number((68 * 0.52).toFixed(1)));
+  assert.ok(enc.elapsed_ms > 68 * 3.4 * 0.94 - 0.1 && enc.elapsed_ms < 68 * 3.4 * 1.06 + 0.1, '加密 3.4 ms / 条 ±6%');
   assert.ok(j.summary.find((x) => x.stage === 'encrypt').avg_elapsed_ms > 0);
   assert.deepEqual(j.refs.map((r) => r.source).sort(), ['fl_job', 'simulation']);
   const f = await download('/projects/p1/he/logs/export?source=fl_job&ref_id=' + cls.job_id);

@@ -87,7 +87,8 @@
 
     // Paillier 打包：2048 bit 明文空间按 64 bit 槽位放 32 个定点数（高位留作多方求和的进位保护）
     const PAILLIER_SLOTS = 32;
-    const FL_PARAMS = { lr: 1200, xgb: 4096, cnn: 61706, lstm: 52000, tcn: 38000, custom: 20000 };
+    // 各算法单次上传的参数维度，与内核一致（k.MODEL_PARAMS：lr 69、xgb 2176、cnn 61706、lstm 203143、tcn 37959、custom 20000）
+    const FL_PARAMS = k.MODEL_PARAMS;
 
     /* ================= 工具 ================= */
 
@@ -732,7 +733,7 @@
       const nodes = k.jobNodes(job);
       const trainers = nodes.filter(function (x) { return x.role === 'trainer'; });
       const agg = nodes.filter(function (x) { return x.role === 'aggregator'; })[0];
-      const cts = Math.ceil((FL_PARAMS[job.algorithm] || 20000) / PAILLIER_SLOTS);
+      const cts = Math.ceil((FL_PARAMS[job.algorithm] || FL_PARAMS.custom) / PAILLIER_SLOTS);
       const perf = PERF.paillier;
       const rows = [];
       const base = { source: 'fl_job', ref_id: job.job_id, ref_name: job.name, scheme: 'paillier' };
