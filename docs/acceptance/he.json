@@ -33,9 +33,10 @@
       "POST /he/verify"
     ],
     "tests": [
-      "tests/he.test.mjs: [HE-ALGO-02] 全同态 CKKS / BGV：CKKS 浮点乘为近似（误差非 0 且 < 1e-4），BGV 整数乘精确"
+      "tests/he.test.mjs: [HE-ALGO-02] 全同态 CKKS / BGV：CKKS 浮点乘为近似（误差非 0 且 < 1e-4），BGV 整数乘精确",
+      "tests/he.test.mjs: [HE-ALGO-02][HE-ALGO-08] 同一 CKKS 参数下运算验证、四步流程、参数寻优的单条密文大小一致（2 × N × L × 8 字节）"
     ],
-    "impl": "CKKS 默认 N = 8192、模数链 [60, 40, 40, 60] bit、Δ = 2^40（总模数 200 bit ≤ 128 位上限 218 bit），向量按 4096 槽位打包为一条密文；mock 中解密值 = 明文结果 + 确定性仿真噪声（加法 (1+|x|)·2^-28，乘法含重缩放 (1+|x|)·2^-22，种子取输入哈希）。BGV 默认 N = 8192、明文模数 t = 1032193（20 bit 批处理素数），整数运算用 BigInt 精确计算并按 |m| ≤ 516096 校验溢出。另列 TFHE（FheInt32，可编程自举）作为 TFHE-rs / OpenFHE BinFHE 的对应方案。",
+    "impl": "CKKS 默认 N = 8192、模数链 [60, 40, 40, 60] bit、Δ = 2^40（总模数 200 bit ≤ 128 位上限 218 bit），向量按 4096 槽位打包为一条密文；mock 中解密值 = 明文结果 + 确定性仿真噪声（加法 (1+|x|)·2^-28，乘法含重缩放 (1+|x|)·2^-22，种子取输入哈希）。BGV 默认 N = 8192、明文模数 t = 1032193（20 bit 批处理素数），整数运算用 BigInt 精确计算并按 |m| ≤ 516096 校验溢出。另列 TFHE（FheInt32，可编程自举）作为 TFHE-rs / OpenFHE BinFHE 的对应方案。 密文大小与耗时与参数寻优同一模型：单条 CKKS 密文 = 2 × N × L × 8 字节，N = 8192、L = 3 → 384 KB（1 KB = 1024 字节），乘法重缩放后 256 KB；BGV L = 4 → 512 KB。",
     "status": "done"
   },
   "HE-ALGO-03": {
@@ -150,9 +151,10 @@
       "POST /he/param-optimize"
     ],
     "tests": [
-      "tests/he.test.mjs: [HE-ALGO-08] 参数智能寻优：按安全标准表选最小 N，给出模数链、Δ、性能估计与候选对比；不可行 40003"
+      "tests/he.test.mjs: [HE-ALGO-08] 参数智能寻优：按安全标准表选最小 N，给出模数链、Δ、性能估计与候选对比；不可行 40003",
+      "tests/he.test.mjs: [HE-ALGO-02][HE-ALGO-08] 同一 CKKS 参数下运算验证、四步流程、参数寻优的单条密文大小一致（2 × N × L × 8 字节）"
     ],
-    "impl": "Δ 位数 = ⌈d · log2 10⌉ + 20（20 bit 为编码与重缩放噪声余量，限 20–60 bit）；模数链 [q0, Δ × 深度, P]，q0 = P = min(60, Δ + 20)；N 取满足 HomomorphicEncryption.org 安全标准上限（三元秘密、经典攻击：128 位下 N = 8192 → 218 bit、16384 → 438 bit 等，与 SEAL CoeffModulus::MaxBitCount 相同）且 N/2 ≥ 批大小的最小值。性能以 SEAL 4.1 单线程 N = 8192、L = 3 量级为基准（加 0.07 ms、乘含重线性化与重缩放 2.9 ms），按 N·L 与 N·log2N·L·(L+1) 外推；密文 = 2·N·L·8 字节。候选为推荐值、更大的可行 N，以及小一档的不可行对照。",
+    "impl": "Δ 位数 = ⌈d · log2 10⌉ + 20（20 bit 为编码与重缩放噪声余量，限 20–60 bit）；模数链 [q0, Δ × 深度, P]，q0 = P = min(60, Δ + 20)；N 取满足 HomomorphicEncryption.org 安全标准上限（三元秘密、经典攻击：128 位下 N = 8192 → 218 bit、16384 → 438 bit 等，与 SEAL CoeffModulus::MaxBitCount 相同）且 N/2 ≥ 批大小的最小值。性能以 SEAL 4.1 单线程 N = 8192、L = 3 量级为基准（加 0.07 ms、乘含重线性化与重缩放 2.9 ms），按 N·L 与 N·log2N·L·(L+1) 外推；密文 = 2·N·L·8 字节。候选为推荐值、更大的可行 N，以及小一档的不可行对照。 运算验证与四步流程调用同一 rlweCost / rlweKb 函数，同参数下密文大小与耗时一致。",
     "status": "done"
   },
   "HE-APP-01": {
@@ -171,12 +173,14 @@
       "POST /he/encrypt",
       "POST /he/evaluate",
       "POST /he/decrypt",
-      "DELETE /he/keys/{key_id}"
+      "DELETE /he/keys/{key_id}",
+      "GET /projects/{project_id}/he/logs"
     ],
     "tests": [
-      "tests/he.test.mjs: [HE-APP-01] 可视化配置：密钥 → 加密 → 密态运算 → 解密 四步走通；密钥销毁后加密 40402"
+      "tests/he.test.mjs: [HE-APP-01] 可视化配置：密钥 → 加密 → 密态运算 → 解密 四步走通；密钥销毁后加密 40402",
+      "tests/he.test.mjs: [HE-APP-01][HE-APP-05] 四步流程解密后真正写入性能日志（来源「全流程配置」），汇总与日志一致；未解密不记"
     ],
-    "impl": "沿用 v1.1 的四步流程（API.md §3），新增步骤引导文案（每步说明做什么、私钥不出平台密钥服务）与 data-acc 标注。POST /he/keys 由 mock 扩展以 routeFirst 接管，响应字段与内核一致并补充 status、purpose = session 等生命周期字段；DELETE 保留销毁记录，便于在密钥管理中追溯。换项目时检测 projectId 变化并销毁上一项目的会话密钥。",
+    "impl": "沿用 v1.1 的四步流程（API.md §3），新增步骤引导文案（每步说明做什么、私钥不出平台密钥服务）与 data-acc 标注。POST /he/keys 由 mock 扩展以 routeFirst 接管，响应字段与内核一致并补充 status、purpose = session 等生命周期字段；DELETE 保留销毁记录，便于在密钥管理中追溯。换项目时检测 projectId 变化并销毁上一项目的会话密钥。 加密、密态运算、解密也由本模块接管，耗时与密文大小用统一模型；会话密钥从生成起逐步记账，解密完成即写入性能日志（来源「全流程配置」），执行面板「累计耗时 / 累计密文体积」取自同一份记账。",
     "status": "done"
   },
   "HE-APP-02": {
@@ -224,7 +228,9 @@
     "tests": [
       "tests/he.test.mjs: [HE-APP-03] 密钥管理：播种在用 + 已轮换；生成、分发、轮换、销毁与自动轮换策略",
       "tests/he.test.mjs: [HE-APP-03] 密钥状态约束加密：已轮换 40901、已销毁 40402，新钥可加密",
-      "tests/he.test.mjs: [HE-APP-03] 外部模块写入 db.heKeys 的聚合密钥：列表兜底显示，可轮换，外部标记已轮换后拒绝加密"
+      "tests/he.test.mjs: [HE-APP-03] 外部模块写入 db.heKeys 的聚合密钥：列表兜底显示，可轮换，外部标记已轮换后拒绝加密",
+      "tests/he.test.mjs: [HE-APP-03] 外部 CKKS 聚合密钥：轮换整体继承 key_params，外部写入的 rotated_to 同步到列表",
+      "tests/he.test.mjs: [HE-APP-03] 一个项目只保留一把在用的联邦聚合密钥：新建时其余在用的（含外部写入、不同方案）标记为被替代"
     ],
     "impl": "密钥元数据存 k.db.he.keys（status、purpose、distributed_to[{node_id, distributed_at}]、rotated_from / rotated_to / rotate_reason、destroyed_at），公钥与参数仍在内核 db.heKeys，私钥标注由平台 KMS 托管不出域。轮换 = 生成同方案同参数新钥并继承分发节点，旧钥保留用于解密历史密文；销毁删除密钥与其密文并留记录。自动轮换策略 { enabled, period_days 1–365 } 按项目存储，GET 列表与 PUT 策略时检查 fl_aggregation 密钥是否已满周期并自动轮换；会话密钥 24 小时过期，不参与轮换。首次访问项目播种 1 把在用聚合密钥及其已轮换前身。 POST /he/encrypt 以 routeFirst 包一层：已轮换密钥返回 40901「密钥已轮换，只能用于解密历史密文」，已销毁返回 40402，其余逻辑与内核一致。fed-sec 等模块直接写入 db.heKeys 的密钥在列表时补建元数据（缺失字段兜底），同样受分发、轮换与状态约束。",
     "status": "done"
@@ -253,6 +259,7 @@
     "page": "#/he/app",
     "ui": "应用集成 → 「加解密性能日志」卡片（来源、任务 / 测试筛选、刷新、导出 CSV、环节汇总、日志表）",
     "steps": [
+      "完成页面顶部四步流程，日志表出现来源「全流程配置」的 4 条记录",
       "运行一次流程测试模拟，日志表出现密钥生成、各参与方加密、密态聚合、解密记录",
       "在过程管控启动一个已启用同态加密聚合的训练任务，回到本页点「刷新」，出现按轮次的加密 / 聚合 / 解密记录",
       "来源选「训练任务」并在任务下拉中选择该任务，只显示该任务日志",
@@ -264,9 +271,11 @@
       "GET /projects/{project_id}/he/logs/export"
     ],
     "tests": [
-      "tests/he.test.mjs: [HE-APP-05] 日志：模拟与同态聚合训练的每环节耗时与密文大小，可按来源 / 任务筛选并导出 CSV"
+      "tests/he.test.mjs: [HE-APP-05] 日志：模拟与同态聚合训练的每环节耗时与密文大小，可按来源 / 任务筛选并导出 CSV",
+      "tests/he.test.mjs: [HE-APP-01][HE-APP-05] 四步流程解密后真正写入性能日志（来源「全流程配置」），汇总与日志一致；未解密不记",
+      "tests/he.test.mjs: [HE-APP-05] 同态训练任务每轮 加密 + 聚合 + 解密 墙钟耗时小于每轮训练时长（含参数量最大的 LSTM）"
     ],
-    "impl": "日志由两类来源实时展开：流程测试按步骤与参与方展开；aggregation = he 的训练任务按已完成轮次展开为每个训练节点加密 + 聚合方密态聚合 + 密钥服务解密，密文条数 = ⌈模型参数量 / 32⌉（参数量取内核 MODEL_PARAMS，xgb 2176 维 → 68 条，单条 0.52 KB，每节点每轮 35.4 KB），耗时按 Paillier 基准（加密 3.4 ms / 条、聚合 0.8 ms / 条 / 方、解密 4.2 ms / 条）加 ±6% 确定性抖动。接口返回按环节汇总（次数、平均耗时、密文合计），CSV 为 UTF-8 BOM，列含耗时(ms)、密文大小(KB)。",
+    "impl": "日志由三类来源实时展开：四步全流程会话解密完成后按实际步骤记录；流程测试按步骤与参与方展开；aggregation = he 的训练任务按已完成轮次展开为每个训练节点加密 + 聚合方密态聚合 + 密钥服务解密，密文条数 = ⌈模型参数量 / 32⌉（参数量取内核 MODEL_PARAMS，xgb 2176 维 → 68 条，单条 0.5 KB，每节点每轮 34 KB），耗时按节点侧 16 线程批处理与 CRT 解密口径（加密 0.213 ms / 条、聚合 0.05 ms / 条 / 方、解密 0.066 ms / 条，±6% 确定性抖动），各节点并行加密，每轮墙钟小于每轮训练时长 4.2 秒（LSTM 203143 维约 2.4 秒）。接口返回按环节汇总（次数、平均耗时、密文合计），CSV 为 UTF-8 BOM，列含耗时(ms)、密文大小(KB)、记录时间(UTC+8)（内核 fmtLocal）。",
     "status": "done"
   }
 }

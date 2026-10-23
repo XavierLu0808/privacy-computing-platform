@@ -9,7 +9,7 @@
 (function () {
   'use strict';
   window.MockServer.extend(function (k) {
-    const db = k.db.he = { keys: {}, config: {}, policy: {}, sims: [], seeded: {} };
+    const db = k.db.he = { keys: {}, config: {}, policy: {}, sims: [], sessions: {}, seeded: {} };
     const DAY = 86400000;
 
     /* ================= 静态目录 ================= */
@@ -66,13 +66,39 @@
     ];
     const DEFAULT_CONFIG = { scheme: 'ckks', library: 'seal', precision: 4 };
 
-    // 单次运算的基准耗时（ms）与单条密文大小（KB）。CKKS / BGV 一条密文打包整组向量，Paillier / TFHE 每个数一条。
+    /**
+     * RLWE 方案（CKKS / BGV）单线程耗时模型（ms），运算验证、四步流程与参数寻优共用同一套：
+     * 以 SEAL 4.1 单线程 N = 8192、L = 3 的量级为校准点（密钥生成约 21.5、加密 2.4、加法 0.07、乘法含重线性化与重缩放 2.9、解密 0.26），
+     * 按复杂度外推：加法、解密 ∝ N·L，加密 ∝ N·log2N·L，乘法 ∝ N·log2N·L·(L+1)，密钥生成 ∝ N·log2N·L²。L 为当前层 RNS 素数个数（不含特殊素数）。
+     */
+    function rlweCost(N, L) {
+      const lg = Math.log2(N);
+      return {
+        keygen: 2.243e-5 * N * lg * L * L, enc: 7.51e-6 * N * lg * L, add: 2.85e-6 * N * L,
+        mul: 2.27e-6 * N * lg * L * (L + 1), dec: 1.058e-5 * N * L
+      };
+    }
+    /** RLWE 单条密文大小（KB，1 KB = 1024 字节）= 2 个多项式 × N 个系数 × L 个 64 bit RNS 分量。 */
+    function rlweKb(N, L) { return Number((2 * N * L * 8 / 1024).toFixed(1)); }
+    function ms(x) { return x < 1 ? Number(x.toFixed(3)) : Number(x.toFixed(1)); }
+
+    // 各方案单次运算耗时（ms）与单条密文大小（KB，1 KB = 1024 字节）。CKKS / BGV 一条密文打包整组向量，Paillier / TFHE 每个数一条。
     const PERF = {
-      paillier: { keygen: 8.5, enc: 3.4, add: 0.8, mul: 1.1, dec: 4.2, ct_kb: 0.52, packed: false },
-      ckks: { keygen: 8.5, enc: 18.6, add: 7.4, mul: 46.3, dec: 12.8, ct_kb: 262.1, packed: true, slots: 4096 },
-      bgv: { keygen: 8.5, enc: 24.1, add: 7.4, mul: 46.3, dec: 16.5, ct_kb: 318.4, packed: true, slots: 8192 },
-      tfhe: { keygen: 1260, enc: 0.12, add: 68, mul: 410, dec: 0.05, ct_kb: 262.2, packed: false }
+      paillier: { keygen: 8.5, enc: 3.4, add: 0.8, mul: 1.1, dec: 4.2, ct_kb: 0.5, ct_kb_mul: 0.5, packed: false,
+        ct_formula: 'Paillier 密文 ∈ Z_{n²}：2 × 2048 bit = 512 字节 = 0.5 KB' },
+      ckks: Object.assign(rlweCost(8192, 3), { ct_kb: rlweKb(8192, 3), ct_kb_mul: rlweKb(8192, 2), packed: true, slots: 4096,
+        ct_formula: '2 × N × L × 8 字节，N = 8192、L = 3（模数链 [60, 40, 40, 60] 去掉特殊素数）= 384 KB；乘法重缩放后 L = 2，256 KB' }),
+      bgv: Object.assign(rlweCost(8192, 4), { ct_kb: rlweKb(8192, 4), ct_kb_mul: rlweKb(8192, 4), packed: true, slots: 8192,
+        ct_formula: '2 × N × L × 8 字节，N = 8192、L = 4（SEAL 默认模数链 [43, 43, 44, 44, 44] 去掉特殊素数）= 512 KB' }),
+      tfhe: { keygen: 1260, enc: 0.12, add: 68, mul: 410, dec: 0.05, ct_kb: 256.1, ct_kb_mul: 256.1, packed: false,
+        ct_formula: 'FheInt32 = 16 个 LWE 块 × (2048 + 1) × 8 字节 = 256.1 KB' }
     };
+    /**
+     * 联邦训练节点侧 Paillier 批处理口径：每个节点 16 个工作线程并行处理打包密文，解密用 CRT（中国剩余定理，约快 4 倍），
+     * 单条打包密文的有效耗时 = 单线程耗时 / 16（解密再 / 4）。流程测试模拟与训练任务日志共用。
+     */
+    const NODE_THREADS = 16, CRT_SPEEDUP = 4;
+    const PAILLIER_NODE = { enc: 3.4 / NODE_THREADS, add: 0.8 / NODE_THREADS, dec: 4.2 / CRT_SPEEDUP / NODE_THREADS };
     // CKKS 默认缩放因子 Δ = 2^40；新鲜密文误差约 2^-28、乘法重缩放后约 2^-22（相对于 1 + |结果|）
     const CKKS_SCALE_BITS = 40;
 
@@ -310,14 +336,15 @@
       const ctB = op === 'mul_plain' ? 0 : cts;
       const seed = a.scheme + op + n;
       const steps = [
-        { stage: 'keygen', label: '密钥生成', elapsed_ms: r1(perf.keygen * jitter(seed + 'k')), size_kb: null, detail: a.typical_params },
+        { stage: 'keygen', label: '密钥生成', elapsed_ms: ms(perf.keygen * jitter(seed + 'k')), size_kb: null, detail: a.typical_params },
         { stage: 'encode', label: '编码', elapsed_ms: r2(0.02 * n), size_kb: null,
           detail: mode === 'ckks_native' ? 'CKKS 编码：系数 = round(x · 2^' + CKKS_SCALE_BITS + ')，' + n + ' 个数打包进 1 条密文的槽位'
             : (mode === 'integer' ? '整数输入，直接加密' : '定点化：A × 10^' + (op === 'add' ? sExp : sA) + '，B × 10^' + (op === 'add' ? sExp : sB) + '，取整') },
-        { stage: 'encrypt', label: '加密', elapsed_ms: r1(perf.enc * (cts + ctB) * jitter(seed + 'e')), size_kb: r1(perf.ct_kb * (cts + ctB)),
-          detail: (cts + ctB) + ' 条密文（A ' + cts + ' 条' + (ctB ? '，B ' + ctB + ' 条' : '，B 以明文参与') + '）' },
-        { stage: 'evaluate', label: '密态运算', elapsed_ms: r1((op === 'add' ? perf.add : perf.mul) * cts * jitter(seed + 'v')), size_kb: r1(perf.ct_kb * cts), detail: opLabel(op) },
-        { stage: 'decrypt', label: '解密', elapsed_ms: r1(perf.dec * cts * jitter(seed + 'd')), size_kb: null,
+        { stage: 'encrypt', label: '加密', elapsed_ms: ms(perf.enc * (cts + ctB) * jitter(seed + 'e')), size_kb: r1(perf.ct_kb * (cts + ctB)),
+          detail: (cts + ctB) + ' 条密文（A ' + cts + ' 条' + (ctB ? '，B ' + ctB + ' 条' : '，B 以明文参与') + '），单条 ' + perf.ct_kb + ' KB' },
+        { stage: 'evaluate', label: '密态运算', elapsed_ms: ms((op === 'add' ? perf.add : perf.mul) * cts * jitter(seed + 'v')),
+          size_kb: r1((op === 'mul' ? perf.ct_kb_mul : perf.ct_kb) * cts), detail: opLabel(op) + (op === 'mul' && a.scheme === 'ckks' ? '，重缩放后 L = 2' : '') },
+        { stage: 'decrypt', label: '解密', elapsed_ms: ms(perf.dec * cts * jitter(seed + 'd')), size_kb: null,
           detail: mode === 'fixed_point' ? '解密后除以 10^' + rExpAll + ' 还原' : '解密并解码' }
       ];
       return k.ok({
@@ -325,7 +352,8 @@
         precision: prec, scale_exponent_a: op === 'add' ? sExp : sA, scale_exponent_b: op === 'add' ? sExp : sB, result_scale_exponent: rExpAll,
         ckks_scale_bits: mode === 'ckks_native' ? CKKS_SCALE_BITS : null,
         rows: rows, max_abs_error: maxErr,
-        total_elapsed_ms: r1(steps.reduce(function (s, x) { return s + x.elapsed_ms; }, 0)),
+        total_elapsed_ms: ms(steps.reduce(function (s, x) { return s + x.elapsed_ms; }, 0)),
+        ciphertext_formula: perf.ct_formula, ciphertext_kb_each: perf.ct_kb,
         steps: steps
       });
     }
@@ -346,14 +374,13 @@
         const reasons = [];
         if (total > bound) reasons.push('总模数 ' + total + ' bit 超过 ' + sec + ' 位安全上限 ' + bound + ' bit');
         if (N / 2 < batch) reasons.push('槽位 ' + N / 2 + ' 个少于批大小 ' + batch);
-        const lg = Math.log2(N);
         return {
           poly_modulus_degree: N, coeff_modulus_bits: chain, total_modulus_bits: total, max_modulus_bits: bound,
           margin_bits: bound - total, scale_bits: scaleBits, slots: N / 2,
           integer_bits: q0 - scaleBits,
-          est_add_ms: Number((2.85e-6 * N * L).toFixed(3)),
-          est_mul_ms: Number((2.27e-6 * N * lg * L * (L + 1)).toFixed(2)),
-          ciphertext_kb: r1(2 * N * L * 8 / 1024),
+          est_add_ms: Number(rlweCost(N, L).add.toFixed(3)),
+          est_mul_ms: Number(rlweCost(N, L).mul.toFixed(2)),
+          ciphertext_kb: rlweKb(N, L),
           feasible: reasons.length === 0, reasons: reasons
         };
       });
@@ -388,7 +415,7 @@
             ' bit，另加 20 bit 编码与重缩放噪声余量（上限 60 bit）',
           '模数链 = [q0, Δ × ' + depth + ', P]：q0 与特殊素数 P 取 min(60, Δ + 20) = ' + r.chain[0] + ' bit（保留 20 bit 整数部分），每一层乘法消耗一个 Δ 位素数',
           '多项式阶数 N 取满足「总模数 ≤ HomomorphicEncryption.org 安全标准上限」且「N / 2 ≥ 批大小」的最小值',
-          '耗时按 SEAL 4.1 单线程量级外推：N = 8192、3 个素数时加法约 0.07 ms、乘法（含重线性化与重缩放）约 2.9 ms，加法按 N·L、乘法按 N·log2 N·L·(L+1) 缩放；密文大小 = 2 × N × L × 8 字节'
+          '耗时按 SEAL 4.1 单线程量级外推：N = 8192、3 个素数时加法约 0.07 ms、乘法（含重线性化与重缩放）约 2.9 ms，加法按 N·L、乘法按 N·log2 N·L·(L+1) 缩放（与运算验证、四步流程同一模型）；单条密文 = 2 × N × L × 8 字节（L = 深度 + 1，1 KB = 1024 字节），与运算验证同一公式'
         ],
         security_table: Object.keys(HE_STD[sec]).map(function (N) { return { poly_modulus_degree: Number(N), max_modulus_bits: HE_STD[sec][N] }; })
       });
@@ -413,7 +440,7 @@
       const key = {
         key_id: id, scheme: scheme, project_id: pid, key_params: params,
         public_key_preview: k.hashHex('pk' + scheme + id, 5).slice(0, 56),
-        elapsed_ms: PERF[scheme].keygen, created_at: created,
+        elapsed_ms: ms(PERF[scheme].keygen), created_at: created,
         expires_at: new Date(Date.parse(created) + (managed ? policyOf(pid).period_days * DAY : DAY)).toISOString()
       };
       k.db.heKeys[id] = key;
@@ -422,6 +449,11 @@
         status: 'active', storage: '平台密钥服务（KMS）托管，私钥不出域', distributed_to: [],
         rotated_from: opts.rotated_from || null, rotated_to: null, rotated_at: null, rotate_reason: null, destroyed_at: null
       };
+      // 四步流程的会话密钥：从密钥生成开始逐步记账，解密完成后进入性能日志（来源「全流程配置」）
+      if (!managed && !opts.rotated_from) {
+        db.sessions[id] = { key_id: id, project_id: pid, scheme: scheme, op_label: null, done: false,
+          steps: [{ stage: 'keygen', elapsed_ms: key.elapsed_ms, ciphertext_kb: null, ciphertext_count: null, recorded_at: created }] };
+      }
       return key;
     }
     /**
@@ -574,7 +606,74 @@
           encoded_integer: key.scheme === 'paillier' ? String(encoded) : null
         });
       }
-      return k.ok({ ciphertexts: cts, scale_exponent: prec, elapsed_ms: Number((perf.enc * body.values.length).toFixed(1)) });
+      const elapsed = ms(perf.enc * body.values.length);
+      sessionStep(key.key_id, { stage: 'encrypt', elapsed_ms: elapsed, ciphertext_kb: r1(perf.ct_kb * cts.length), ciphertext_count: cts.length });
+      return k.ok({ ciphertexts: cts, scale_exponent: prec, elapsed_ms: elapsed });
+    });
+    function sessionStep(keyId, step) {
+      const ss = db.sessions[keyId];
+      if (!ss) return null;
+      ss.steps.push(Object.assign({ recorded_at: k.NOW() }, step));
+      return ss;
+    }
+    // 密态运算：与内核 /he/evaluate 逻辑一致，耗时与密文大小改用本模块统一模型（PERF），并记入会话
+    k.routeFirst('POST', '/he/evaluate', function (p, q, body) {
+      const key = k.db.heKeys[body.key_id];
+      if (!key) return k.err(40402, '密钥不存在、已销毁或已过期');
+      const left = k.db.heCiphers[body.left_ciphertext_id];
+      if (!left) return k.err(40400, '左操作数密文不存在');
+      const hasCt = !!body.right_ciphertext_id;
+      const hasPt = body.right_plaintext !== undefined && body.right_plaintext !== null;
+      if (hasCt === hasPt) return k.err(40000, 'right_ciphertext_id 与 right_plaintext 必须二选一');
+      if (key.scheme === 'paillier' && body.op === 'mul' && hasCt) return k.err(40001, 'Paillier 不支持密文乘密文');
+      if (['add', 'mul'].indexOf(body.op) < 0) return k.err(40000, 'op 必须是 add 或 mul');
+      const perf = PERF[key.scheme] || PERF.paillier;
+      let result;
+      if (hasCt) {
+        const right = k.db.heCiphers[body.right_ciphertext_id];
+        if (!right) return k.err(40400, '右操作数密文不存在');
+        result = body.op === 'mul' ? left.plain * right.plain : left.plain + right.plain;
+      } else {
+        const rp = parseFloat(body.right_plaintext);
+        if (Number.isNaN(rp)) return k.err(40002, '明文操作数不是合法数值');
+        result = body.op === 'mul' ? left.plain * rp : left.plain + rp;
+      }
+      const ctId = k.nextId('hec');
+      k.db.heCiphers[ctId] = { ciphertext_id: ctId, key_id: key.key_id, plain: result, precision: left.precision };
+      const isMul = body.op === 'mul';
+      const sizeKb = isMul && hasCt ? perf.ct_kb_mul : perf.ct_kb;
+      const elapsed = ms(isMul ? perf.mul : perf.add);
+      const expr = isMul ? (hasCt ? 'Enc(A) ⊗ Enc(B)' : 'Enc(A) ⊗ b') : 'Enc(A) ⊕ Enc(B)';
+      const ss = sessionStep(key.key_id, { stage: 'evaluate', elapsed_ms: elapsed, ciphertext_kb: sizeKb, ciphertext_count: 1 });
+      if (ss) ss.op_label = isMul ? (hasCt ? '密文乘法' : '明文数乘') : '密文加法';
+      return k.ok({
+        result_ciphertext_id: ctId, expression: expr,
+        preview: k.hashHex('r' + result + body.op + key.scheme, 5).slice(0, 56),
+        size_kb: sizeKb, elapsed_ms: elapsed,
+        noise_budget_remaining: key.scheme === 'paillier' ? null : (isMul ? 71 : 98)
+      });
+    });
+    // 解密：与内核一致，session_summary 按本次会话实际记账汇总，logged = 已写入性能日志（来源「全流程配置」）
+    k.routeFirst('POST', '/he/decrypt', function (p, q, body) {
+      const key = k.db.heKeys[body.key_id];
+      if (!key) return k.err(40402, '密钥不存在、已销毁或已过期');
+      const ct = k.db.heCiphers[body.ciphertext_id];
+      if (!ct) return k.err(40400, '密文不存在');
+      const perf = PERF[key.scheme] || PERF.paillier;
+      const plaintext = ct.plain.toFixed(ct.precision);
+      const elapsed = ms(perf.dec);
+      const ss = sessionStep(key.key_id, { stage: 'decrypt', elapsed_ms: elapsed, ciphertext_kb: null, ciphertext_count: 1 });
+      if (ss) ss.done = true;
+      const steps = ss ? ss.steps : [];
+      return k.ok({
+        plaintext: plaintext, elapsed_ms: elapsed,
+        verification: body.verify === false ? null : { expected: plaintext, matched: true, abs_error: (0).toFixed(ct.precision) },
+        session_summary: {
+          total_elapsed_ms: ms(steps.reduce(function (s2, x) { return s2 + x.elapsed_ms; }, 0)),
+          total_ciphertext_kb: r1(steps.reduce(function (s2, x) { return s2 + (x.ciphertext_kb || 0); }, 0)),
+          logged: !!ss, log_source: ss ? 'session' : null
+        }
+      });
     });
     k.route('GET', '/he/keys', function (p, q) {
       if (!q.project_id || !project(q.project_id)) return k.err(40000, 'project_id 必填且必须是已有项目');
@@ -669,19 +768,20 @@
         if (e > maxErr) maxErr = e;
       }
       const perf = PERF[scheme];
+      const node = scheme === 'paillier' ? PAILLIER_NODE : perf;   // Paillier 按节点侧 16 线程批处理口径
       const perCt = scheme === 'paillier' ? PAILLIER_SLOTS : perf.slots;
       const cts = Math.ceil(dim / perCt);
       const slotBits = maxEnc ? Math.ceil(Math.log2(maxEnc + 1)) + 1 : 1;
       const seed = p.project_id + scheme + dim + parties;
       const steps = [
-        { stage: 'keygen', label: '密钥生成', elapsed_ms: r1(perf.keygen * jitter(seed + 'k')), ciphertext_kb: null, ciphertext_count: null,
+        { stage: 'keygen', label: '密钥生成', elapsed_ms: ms(perf.keygen * jitter(seed + 'k')), ciphertext_kb: null, ciphertext_count: null,
           detail: scheme === 'paillier' ? 'Paillier n = 2048 bit' : 'CKKS N = 8192，Δ = 2^40' },
-        { stage: 'encrypt', label: '加密（每个参与方）', elapsed_ms: r1(perf.enc * cts * jitter(seed + 'e')), ciphertext_kb: r1(perf.ct_kb * cts), ciphertext_count: cts,
-          detail: scheme === 'paillier' ? dim + ' 维定点化（×10^' + prec + '）后每 ' + PAILLIER_SLOTS + ' 个打包为 1 条密文' : dim + ' 维按 ' + perf.slots + ' 槽位打包' },
-        { stage: 'aggregate', label: '密态聚合', elapsed_ms: r1(perf.add * cts * (parties - 1) * jitter(seed + 'a')), ciphertext_kb: r1(perf.ct_kb * cts), ciphertext_count: cts,
+        { stage: 'encrypt', label: '加密（每个参与方）', elapsed_ms: ms(node.enc * cts * jitter(seed + 'e')), ciphertext_kb: r1(perf.ct_kb * cts), ciphertext_count: cts,
+          detail: scheme === 'paillier' ? dim + ' 维定点化（×10^' + prec + '）后每 ' + PAILLIER_SLOTS + ' 个打包为 1 条密文，节点 ' + NODE_THREADS + ' 线程并行' : dim + ' 维按 ' + perf.slots + ' 槽位打包' },
+        { stage: 'aggregate', label: '密态聚合', elapsed_ms: ms(node.add * cts * (parties - 1) * jitter(seed + 'a')), ciphertext_kb: r1(perf.ct_kb * cts), ciphertext_count: cts,
           detail: parties + ' 方密文逐条相加，聚合方全程不解密' },
-        { stage: 'decrypt', label: '解密', elapsed_ms: r1(perf.dec * cts * jitter(seed + 'd')), ciphertext_kb: null, ciphertext_count: cts,
-          detail: scheme === 'paillier' ? '解密后除以 10^' + prec + ' 还原' : '解密并解码' }
+        { stage: 'decrypt', label: '解密', elapsed_ms: ms(node.dec * cts * jitter(seed + 'd')), ciphertext_kb: null, ciphertext_count: cts,
+          detail: scheme === 'paillier' ? 'CRT 解密后除以 10^' + prec + ' 还原' : '解密并解码' }
       ];
       const checks = [
         { name: '密文条数一致', passed: true, detail: '每个参与方 ' + cts + ' 条密文，聚合结果 ' + cts + ' 条' },
@@ -695,7 +795,8 @@
       const sim = {
         sim_id: k.nextId('hesim'), project_id: p.project_id, scheme: scheme, dim: dim, parties: parties, precision: prec, tolerance: tol,
         max_abs_error: maxErr, mean_abs_error: sumErr / dim, passed: passed, steps: steps, checks: checks,
-        total_elapsed_ms: r1(steps[0].elapsed_ms + steps[1].elapsed_ms * parties + steps[2].elapsed_ms + steps[3].elapsed_ms),
+        // 各参与方在本节点同时加密，墙钟时间计一次
+        total_elapsed_ms: ms(steps[0].elapsed_ms + steps[1].elapsed_ms + steps[2].elapsed_ms + steps[3].elapsed_ms),
         conclusion: passed
           ? '通过：' + parties + ' 方 × ' + dim + ' 维模拟梯度经 加密 → 密态聚合 → 解密 后与明文求和一致，最大绝对误差 ' + maxErr.toExponential(2) + ' 在容差内'
           : '未通过：' + checks.filter(function (c) { return !c.passed; }).map(function (c) { return c.name + '（' + c.detail + '）'; }).join('；') +
@@ -734,56 +835,76 @@
       const trainers = nodes.filter(function (x) { return x.role === 'trainer'; });
       const agg = nodes.filter(function (x) { return x.role === 'aggregator'; })[0];
       const cts = Math.ceil((FL_PARAMS[job.algorithm] || FL_PARAMS.custom) / PAILLIER_SLOTS);
-      const perf = PERF.paillier;
+      const perf = PAILLIER_NODE;   // 节点侧 16 线程批处理 + CRT 解密，单轮加密 + 聚合 + 解密须小于每轮训练时长
+      const ctKb = PERF.paillier.ct_kb;
       const rows = [];
       const base = { source: 'fl_job', ref_id: job.job_id, ref_name: job.name, scheme: 'paillier' };
       job.metrics.forEach(function (m) {
         const seed = job.job_id + '#' + m.round;
         trainers.forEach(function (nd) {
           rows.push(Object.assign({}, base, { round: m.round, stage: 'encrypt', stage_label: '加密', party: nd.node_id,
-            elapsed_ms: r1(perf.enc * cts * jitter(seed + nd.node_id)), ciphertext_kb: r1(perf.ct_kb * cts), ciphertext_count: cts, recorded_at: m.recorded_at }));
+            elapsed_ms: ms(perf.enc * cts * jitter(seed + nd.node_id)), ciphertext_kb: r1(ctKb * cts), ciphertext_count: cts, recorded_at: m.recorded_at }));
         });
         rows.push(Object.assign({}, base, { round: m.round, stage: 'aggregate', stage_label: '密态聚合', party: agg ? agg.node_id : '聚合方',
-          elapsed_ms: r1(perf.add * cts * Math.max(1, trainers.length - 1) * jitter(seed + 'agg')), ciphertext_kb: r1(perf.ct_kb * cts), ciphertext_count: cts, recorded_at: m.recorded_at }));
+          elapsed_ms: ms(perf.add * cts * Math.max(1, trainers.length - 1) * jitter(seed + 'agg')), ciphertext_kb: r1(ctKb * cts), ciphertext_count: cts, recorded_at: m.recorded_at }));
         rows.push(Object.assign({}, base, { round: m.round, stage: 'decrypt', stage_label: '解密', party: '密钥服务',
-          elapsed_ms: r1(perf.dec * cts * jitter(seed + 'dec')), ciphertext_kb: null, ciphertext_count: cts, recorded_at: m.recorded_at }));
+          elapsed_ms: ms(perf.dec * cts * jitter(seed + 'dec')), ciphertext_kb: null, ciphertext_count: cts, recorded_at: m.recorded_at }));
       });
       return rows;
+    }
+    const SESSION_STAGE = { keygen: ['密钥生成', '平台密钥服务'], encrypt: ['加密', '数据提供方'], evaluate: ['密态运算', '平台计算服务'], decrypt: ['解密', '平台密钥服务'] };
+    function sessionName(ss) { return '全流程配置 · ' + ((algo(ss.scheme) || {}).name || ss.scheme) + (ss.op_label ? ' · ' + ss.op_label : ''); }
+    /** 四步流程会话：解密完成后按实际执行的每一步记一条（重复执行的运算 / 解密各记一条）。 */
+    function sessionLogs(ss) {
+      return ss.steps.map(function (st) {
+        return {
+          source: 'session', ref_id: ss.key_id, ref_name: sessionName(ss), round: null, stage: st.stage,
+          stage_label: SESSION_STAGE[st.stage][0], scheme: ss.scheme, party: SESSION_STAGE[st.stage][1],
+          elapsed_ms: st.elapsed_ms, ciphertext_kb: st.ciphertext_kb, ciphertext_count: st.ciphertext_count, recorded_at: st.recorded_at
+        };
+      });
     }
     function logsOf(pid, q) {
       const jobs = k.jobsOfProject(pid).filter(function (j) { return j.aggregation === 'he'; });
       const sims = db.sims.filter(function (s) { return s.project_id === pid; });
+      const sess = Object.keys(db.sessions).map(function (id) { return db.sessions[id]; })
+        .filter(function (ss) { return ss.project_id === pid && ss.done; });
       const refs = sims.map(function (s) { return { source: 'simulation', ref_id: s.sim_id, ref_name: '流程测试 ' + s.dim + ' 维 × ' + s.parties + ' 方（' + (s.passed ? '通过' : '未通过') + '）' }; })
-        .concat(jobs.map(function (j) { return { source: 'fl_job', ref_id: j.job_id, ref_name: j.name + '（' + j.metrics.length + ' 轮）' }; }));
+        .concat(jobs.map(function (j) { return { source: 'fl_job', ref_id: j.job_id, ref_name: j.name + '（' + j.metrics.length + ' 轮）' }; }))
+        .concat(sess.map(function (ss) { return { source: 'session', ref_id: ss.key_id, ref_name: sessionName(ss) + '（' + ss.key_id + '）' }; }));
       let rows = [];
       if (!q.source || q.source === 'simulation') sims.forEach(function (s) { rows = rows.concat(simLogs(s)); });
       if (!q.source || q.source === 'fl_job') jobs.forEach(function (j) { rows = rows.concat(jobLogs(j)); });
+      if (!q.source || q.source === 'session') sess.forEach(function (ss) { rows = rows.concat(sessionLogs(ss)); });
       if (q.ref_id) rows = rows.filter(function (x) { return x.ref_id === q.ref_id; });
       rows.forEach(function (x, i) { x.log_id = 'hel_' + k.hashHex(x.ref_id + x.round + x.stage + x.party + i, 1); });
       return { rows: rows, refs: refs };
     }
-    function validSource(q) { return !q.source || ['simulation', 'fl_job'].indexOf(q.source) >= 0; }
+    const SOURCE_CN = { simulation: '流程测试', fl_job: '训练任务', session: '全流程配置' };
+    function validSource(q) { return !q.source || !!SOURCE_CN[q.source]; }
 
     k.route('GET', '/projects/{project_id}/he/logs', function (p, q) {
       if (!project(p.project_id)) return k.err(40400, '项目不存在');
-      if (!validSource(q)) return k.err(40000, 'source 只能是 simulation 或 fl_job');
+      if (!validSource(q)) return k.err(40000, 'source 只能是 simulation / fl_job / session');
       const r = logsOf(p.project_id, q);
       const sum = function (st, f) { return r1(r.rows.filter(function (x) { return x.stage === st; }).reduce(function (s, x) { return s + (x[f] || 0); }, 0)); };
       return k.ok({
         items: r.rows, total: r.rows.length, refs: r.refs,
+        timing_basis: '训练任务与流程测试的 Paillier 耗时按节点侧 ' + NODE_THREADS + ' 线程批处理、CRT 解密计（单条打包密文 加密 ' + ms(PAILLIER_NODE.enc) + ' ms、聚合 ' + ms(PAILLIER_NODE.add) + ' ms / 方、解密 ' + ms(PAILLIER_NODE.dec) + ' ms），各训练节点并行加密；全流程配置为平台单线程逐步执行',
         summary: ['encrypt', 'aggregate', 'decrypt', 'evaluate', 'keygen'].map(function (st) {
           const n = r.rows.filter(function (x) { return x.stage === st; }).length;
-          return { stage: st, count: n, total_elapsed_ms: sum(st, 'elapsed_ms'), avg_elapsed_ms: n ? r1(sum(st, 'elapsed_ms') / n) : null, total_ciphertext_kb: sum(st, 'ciphertext_kb') };
+          const tot = r.rows.filter(function (x) { return x.stage === st; }).reduce(function (s2, x) { return s2 + (x.elapsed_ms || 0); }, 0);
+          return { stage: st, count: n, total_elapsed_ms: ms(tot), avg_elapsed_ms: n ? ms(tot / n) : null, total_ciphertext_kb: sum(st, 'ciphertext_kb') };
         }).filter(function (x) { return x.count > 0; })
       });
     });
     k.download(/^\/projects\/([^/]+)\/he\/logs\/export$/, function (m, q) {
       if (!project(m[1]) || !validSource(q)) return null;
       const r = logsOf(m[1], q);
-      let csv = '来源,任务或测试 ID,名称,轮次,环节,方案,节点或参与方,耗时(ms),密文大小(KB),密文条数,记录时间\n';
+      let csv = '来源,任务或测试 ID,名称,轮次,环节,方案,节点或参与方,耗时(ms),密文大小(KB),密文条数,记录时间(UTC+8)\n';
       r.rows.forEach(function (x) {
-        csv += [x.source === 'fl_job' ? '训练任务' : '流程测试', x.ref_id, '"' + x.ref_name.replace(/"/g, '""') + '"', x.round === null ? '' : x.round,
-          x.stage_label, x.scheme, x.party, x.elapsed_ms, x.ciphertext_kb === null ? '' : x.ciphertext_kb, x.ciphertext_count === null ? '' : x.ciphertext_count, x.recorded_at].join(',') + '\n';
+        csv += [SOURCE_CN[x.source], x.ref_id, '"' + x.ref_name.replace(/"/g, '""') + '"', x.round === null ? '' : x.round,
+          x.stage_label, x.scheme, x.party, x.elapsed_ms, x.ciphertext_kb === null ? '' : x.ciphertext_kb, x.ciphertext_count === null ? '' : x.ciphertext_count, k.fmtLocal(x.recorded_at)].join(',') + '\n';
       });
       return { fileName: 'he_logs_' + m[1] + (q.ref_id ? '_' + q.ref_id : '') + '.csv', contentType: 'text/csv;charset=utf-8', content: '﻿' + csv };
     });

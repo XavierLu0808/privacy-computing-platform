@@ -142,7 +142,7 @@ POST /he/verify
 
 - 整数方案（Paillier / BGV / TFHE）：加法两边同缩放 10^p；乘法各操作数独立缩放（整数操作数不放大），结果缩放为两者指数之和；整数运算用 BigInt 精确计算后解码。任一编码值或结果超出明文空间返回 `40003`。
 - CKKS：缩放因子 Δ = 2^40，解密值 = 明文结果 + 确定性仿真噪声，加法噪声幅度 (1 + |结果|) · 2^-28，乘法（含重缩放）幅度 (1 + |结果|) · 2^-22，同输入同输出。
-- 耗时与密文大小按方案基准折算：CKKS / BGV 一条密文打包整组（4096 / 8192 槽位），Paillier / TFHE 每个数一条。
+- 耗时与密文大小按统一模型（与 H.6 参数寻优、四步流程共用，1 KB = 1024 字节）：CKKS / BGV 一条密文打包整组（4096 / 8192 槽位），Paillier / TFHE 每个数一条。单条密文：CKKS 2 × N × L × 8 字节，N = 8192、L = 3 → 384 KB，乘法重缩放后 L = 2 → 256 KB；BGV N = 8192、L = 4（SEAL 默认 [43, 43, 44, 44, 44] 去掉特殊素数）→ 512 KB；Paillier 2 × 2048 bit = 0.5 KB；TFHE FheInt32 16 × (2048 + 1) × 8 字节 = 256.1 KB。CKKS / BGV 耗时用 H.6 规则 4 的同一公式（N = 8192、L = 3：密钥生成约 21.5 ms、加密 2.4 ms、加法 0.07 ms、乘法 2.9 ms、解密 0.26 ms）。响应附 `ciphertext_kb_each` 与 `ciphertext_formula`。
 
 错误：方案或 op 未知、A/B 个数不符 `40000`；Paillier + `mul` 或库不支持 `40001`；非数值 `40002`；精度越界、超过 64 个、明文空间溢出 `40003`。
 
@@ -175,11 +175,15 @@ POST /he/param-optimize
 1. Δ 位数 = ⌈d · log2 10⌉ + 20（d 为小数位，20 bit 为编码与重缩放噪声余量），限制在 20–60 bit。
 2. 模数链 = [q0, Δ × 深度, P]，q0 = P = min(60, Δ + 20)。
 3. N 取满足「总模数 ≤ HomomorphicEncryption.org 安全标准上限」且「N / 2 ≥ 批大小」的最小值。上限表（三元秘密、经典攻击，与 SEAL `CoeffModulus::MaxBitCount` 相同）：128 位 N = 1024/2048/4096/8192/16384/32768 → 27/54/109/218/438/881 bit；192 位 → 19/37/75/152/305/611；256 位 → 14/29/58/118/237/476。
-4. 性能估算：以 SEAL 4.1 单线程 N = 8192、L = 3 的量级（加法约 0.07 ms，乘法含重线性化与重缩放约 2.9 ms）为基准，加法按 N·L、乘法按 N·log2 N·L·(L+1) 外推；密文大小 = 2 × N × L × 8 字节（L = 深度 + 1）。
+4. 性能估算：以 SEAL 4.1 单线程 N = 8192、L = 3 的量级（加法约 0.07 ms，乘法含重线性化与重缩放约 2.9 ms）为基准，加法按 N·L、乘法按 N·log2 N·L·(L+1) 外推；密文大小 = 2 × N × L × 8 字节（L = 深度 + 1，1 KB = 1024 字节）。运算验证（H.5）与四步流程（H.7.0）使用同一函数，同参数下数值一致。
 
 错误：安全强度不在 128/192/256 `40000`；深度、精度、批大小越界 `40003`；N ≤ 32768 内无可行解 `40003`（`data.total_modulus_bits`）。
 
 ## H.7 密钥生命周期
+
+### H.7.0 四步流程的耗时口径与日志（包装 API.md §3.3–3.5）
+
+`POST /he/encrypt`、`POST /he/evaluate`、`POST /he/decrypt` 由 mock 扩展以 routeFirst 接管，请求与响应字段不变；耗时与 `size_kb` 改用 H.5 的统一模型（CKKS 加密单条 384 KB，密文乘法结果 256 KB）。会话密钥（`purpose = session`）从生成开始逐步记账，解密完成后写入性能日志（H.10，来源 `session`「全流程配置」）；`session_summary.total_elapsed_ms / total_ciphertext_kb` 为本次会话实际记账之和，`logged = true`、`log_source = 'session'`。重置销毁密钥后日志保留。
 
 服务：HE-APP-03（HE-APP-01 的四步流程也经过这些接口）。对应「密钥管理」。
 
@@ -282,6 +286,8 @@ GET  /projects/{project_id}/he/simulations
 
 响应：`sim_id`、输入回显、`max_abs_error`、`mean_abs_error`、`passed`、`conclusion`、`steps[]`（`keygen` / `encrypt` / `aggregate` / `decrypt`，含 `elapsed_ms`、`ciphertext_kb`、`ciphertext_count`、`detail`）、`checks[]`（`name`、`passed`、`detail`）、`total_elapsed_ms`、`created_at`。
 
+耗时口径：Paillier 按节点侧 16 线程批处理、CRT 解密（单条打包密文 加密 3.4 / 16 ≈ 0.213 ms、聚合 0.8 / 16 = 0.05 ms / 方、解密 4.2 / 4 / 16 ≈ 0.066 ms），各参与方在各自节点同时加密，`total_elapsed_ms` = 密钥生成 + 一次加密 + 聚合 + 解密。
+
 规则：每个参与方生成 `dim` 维 N(0, 0.02²) 模拟梯度（种子 = 项目 + 方案 + 维度 + 参与方数）。Paillier：逐元素 round(g · 10^p) 后整数求和再除回，每 32 个定点数打包为 1 条 2048 bit 明文（64 bit 槽位）；CKKS：按 4096 槽位打包，聚合噪声 √参与方数 · 2^-28。校验项：密文条数一致、聚合维度一致、最大绝对误差 ≤ 容差、Paillier 槽位不溢出（求和后定点整数 ≤ 64 bit）。
 
 错误：方案不支持、维度不在 {1000, 10000} `40000`；参与方数、精度、容差越界 `40003`；项目不存在 `40400`。
@@ -295,14 +301,15 @@ GET /projects/{project_id}/he/logs?source=fl_job&ref_id=fl_p1_002
 GET /projects/{project_id}/he/logs/export?source=&ref_id=        （CSV 下载）
 ```
 
-`source`：`simulation` / `fl_job`，不传为全部。响应：`items[]`（`log_id`、`source`、`ref_id`、`ref_name`、`round`、`stage`、`stage_label`、`scheme`、`party`、`elapsed_ms`、`ciphertext_kb`、`ciphertext_count`、`recorded_at`）、`total`、`refs[]`（筛选下拉）、`summary[]`（按环节：`count`、`total_elapsed_ms`、`avg_elapsed_ms`、`total_ciphertext_kb`）。
+`source`：`session`（全流程配置）/ `simulation` / `fl_job`，不传为全部。响应：`items[]`（`log_id`、`source`、`ref_id`、`ref_name`、`round`、`stage`、`stage_label`、`scheme`、`party`、`elapsed_ms`、`ciphertext_kb`、`ciphertext_count`、`recorded_at`）、`total`、`refs[]`（筛选下拉）、`summary[]`（按环节：`count`、`total_elapsed_ms`、`avg_elapsed_ms`、`total_ciphertext_kb`）、`timing_basis`（耗时口径说明）。
 
 来源：
 
+- 全流程配置：四步流程每次解密完成后，按实际执行的 密钥生成 / 加密 / 密态运算 / 解密 各记 1 条。
 - 流程测试：每次模拟展开为 密钥生成 1 条 + 每个参与方加密 1 条 + 密态聚合 1 条 + 解密 1 条。
-- 训练任务：`aggregation = he` 且已跑的每一轮，每个训练节点加密 1 条 + 聚合方密态聚合 1 条 + 密钥服务解密 1 条；密文条数 = ⌈模型参数量 / 32⌉（参数量读内核 `k.MODEL_PARAMS`：lr 69、xgb 2176、cnn 61706、lstm 203143、tcn 37959、custom 20000，例如 xgb → 68 条、35.4 KB / 节点 / 轮），单条 0.52 KB，加密 3.4 ms / 条、聚合 0.8 ms / 条 / 方、解密 4.2 ms / 条，±6% 确定性抖动。
+- 训练任务：`aggregation = he` 且已跑的每一轮，每个训练节点加密 1 条 + 聚合方密态聚合 1 条 + 密钥服务解密 1 条；密文条数 = ⌈模型参数量 / 32⌉（参数量读内核 `k.MODEL_PARAMS`：lr 69、xgb 2176、cnn 61706、lstm 203143、tcn 37959、custom 20000，例如 xgb → 68 条、34 KB / 节点 / 轮），单条 0.5 KB（2 × 2048 bit），按节点侧 16 线程批处理 + CRT 解密计（加密 0.213 ms / 条、聚合 0.05 ms / 条 / 方、解密 0.066 ms / 条），±6% 确定性抖动。各训练节点并行加密，每轮墙钟 = 最慢节点加密 + 聚合 + 解密，小于每轮训练时长 4.2 秒（参数量最大的 LSTM 203143 维 → 6349 条，约 1.35 + 0.63 + 0.42 ≈ 2.4 秒）。
 
-CSV 列：`来源,任务或测试 ID,名称,轮次,环节,方案,节点或参与方,耗时(ms),密文大小(KB),密文条数,记录时间`，UTF-8 BOM。错误：`source` 非法 `40000`；项目不存在 `40400`。
+CSV 列：`来源,任务或测试 ID,名称,轮次,环节,方案,节点或参与方,耗时(ms),密文大小(KB),密文条数,记录时间(UTC+8)`，时间用内核 `fmtLocal` 写成 `2026-10-23 22:58:02 +08:00`，UTF-8 BOM。错误：`source` 非法 `40000`；项目不存在 `40400`。
 
 ## 接口总表（增补）
 
@@ -319,6 +326,7 @@ CSV 列：`来源,任务或测试 ID,名称,轮次,环节,方案,节点或参与
 | POST | `/he/keys/{key_id}/distribute` | HE-APP-03 |
 | POST | `/he/keys/{key_id}/rotate` | HE-APP-03 |
 | POST | `/he/encrypt`（加密前检查密钥状态） | HE-APP-01、HE-APP-03 |
+| POST | `/he/evaluate`、`/he/decrypt`（统一耗时模型、会话记日志） | HE-APP-01、HE-APP-05 |
 | DELETE | `/he/keys/{key_id}`（保留销毁记录） | HE-APP-01、HE-APP-03 |
 | GET / PUT | `/projects/{project_id}/he/rotation-policy` | HE-APP-03 |
 | POST / GET | `/projects/{project_id}/he/simulations` | HE-APP-04 |

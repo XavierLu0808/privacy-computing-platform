@@ -267,13 +267,16 @@ test('[HE-APP-05] 日志：模拟与同态聚合训练的每环节耗时与密�
   assert.equal(j.total, 2 * (3 + 1 + 1), '每轮 3 个训练节点加密 + 聚合 + 解密');
   const enc = j.items.find((x) => x.stage === 'encrypt');
   assert.equal(enc.ciphertext_count, Math.ceil(2176 / 32), 'xgb 单次上传 2176 维 → 68 条密文');
-  assert.equal(enc.ciphertext_kb, Number((68 * 0.52).toFixed(1)));
-  assert.ok(enc.elapsed_ms > 68 * 3.4 * 0.94 - 0.1 && enc.elapsed_ms < 68 * 3.4 * 1.06 + 0.1, '加密 3.4 ms / 条 ±6%');
+  assert.equal(enc.ciphertext_kb, 34, '68 条 × 0.5 KB（2 × 2048 bit = 512 字节）');
+  const per = 3.4 / 16;
+  assert.ok(enc.elapsed_ms > 68 * per * 0.94 - 0.01 && enc.elapsed_ms < 68 * per * 1.06 + 0.01, '节点 16 线程批处理：3.4 / 16 ms / 条 ±6%');
+  assert.match(j.timing_basis, /16 线程批处理/);
   assert.ok(j.summary.find((x) => x.stage === 'encrypt').avg_elapsed_ms > 0);
   assert.deepEqual(j.refs.map((r) => r.source).sort(), ['fl_job', 'simulation']);
   const f = await download('/projects/p1/he/logs/export?source=fl_job&ref_id=' + cls.job_id);
   const lines = f.content.trim().split('\n');
-  assert.match(lines[0], /耗时\(ms\),密文大小\(KB\)/);
+  assert.match(lines[0], /耗时\(ms\),密文大小\(KB\),密文条数,记录时间\(UTC\+8\)$/);
+  lines.slice(1).forEach((l) => assert.match(l, /,\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00$/, '[D07] 导出时间按 UTC+8'));
   assert.equal(lines.length, 1 + 10);
   assert.equal(await errCode('GET', '/projects/p1/he/logs?source=xx'), 40000);
   await okData('POST', '/fl/jobs/' + cls.job_id + '/actions', { action: 'terminate' });
@@ -290,7 +293,7 @@ test('[HE-APP-03] 密钥状态约束加密：已轮换 40901、已销毁 40402�
   assert.equal(r.message, '密钥已轮换，只能用于解密历史密文');
   assert.equal(r.data.rotated_to, rot.new_key.key_id);
   const enc = await okData('POST', '/he/encrypt', { key_id: rot.new_key.key_id, ...vals });
-  assert.equal(enc.ciphertexts[0].size_kb, 262.1, '与内核 CKKS 密文大小一致');
+  assert.equal(enc.ciphertexts[0].size_kb, 384, 'CKKS N = 8192、L = 3：2 × 8192 × 3 × 8 字节 = 384 KB');
   await okData('DELETE', '/he/keys/' + rot.new_key.key_id);
   assert.equal(await errCode('POST', '/he/encrypt', { key_id: rot.new_key.key_id, ...vals }), 40402);
   assert.equal(await errCode('POST', '/he/encrypt', { key_id: 'hek_nope', ...vals }), 40402);
@@ -367,4 +370,69 @@ test('[HE-APP-03] 一个项目只保留一把在用的联邦聚合密钥：新�
   assert.equal(items.find((x) => x.key_id === sess.key_id).status, 'active', '会话密钥不受影响');
   const p2v = (await okData('GET', '/he/keys?project_id=p2')).items.filter((x) => x.purpose === 'fl_aggregation' && x.status === 'active');
   assert.deepEqual(p2v.map((x) => x.key_id), [p2.key_id], '其他项目不受影响');
+});
+
+test('[HE-ALGO-02][HE-ALGO-08] 同一 CKKS 参数下运算验证、四步流程、参数寻优的单条密文大小一致（2 × N × L × 8 字节）', async (t) => {
+  const { okData } = boot(t);
+  const v = await okData('POST', '/he/verify', { scheme: 'ckks', op: 'add', a: ['1.5'], b: ['2.5'], precision: 4 });
+  const opt = await okData('POST', '/he/param-optimize', { security_bits: 128, mult_depth: 2, precision_digits: 6, batch_size: 4096 });
+  assert.deepEqual(opt.recommended.coeff_modulus_bits, [60, 40, 40, 60]);
+  assert.equal(v.ciphertext_kb_each, opt.recommended.ciphertext_kb);
+  assert.equal(v.steps.find((x) => x.stage === 'encrypt').size_kb, 2 * 384);
+  assert.match(v.ciphertext_formula, /2 × N × L × 8 字节/);
+  const key = await okData('POST', '/he/keys', { scheme: 'ckks', project_id: 'p1' });
+  const e = await okData('POST', '/he/encrypt', { key_id: key.key_id, precision: 4, values: [{ name: 'A', value: '1' }] });
+  assert.equal(e.ciphertexts[0].size_kb, opt.recommended.ciphertext_kb);
+  const mul = await okData('POST', '/he/verify', { scheme: 'ckks', op: 'mul', a: ['1.5'], b: ['2.5'], precision: 4 });
+  assert.equal(mul.steps.find((x) => x.stage === 'evaluate').size_kb, 256, '乘法重缩放后 L = 2');
+  const opt3 = await okData('POST', '/he/param-optimize', { security_bits: 128, mult_depth: 1, precision_digits: 6, batch_size: 4096 });
+  assert.equal(opt3.recommended.ciphertext_kb, 256, '深度 1：L = 2，与乘法后密文同口径');
+});
+
+test('[HE-APP-01][HE-APP-05] 四步流程解密后真正写入性能日志（来源「全流程配置」），汇总与日志一致；未解密不记', async (t) => {
+  const { okData, errCode } = boot(t);
+  const key = await okData('POST', '/he/keys', { scheme: 'ckks', project_id: 'p1' });
+  const enc = await okData('POST', '/he/encrypt', { key_id: key.key_id, precision: 4, values: [{ name: 'A', value: '128.75' }, { name: 'B', value: '64.25' }] });
+  const ev = await okData('POST', '/he/evaluate', { key_id: key.key_id, op: 'mul', left_ciphertext_id: enc.ciphertexts[0].ciphertext_id, right_ciphertext_id: enc.ciphertexts[1].ciphertext_id });
+  assert.equal(ev.size_kb, 256);
+  assert.equal((await okData('GET', '/projects/p1/he/logs?source=session')).total, 0, '解密前不记');
+  const dec = await okData('POST', '/he/decrypt', { key_id: key.key_id, ciphertext_id: ev.result_ciphertext_id, verify: true });
+  assert.equal(dec.plaintext, '8272.1875');
+  assert.equal(dec.session_summary.logged, true);
+  const logs = await okData('GET', '/projects/p1/he/logs?source=session&ref_id=' + key.key_id);
+  assert.deepEqual(logs.items.map((x) => x.stage), ['keygen', 'encrypt', 'evaluate', 'decrypt']);
+  assert.match(logs.items[0].ref_name, /全流程配置 · CKKS · 密文乘法/);
+  const sumMs = logs.items.reduce((a, x) => a + x.elapsed_ms, 0);
+  assert.ok(Math.abs(sumMs - dec.session_summary.total_elapsed_ms) <= 0.05, "汇总按 0.1 ms 取整");
+  assert.equal(dec.session_summary.total_ciphertext_kb, 2 * 384 + 256);
+  assert.ok(logs.refs.some((r) => r.source === 'session' && r.ref_id === key.key_id));
+  await okData('DELETE', '/he/keys/' + key.key_id);
+  assert.equal((await okData('GET', '/projects/p1/he/logs?source=session')).total, 4, '重置销毁密钥后日志保留');
+  assert.equal(await errCode('POST', '/he/evaluate', { key_id: key.key_id, op: 'add', left_ciphertext_id: 'x', right_plaintext: '1' }), 40402);
+});
+
+test('[HE-APP-05] 同态训练任务每轮 加密 + 聚合 + 解密 墙钟耗时小于每轮训练时长（含参数量最大的 LSTM）', async (t) => {
+  const { okData, tick } = boot(t);
+  const { items } = await okData('GET', '/projects/p1/fl/jobs');
+  const xgb = items.find((j) => j.aggregation === 'he');
+  const lstm = await okData('POST', '/projects/p1/fl/jobs', {
+    name: 'LSTM 同态', task_type: 'timeseries', algorithm: 'lstm', aggregation: 'he', total_rounds: 3,
+    node_ids: ['node-shanghai-01', 'node-hangzhou-02', 'node-ganzhou-03', 'node-center-agg'],
+    dataset_source: { type: 'dataset', dataset_ids: ['ds_p1_a_txn_ts'] }, timeseries: { time_column: 'txn_date', window_size: 14, horizon: 3 }
+  });
+  for (const j of [xgb, lstm]) await okData('POST', '/fl/jobs/' + j.job_id + '/actions', { action: 'start' });
+  tick(650 * 3);
+  for (const j of [xgb, lstm]) {
+    const job = await okData('GET', '/fl/jobs/' + j.job_id);
+    const roundMs = job.elapsed_sec / job.current_round * 1000;
+    const { items: rows } = await okData('GET', '/projects/p1/he/logs?source=fl_job&ref_id=' + j.job_id);
+    assert.ok(rows.length > 0);
+    for (const r of new Set(rows.map((x) => x.round))) {
+      const rr = rows.filter((x) => x.round === r);
+      const wall = Math.max(...rr.filter((x) => x.stage === 'encrypt').map((x) => x.elapsed_ms)) +
+        rr.find((x) => x.stage === 'aggregate').elapsed_ms + rr.find((x) => x.stage === 'decrypt').elapsed_ms;
+      assert.ok(wall < roundMs, j.job_id + ' 第 ' + r + ' 轮加解密 ' + wall.toFixed(0) + ' ms 应小于每轮 ' + roundMs + ' ms');
+    }
+    await okData('POST', '/fl/jobs/' + j.job_id + '/actions', { action: 'terminate' }).catch(() => {});
+  }
 });

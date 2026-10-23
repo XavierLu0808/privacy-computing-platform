@@ -335,7 +335,7 @@
     }
     const ban = el('div', 'banner-note');
     ban.appendChild(el('span', null, algoOf(r.scheme).name + ' · ' + (lib ? lib.name : r.library) + ' · ' + r.op_label + '。' + how +
-      '。最大绝对误差 ' + errStr(r.max_abs_error) + '（逐元素 |解密值 − 明文直接计算值| 的最大值）；五步合计耗时 ' + r.total_elapsed_ms + ' ms。'));
+      '。单条密文 ' + r.ciphertext_kb_each + ' KB（' + r.ciphertext_formula + '）。最大绝对误差 ' + errStr(r.max_abs_error) + '（逐元素 |解密值 − 明文直接计算值| 的最大值）；五步合计耗时 ' + r.total_elapsed_ms + ' ms。'));
     out.appendChild(ban);
 
     const fixed = r.mode === 'fixed_point';
@@ -435,7 +435,7 @@
     g.appendChild(metric('模数链（bit）', '[' + b.coeff_modulus_bits.join(', ') + ']', '总模数 ' + b.total_modulus_bits + ' bit，' + r.input.security_bits + ' 位安全上限 ' + b.max_modulus_bits + ' bit'));
     g.appendChild(metric('缩放因子 Δ', '2^' + b.scale_bits, '整数部分可用 ' + b.integer_bits + ' bit，小数精度 ' + r.input.precision_digits + ' 位'));
     g.appendChild(metric('单次运算耗时（估算）', b.est_add_ms + ' / ' + b.est_mul_ms + ' ms', '密文加法 / 密文乘法（含重线性化、重缩放）'));
-    g.appendChild(metric('单条密文大小', b.ciphertext_kb + ' KB', '2 × N × ' + (b.coeff_modulus_bits.length - 1) + ' 个素数 × 8 字节'));
+    g.appendChild(metric('单条密文大小', b.ciphertext_kb + ' KB', '2 × N × L × 8 字节，L = ' + (b.coeff_modulus_bits.length - 1) + ' 个素数（不含特殊素数），1 KB = 1024 字节；与运算验证同一公式'));
     out.appendChild(g);
 
     out.appendChild(el('span', 'card-label', '候选方案对比'));

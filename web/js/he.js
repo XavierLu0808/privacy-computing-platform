@@ -135,7 +135,8 @@
           '密文运算结果 ' + res.plaintext + ' 与明文直接计算结果 ' + res.verification.expected +
           ' 一致（绝对误差 ' + res.verification.abs_error + '）；累计密文体积 ' +
           res.session_summary.total_ciphertext_kb + ' KB，' +
-          (res.session_summary.logged ? '已记入训练日志。' : '未记入日志。');
+          (res.session_summary.logged ? '已记入下方「加解密性能日志」（来源：全流程配置）。' : '未记入日志。');
+        if (appBuilt) loadLogs();
       }
     } catch (e) { UI.fail(e); }
   }
@@ -359,10 +360,10 @@
     sec.appendChild(km);
 
     // HE-APP-05 日志
-    const lg = appCard('HE-APP-05', '加解密性能日志', '每个环节的耗时与密文大小，来源为流程测试与同态聚合训练任务');
+    const lg = appCard('HE-APP-05', '加解密性能日志', '每个环节的耗时与密文大小，来源为四步全流程、流程测试与同态聚合训练任务');
     const lf = UI.el('div', 'he-form');
     lf.appendChild(UI.formRow('来源', UI.selectOf('heLogSource', [
-      { value: '', label: '全部来源' }, { value: 'simulation', label: '流程测试' }, { value: 'fl_job', label: '训练任务' }
+      { value: '', label: '全部来源' }, { value: 'session', label: '全流程配置' }, { value: 'simulation', label: '流程测试' }, { value: 'fl_job', label: '训练任务' }
     ], '')));
     const refSel = UI.selectOf('heLogRef', [{ value: '', label: '全部任务 / 测试' }], '');
     refSel.style.minWidth = '300px';
@@ -657,7 +658,8 @@
       out.appendChild(line);
     });
     out.appendChild(UI.el('span', 'hint', '平均绝对误差 ' + r.mean_abs_error.toExponential(2) + '（' + r.dim.toLocaleString('zh-CN') + ' 维逐元素 |聚合解密值 − 明文求和| 的均值）；' +
-      '全流程耗时 ' + r.total_elapsed_ms + ' ms（加密按 ' + r.parties + ' 个参与方串行累计）。'));
+      '全流程墙钟耗时 ' + r.total_elapsed_ms + ' ms（' + r.parties + ' 个参与方在各自节点同时加密，加密计一次' +
+      (r.scheme === 'paillier' ? '；Paillier 按节点 16 线程批处理、CRT 解密' : '') + '）。'));
   }
 
   /* ---------- HE-APP-05 ---------- */
@@ -680,13 +682,14 @@
       logRefs.filter(function (r) { return !src || r.source === src; }).forEach(function (r) {
         const o = document.createElement('option');
         o.value = r.ref_id;
-        o.textContent = (r.source === 'fl_job' ? '训练任务：' : '流程测试：') + r.ref_name;
+        o.textContent = LOG_SRC[r.source][0] + '：' + r.ref_name;
         sel.appendChild(o);
       });
       sel.value = cur && logRefs.some(function (r) { return r.ref_id === cur; }) ? cur : '';
       renderLogs2(box, res);
     } catch (e) { inlineErr(box, e); }
   }
+  const LOG_SRC = { fl_job: ['训练任务', 'tag tag-cls'], simulation: ['流程测试', 'tag tag-ts'], session: ['全流程配置', 'tag'] };
   const STAGE_CN = { keygen: '密钥生成', encrypt: '加密', aggregate: '密态聚合', decrypt: '解密', evaluate: '密态运算' };
   function renderLogs2(box, res) {
     const sum = $('heLogSummary');
@@ -698,7 +701,7 @@
     UI.clear(box);
     box.appendChild(gridHead('he-log-grid', ['来源', '任务 / 测试', '轮次', '环节', '节点 / 参与方', '耗时（ms）', '密文大小（KB）', '密文条数', '记录时间']));
     if (!res.items.length) {
-      box.appendChild(UI.el('div', 'table-empty', '暂无日志：运行上方「流程测试模拟」，或启动已启用同态加密聚合的训练任务后自动记录'));
+      box.appendChild(UI.el('div', 'table-empty', '暂无日志：完成页面顶部四步流程、运行「流程测试模拟」，或启动已启用同态加密聚合的训练任务后自动记录'));
       return;
     }
     const items = res.items.slice().sort(function (a, b) {
@@ -708,7 +711,7 @@
     const wrap = UI.el('div', 'he-table-scroll');
     items.slice(0, LIMIT).forEach(function (x) {
       wrap.appendChild(gridRow('he-log-grid he-num', [
-        UI.el('span', x.source === 'fl_job' ? 'tag tag-cls' : 'tag tag-ts', x.source === 'fl_job' ? '训练任务' : '流程测试'),
+        UI.el('span', LOG_SRC[x.source][1], LOG_SRC[x.source][0]),
         UI.el('span', 'cell-muted', x.ref_name), x.round === null ? '—' : String(x.round), x.stage_label, x.party,
         UI.el('span', 'cell-strong', String(x.elapsed_ms)), x.ciphertext_kb === null ? '—' : String(x.ciphertext_kb),
         x.ciphertext_count === null ? '—' : String(x.ciphertext_count), UI.datetime(x.recorded_at)
@@ -716,7 +719,7 @@
     });
     box.appendChild(wrap);
     box.appendChild(UI.el('span', 'hint', '共 ' + res.total + ' 条' + (res.total > LIMIT ? '，页面显示最近 ' + LIMIT + ' 条，完整数据请导出 CSV' : '') +
-      '。训练任务的梯度按 Paillier 2048 bit 明文空间 32 个 64 bit 槽位打包加密。'));
+      '。训练任务的梯度按 Paillier 2048 bit 明文空间 32 个 64 bit 槽位打包加密，单条密文 0.5 KB（2 × 2048 bit）。耗时口径：' + res.timing_basis + '。'));
   }
   async function exportLogs() {
     try {
