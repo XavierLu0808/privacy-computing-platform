@@ -42,7 +42,7 @@
     "tests": [
       "tests/fed-orch.test.mjs: [FL-ORCH-02] 节点管理：添加校验 IP / 端口 / 重复 ID / 连通性，编辑与删除"
     ],
-    "impl": "节点表主键为 (project_id, node_id)，字段 ip、port、role（trainer / aggregator）、data_partition、data_dir、last_heartbeat_at。添加与编辑校验 IPv4 每段 0–255 或 IPv6、端口 1–65535 整数、node_id 仅小写字母数字短横线且项目内唯一（重复返回 40902）、训练节点必须有数据分区，添加时做连通性检查（不可达返回 42201）。节点被状态为 Running / Paused 的任务引用时删除或修改结构性字段返回 40901 并列出任务；节点 ID 作为任务引用的稳定标识，被任何历史任务引用后不允许改名。",
+    "impl": "节点表主键为 (project_id, node_id)，字段 ip、port、role（trainer / aggregator）、data_partition、data_dir、last_heartbeat_at。添加与编辑校验 IPv4 每段 0–255 或 IPv6、端口 1–65535 整数、node_id 仅小写字母数字短横线且项目内唯一（重复返回 40902）、训练节点必须有数据分区，添加时做连通性检查（不可达返回 42201）。节点被状态为 Running / Paused 的任务引用时删除或修改结构性字段返回 40901 并列出任务；节点 ID 作为任务引用的稳定标识，被任何历史任务引用后不允许改名。IP 另拒绝 0.0.0.0、255.255.255.255、回环、组播、保留段及按 /24 子网的网络地址（主机位全 0）与广播地址（主机位全 1），并在提示中说明原因。",
     "status": "done"
   },
   "FL-ORCH-03": {
@@ -61,7 +61,7 @@
     "tests": [
       "tests/fed-orch.test.mjs: [FL-ORCH-03] 数据隔离：访问矩阵只放行本节点，越权读取被拒并记日志，传输内容只含梯度与参数"
     ],
-    "impl": "每个训练节点登记独立 data_dir（默认 /data/fl/{项目}/{分区}），策略为目录权限 0700 + 节点挂载命名空间隔离，访问判定规则是发起节点 = 目录属主才放行，结果与操作人写入 fl_isolation_audit。跨节点通信只允许 ModelUpdate 消息白名单字段；传输审计取任务最后一轮各节点消息，字节数来自训练引擎每轮记录的 upload_kb，梯度元素数按 float32 4 字节换算，并把消息字段名与本项目所有数据集列名逐一比对，命中即判为泄露。",
+    "impl": "每个训练节点登记独立 data_dir（默认 /data/fl/{项目}/{分区}），策略为目录权限 0700 + 节点挂载命名空间隔离，访问判定规则是发起节点 = 目录属主才放行，结果与操作人写入 fl_isolation_audit。跨节点通信只允许 ModelUpdate 消息白名单字段；传输审计取任务最后一轮各节点消息，字节数来自训练引擎每轮记录的 upload_kb，梯度元素数按 float32 4 字节换算，并把消息字段名与本项目所有数据集列名逐一比对，命中即判为泄露。各节点梯度与全局参数元素数相同，等于内核参数量表 MODEL_PARAMS 中该算法的参数量（未稀疏化，保留比例 100%），另列链路实际传输量（含加密 / 分享开销）。",
     "status": "done"
   },
   "FL-ORCH-04": {
@@ -84,7 +84,7 @@
       "tests/fed-orch.test.mjs: [FL-ORCH-04] 项目配置：详情、修改持久化（revision 递增）、导出 JSON；非法修改被拒",
       "tests/fed-orch.test.mjs: [FL-ORCH-01][FL-ORCH-04] 新建任务默认聚合策略取聚合与安全页的项目配置（k.db.fla）"
     ],
-    "impl": "配置持久化在 fl_project_config 表，PATCH 只校验传入字段，基准模型与版本成对校验，成功后 revision 递增并记录 updated_by / updated_at。列表接口支持 keyword 模糊查询与分页，返回配置摘要与节点数、任务数；新建训练任务未传 total_rounds / aggregation 时分别取项目配置与聚合与安全页的项目策略。导出为 schema_version = fl-project-config/1 的 JSON 文件，内容为项目、训练配置、节点清单（含数据目录）与隔离策略，不含凭据。",
+    "impl": "配置持久化在 fl_project_config 表，PATCH 只校验传入字段，基准模型与版本成对校验，成功后 revision 递增并记录 updated_by / updated_at。列表接口支持 keyword 模糊查询与分页，返回配置摘要与节点数、任务数；新建训练任务未传 total_rounds / aggregation 时分别取项目配置与聚合与安全页的项目策略。导出为 schema_version = fl-project-config/1 的 JSON 文件，内容为项目、训练配置、节点清单（含数据目录）与隔离策略，不含凭据。导出文件内时间统一写成 UTC+8（形如 2026-10-23 22:10:05 +08:00），并带 timezone 字段。",
     "status": "done"
   },
   "FL-ORCH-05": {
@@ -127,7 +127,7 @@
       "tests/fed-orch.test.mjs: [FL-ORCH-06] 算法注册：JSON Schema 子集校验，注册后可用于新建训练任务",
       "tests/fed-orch.test.mjs: [FL-ORCH-06][FL-ORCH-07] 任务列表 / 详情 / 动作返回注册算法与自定义模型的真实名称和版本"
     ],
-    "impl": "注册信息写 fl_algorithm（名称、任务类型、基类、模型格式 pkl / pt / h5 / onnx）与 fl_algorithm_version（版本号 主.次.修订、params_schema、制品 file_id）。参数 schema 按 JSON Schema 子集校验：根 type = object，参数 type 限 integer / number / string / boolean，约束限 minimum / maximum / enum / default / required，并检查 minimum ≤ maximum、enum 与类型一致、默认值满足约束。新建任务时注册算法映射为训练引擎的 custom 算法加该版本制品 model_file_id，params 按 schema 校验后与 algo_ref 一起记录在任务上。",
+    "impl": "注册信息写 fl_algorithm（名称、任务类型、基类、模型格式 pkl / pt / h5 / onnx）与 fl_algorithm_version（版本号 主.次.修订、params_schema、制品 file_id）。参数 schema 按 JSON Schema 子集校验：根 type = object，参数 type 限 integer / number / string / boolean，约束限 minimum / maximum / enum / default / required，并检查 minimum ≤ maximum、enum 与类型一致、默认值满足约束。新建任务时注册算法映射为训练引擎的 custom 算法加该版本制品 model_file_id，params 按 schema 校验后与 algo_ref 一起记录在任务上。schema 文本不是合法 JSON 时，提示给出中文原因与行列位置，不含浏览器英文原文。",
     "status": "done"
   },
   "FL-ORCH-07": {
@@ -151,7 +151,7 @@
       "tests/fed-orch.test.mjs: [FL-ORCH-07] 自定义模型上传：结构校验给出层数 / 参数量 / 输入形状，损坏或空文件校验失败",
       "tests/fed-orch.test.mjs: [FL-ORCH-06][FL-ORCH-07] 任务列表 / 详情 / 动作返回注册算法与自定义模型的真实名称和版本"
     ],
-    "impl": "前端先以 multipart 调 POST /files（purpose = fl_model）上传，再以 file_id 调 POST /projects/{id}/fl/models 做结构校验：依次检查扩展名、文件大小、文件头与反序列化（pickle STOP 操作码、PyTorch ZIP 中央目录、HDF5 签名与 model_config、ONNX graph.node），再检查层结构与输入形状是否匹配任务类型。mock 以文件名和大小为种子确定性生成层数，参数量按 (大小 − 512 B) / 4 的 float32 口径估算；校验失败返回 40002 与逐项报告，通过的模型以 kind = custom、project_id 作用域登记，并用 CustomModelWrapper 统一包装 fit / predict / evaluate。",
+    "impl": "前端先以 multipart 调 POST /files（purpose = fl_model）上传，再以 file_id 调 POST /projects/{id}/fl/models 做结构校验：依次检查扩展名、文件大小、文件头与反序列化（pickle STOP 操作码、PyTorch ZIP 中央目录、HDF5 签名与 model_config、ONNX graph.node），再检查层结构与输入形状是否匹配任务类型。mock 以文件名和大小为种子确定性生成层数，参数量按 (大小 − 512 B) / 4 的 float32 口径估算；校验失败返回 40002 与逐项报告，通过的模型以 kind = custom、project_id 作用域登记，并用 CustomModelWrapper 统一包装 fit / predict / evaluate。上传弹窗中自动填充的模型名称随换选的文件更新，用户手动改过名称后不再覆盖。",
     "status": "done"
   },
   "FL-ORCH-08": {

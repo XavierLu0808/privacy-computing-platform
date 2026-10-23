@@ -45,7 +45,7 @@
     ['flStart:start', 'flPause:pause', 'flResume:resume', 'flKill:terminate', 'flReset:reset']
       .forEach(function (pair) {
         const parts = pair.split(':');
-        $(parts[0]).addEventListener('click', function () { action(parts[1]); });
+        $(parts[0]).addEventListener('click', function () { parts[1] === 'terminate' ? confirmTerminate() : action(parts[1]); });
       });
 
     $('flAlgo').addEventListener('change', function () { patch({ algorithm: $('flAlgo').value }); });
@@ -238,6 +238,22 @@
   /** 没有选中任务（空项目或加载中）时控制按钮不可用。 */
   function disableControls() {
     ['flStart', 'flPause', 'flResume', 'flKill', 'flReset', 'flAlgo', 'flAgg', 'flExport'].forEach(function (id) { $(id).disabled = true; });
+  }
+
+  /** 强制终止前二次确认：写清会丢弃的内容与保留的内容。 */
+  function confirmTerminate() {
+    if (!job) return;
+    const r = job.current_round;
+    const ck = job.checkpoint;
+    const body = UI.el('div', 'fl-confirm');
+    body.appendChild(UI.el('div', 'banner banner-err', '强制终止会以 SIGKILL 立即结束全部 ' + (job.runtime ? job.runtime.workers.length : job.node_ids.length) +
+      ' 个训练容器并释放资源。' + (job.status === 'Running' ? '正在进行、尚未完成聚合的那一轮中各节点的本地更新将被丢弃。' : '任务处于暂停状态，终止后不能再从断点恢复。')));
+    body.appendChild(UI.el('span', 'hint', '保留：已完成轮次的全局与节点指标（打开本窗口时已完成 ' + r + ' 轮）' + (ck ? '、第 ' + ck.round + ' 轮断点文件' : '') +
+      '。终止后任务进入 Terminated，只能从第 0 轮重新启动。'));
+    const m = UI.modal({ title: '确认强制终止「' + job.name + '」', body: body, submitText: '确认终止', onSubmit: function () { return action('terminate'); } });
+    const btn = document.querySelector('.modal-mask:last-of-type .modal-foot .btn-primary');
+    if (btn) btn.classList.add('btn-danger');
+    return m;
   }
 
   async function action(name) {

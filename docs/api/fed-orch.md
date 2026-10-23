@@ -125,12 +125,12 @@ PATCH 字段同 1.2，均可选，只校验传入字段；`base_algorithm` 与 `
 GET /projects/{project_id}/config/export
 ```
 
-下载 `fl_project_{project_id}_config.json`：
+下载 `fl_project_{project_id}_config.json`。文件内时间统一写成 UTC+8（`k.fmtLocal`，形如 `2026-10-23 22:10:05 +08:00`），并带 `"timezone": "UTC+8"`：
 
 ```json
 {
   "schema_version": "fl-project-config/1",
-  "exported_at": "2026-10-23T07:02:00+08:00", "exported_by": "Rui",
+  "timezone": "UTC+8", "exported_at": "2026-10-23 22:10:05 +08:00", "exported_by": "Rui",
   "project": { "project_id": "p1", "name": "稀土氧化物价格联合预测 · 2026Q4", "type": "production", "description": "…", "created_at": "…" },
   "training": { "base_algorithm": "lstm", "model_version": "1.1.0", "total_rounds": 30, "target": { "metric": "rmse", "op": "<=", "value": 0.12 }, "aggregation_default": null },
   "nodes": [{ "node_id": "node-shanghai-01", "ip": "10.22.6.14", "port": 8471, "role": "trainer", "data_partition": "part-A", "data_dir": "/data/fl/p1/part-a" }],
@@ -152,7 +152,7 @@ GET /projects/{project_id}/config/export
 | 情形 | code |
 |---|---|
 | 节点 ID 不是小写字母 / 数字 / `-`；角色不是 `trainer` / `aggregator`；训练节点缺数据分区；缺 IP 或端口 | 40000 |
-| IP 不是合法 IPv4 / IPv6；数据分区含非法字符；`data_dir` 不是绝对路径 | 40002 |
+| IP 不是合法 IPv4 / IPv6；IP 为特殊地址（0.0.0.0、255.255.255.255、0.0.0.0/8、回环 127.0.0.0/8 与 ::1、组播 224.0.0.0/4 与 ff00::/8、保留 240.0.0.0/4、按 /24 子网的网络地址 x.x.x.0 与广播地址 x.x.x.255、::），message 说明原因；数据分区含非法字符；`data_dir` 不是绝对路径 | 40002 |
 | 端口不在 1–65535；节点 ID 超过 40 个字符 | 40003 |
 | 节点 ID 在项目内重复 | 40902 |
 | 连通性检查失败（mock：`192.0.2.0/24` 文档保留网段视为不可达） | 42201 |
@@ -234,7 +234,7 @@ POST /projects/{project_id}/isolation/checks
 }
 ```
 
-`total_bytes` 取自内核每轮记录的 `upload_kb × 1024`，梯度元素数按 float32 每个 4 字节换算。
+梯度 / 全局参数的元素数 `elements` 对同一任务的所有节点相同，等于内核参数量表 `k.MODEL_PARAMS[algorithm]`（例 LSTM 203,143、XGBoost 2,176），记在 `model_params`；未做稀疏化，`sparsity_keep_ratio = 1`。`total_bytes` 是消息明文大小（float32 每个 4 字节 + 元数据），`wire_bytes` 取内核每轮记录的 `upload_kb × 1024`，是链路实际传输量（含同态密文或秘密分享份额开销）。
 
 | 情形 | code |
 |---|---|
@@ -294,6 +294,8 @@ POST /fl/algorithms
 |---|---|
 | 缺名称、格式不在枚举、`task_types` 不合法 | 40000 |
 | 版本号格式错误、schema 不是合法 JSON 或不符合子集规则 | 40002 |
+
+schema 不是合法 JSON 时，message 给出中文原因与出错位置（行列号从 1 开始），不含浏览器英文原文，例「参数 schema 不是合法 JSON：第 1 行第 19 列，属性名必须用英文双引号包裹」；其他原因有「内容不完整，缺少结尾的括号或引号」「此处缺少逗号或右花括号 }」「字符串缺少结尾的双引号」等。
 | 名称超长、新版本号不大于已有最高版本 | 40003 |
 | 与内置算法同名、同名同版本已存在 | 40902 |
 
@@ -489,6 +491,8 @@ GET /fl/jobs/{job_id}/eta
 |---|---|
 | `scope` 不是 `global` / `nodes` | 40000 |
 | 轮次不是正整数；时间不是 ISO 8601 | 40002 |
+
+错误提示使用界面上的中文字段名（开始时间、结束时间、起始轮次、结束轮次、曲线范围），例「开始时间不能晚于结束时间」。
 | `from_round > to_round`；`start_time` 晚于 `end_time` | 40003 |
 | 任务不存在 | 40400 |
 
@@ -513,9 +517,12 @@ GET /fl/metrics?project_id=&job_id=&start_time=&end_time=&scope=global|nodes&pag
 下载 `GET /projects/{project_id}/fl/metrics/export?…` 或 `GET /fl/metrics/export?project_id=&job_id=&…`，CSV 列固定为：
 
 ```csv
-project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at
+project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at(UTC+8)
+p1,fl_p1_002,classification,1,global,0.9265,0.6076,,,2026-10-23 22:10:05 +08:00
 ```
+
+导出文件的时间统一用 `k.fmtLocal` 写成 UTC+8，列名注明 `(UTC+8)`；接口 JSON 中的时间仍为 ISO 8601。
 
 任务类型不适用的指标留空。错误码同 6.5，另有项目或任务不存在 40400。下载接口无法返回错误包（mock 抛出带原因的错误），页面导出前先用 `GET /fl/metrics` 校验条件和条数。
 
-单任务导出 `GET /fl/jobs/{job_id}/metrics/export` 的列仍为 `job_id,round,series,<指标键>,recorded_at`，默认 `scope = nodes`，`start_time` / `end_time` 按写入时间过滤，时间非法或开始晚于结束时导出失败并给出原因。
+单任务导出 `GET /fl/jobs/{job_id}/metrics/export` 的列为 `job_id,round,series,<指标键>,recorded_at(UTC+8)`，默认 `scope = nodes`，`start_time` / `end_time` 按写入时间过滤，时间非法或开始晚于结束时导出失败并给出原因。

@@ -49,6 +49,14 @@ test('[FL-ORCH-02] 节点管理：添加校验 IP / 端口 / 重复 ID / 连通�
   assert.equal(await errCode('POST', '/projects/p1/nodes', { ...base, data_partition: '' }), 40000);
   assert.equal(await errCode('POST', '/projects/p1/nodes', { ...base, node_id: 'node-shanghai-01' }), 40902);
   assert.equal(await errCode('POST', '/projects/p1/nodes', { ...base, ip: '192.0.2.10' }), 42201);
+  // D23：网络地址 / 广播地址 / 未指定 / 回环 / 组播被拒并说明原因
+  for (const [ip, rx] of [['10.0.0.0', /网络地址/], ['10.40.3.255', /广播地址/], ['0.0.0.0', /未指定地址/], ['255.255.255.255', /受限广播/],
+    ['127.0.0.1', /回环/], ['224.0.0.5', /组播/], ['::', /未指定/], ['::1', /回环/]]) {
+    const r = await call('POST', '/projects/p1/nodes', { ...base, ip });
+    assert.equal(r.code, 40002, ip);
+    assert.match(r.message, rx, ip);
+  }
+  assert.equal((await call('PATCH', '/projects/p1/nodes/node-shanghai-01', { ip: '10.22.6.0' })).code, 40002);
   const n = await okData('POST', '/projects/p1/nodes', base);
   assert.equal(n.data_dir, '/data/fl/p1/part-d');
   assert.equal(n.running_job_count, 0);
@@ -110,6 +118,11 @@ test('[FL-ORCH-03] 数据隔离：访问矩阵只放行本节点，越权读取�
     assert.equal(n.raw_fields_found, 0);
   }
   assert.equal(audit.nodes.filter((n) => n.direction === 'downlink').length, 1);
+  // D17：同一模型各节点梯度维度相同，等于内核参数量表（LSTM 203,143），未稀疏化
+  assert.equal(audit.model_params, 203143);
+  assert.equal(audit.sparsity_keep_ratio, 1);
+  assert.deepEqual([...new Set(audit.nodes.map((n) => n.fields[0].elements))], [203143]);
+  assert.ok(audit.nodes.every((n) => n.wire_bytes > 0 && n.total_bytes >= 203143 * 4));
   // 未开始训练的任务没有传输内容可审计
   const fresh = await okData('POST', '/projects/p1/fl/jobs', CLS_JOB);
   assert.equal(await errCode('POST', '/projects/p1/isolation/checks', { type: 'payload', job_id: fresh.job_id }), 40901);
@@ -142,6 +155,10 @@ test('[FL-ORCH-04] 项目配置：详情、修改持久化（revision 递增）�
   const f = await download('/projects/p1/config/export');
   assert.equal(f.fileName, 'fl_project_p1_config.json');
   const doc = JSON.parse(f.content);
+  // D18：导出文件时间统一写 UTC+8
+  assert.equal(doc.timezone, 'UTC+8');
+  for (const v of [doc.exported_at, doc.project.created_at, doc.updated_at]) assert.match(v, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00$/, v);
+  assert.equal(doc.project.created_at, '2026-07-01 10:00:00 +08:00');
   assert.equal(doc.training.total_rounds, 50);
   assert.equal(doc.training.target.op, '<=');
   assert.equal(doc.nodes.length, 4);
@@ -177,7 +194,10 @@ test('[FL-ORCH-06] 算法注册：JSON Schema 子集校验，注册后可用于�
     [{ ...body, name: '' }, 40000, /算法名必填/],
     [{ ...body, version: 'v1' }, 40002, /版本号/],
     [{ ...body, model_format: 'zip' }, 40000, /模型文件格式/],
-    [{ ...body, params_schema: '{bad json' }, 40002, /不是合法 JSON/],
+    [{ ...body, params_schema: '{bad json' }, 40002, /不是合法 JSON：第 1 行第 2 列，属性名必须用英文双引号包裹/],
+    [{ ...body, params_schema: '{"type":"object", properties:}' }, 40002, /第 1 行第 19 列，属性名必须用英文双引号包裹$/],
+    [{ ...body, params_schema: '{\n  "type": "object",\n  "properties": {\n' }, 40002, /第 4 行第 1 列，内容不完整/],
+    [{ ...body, params_schema: "{'type':'object'}" }, 40002, /第 1 行第 2 列/],
     [{ ...body, params_schema: { type: 'array' } }, 40002, /根节点 type/],
     [{ ...body, params_schema: { type: 'object', properties: { a: { type: 'object' } } } }, 40002, /type 必须是/],
     [{ ...body, params_schema: { type: 'object', properties: { a: { type: 'integer', minimum: 5, maximum: 1 } } } }, 40002, /minimum 大于 maximum/],

@@ -204,7 +204,7 @@ test('[FL-PROC-07] 预估剩余时间：按每轮耗时做指数平滑（EMA，�
 });
 
 test('[FL-PROC-08] 历史指标查询：按项目 ID / 任务 ID / 时间范围过滤，导出 CSV 列与行数正确', async (t) => {
-  const { okData, errCode, download, tick } = boot(t);
+  const { okData, errCode, call, download, tick } = boot(t);
   const job = await newJob(okData);
   await act(okData, job.job_id, 'start');
   tick(TICK * 3);
@@ -214,20 +214,39 @@ test('[FL-PROC-08] 历史指标查询：按项目 ID / 任务 ID / 时间范围�
   const one = await okData('GET', '/fl/metrics?job_id=' + job.job_id + '&scope=nodes');
   assert.equal(one.total, 3 * 5, '每轮 1 条全局 + 4 个节点');
   assert.deepEqual(Object.keys(one.items[0]).sort(), ['accuracy', 'job_id', 'job_name', 'loss', 'mae', 'project_id', 'recorded_at', 'rmse', 'round', 'series', 'task_type']);
-  const past = new Date(Date.now() - 3600e3).toISOString(), future = new Date(Date.now() + 3600e3).toISOString();
+  // 时间边界取实际写入时间（历史任务写在过去、新任务写在当前），不依赖播种时刻
+  const ts = (await okData('GET', '/fl/metrics?project_id=p1&page_size=500')).items.map((r) => Date.parse(r.recorded_at));
+  const iso = (ms) => new Date(ms).toISOString();
+  const past = iso(Math.min(...ts) - 1000), future = iso(Math.max(...ts) + 1000);
+  const newest = (await okData('GET', '/fl/metrics?job_id=' + job.job_id)).items.map((r) => Date.parse(r.recorded_at));
   assert.equal((await okData('GET', '/fl/metrics?project_id=p1&start_time=' + past + '&end_time=' + future)).total, 23);
   assert.equal((await okData('GET', '/fl/metrics?project_id=p1&start_time=' + future)).total, 0);
   assert.equal((await okData('GET', '/fl/metrics?project_id=p1&end_time=' + past)).total, 0);
+  assert.equal((await okData('GET', '/fl/metrics?project_id=p1&start_time=' + iso(Math.min(...newest)))).total >= 3, true);
+  // 相对历史任务 started_at 的窗口：内核回填第 r 轮写入时间 = started_at + r × 4.2 秒，取前 10 轮
+  const hist = (await okData('GET', '/projects/p1/fl/jobs?task_type=timeseries')).items.find((j) => j.status === 'Success');
+  const t0 = Date.parse(hist.started_at);
+  const win = await okData('GET', '/fl/metrics?job_id=' + hist.job_id + '&start_time=' + iso(t0) + '&end_time=' + iso(t0 + 10 * 4200 + 500));
+  assert.deepEqual(win.items.map((r) => r.round), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  const tail = await okData('GET', '/fl/metrics?job_id=' + hist.job_id + '&start_time=' + iso(t0 + 15 * 4200 - 500));
+  assert.deepEqual(tail.items.map((r) => r.round), [15, 16, 17, 18, 19, 20]);
   assert.equal((await okData('GET', '/fl/metrics?project_id=p2')).total, 20);
   assert.equal(await errCode('GET', '/fl/metrics?project_id=p1&start_time=yesterday'), 40002);
-  assert.equal(await errCode('GET', '/fl/metrics?project_id=p1&start_time=' + future + '&end_time=' + past), 40003);
+  // D05：错误提示用界面上的中文字段名，不出现 start_time / end_time / scope 等英文字段
+  const order = await call('GET', '/fl/metrics?project_id=p1&start_time=' + future + '&end_time=' + past);
+  assert.equal(order.code, 40003);
+  assert.equal(order.message, '开始时间不能晚于结束时间');
+  for (const url of ['/fl/metrics?project_id=p1&start_time=yesterday', '/fl/metrics?scope=x', '/fl/jobs/' + job.job_id + '/metrics?from_round=x', '/fl/jobs/' + job.job_id + '/metrics?from_round=5&to_round=2']) {
+    assert.doesNotMatch((await call('GET', url)).message, /[a-z]+_[a-z]+|scope/, url);
+  }
   assert.equal(await errCode('GET', '/fl/metrics?project_id=p9'), 40400);
   assert.equal(await errCode('GET', '/fl/metrics?job_id=' + job.job_id + '&scope=x'), 40000);
 
   const f = await download('/projects/p1/fl/metrics/export?start_time=' + past);
   assert.equal(f.fileName, 'fl_metrics_p1.csv');
   const lines = f.content.replace('﻿', '').trim().split('\n');
-  assert.equal(lines[0], 'project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at');
+  assert.equal(lines[0], 'project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at(UTC+8)');
+  assert.match(lines[1].split(',').at(-1), /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00$/, '导出时间写成 UTC+8');
   assert.equal(lines.length, 1 + 23);
   const cls = lines.find((l) => l.includes(job.job_id)).split(',');
   assert.equal(cls[2], 'classification');
@@ -267,12 +286,29 @@ test('[FL-PROC-08] 单任务 CSV 导出按 start_time / end_time 过滤，列与
   const past = new Date(Date.now() - 3600e3).toISOString(), future = new Date(Date.now() + 3600e3).toISOString();
   const all = await download('/fl/jobs/' + job.job_id + '/metrics/export');
   const lines = all.content.replace('\ufeff', '').trim().split('\n');
-  assert.equal(lines[0], 'job_id,round,series,loss,accuracy,recorded_at');
+  assert.equal(lines[0], 'job_id,round,series,loss,accuracy,recorded_at(UTC+8)');
+  assert.match(lines[1], / \+08:00$/);
   assert.equal(lines.length, 1 + 4 * 5, '默认 scope = nodes：每轮全局 + 4 个节点');
   const g = await download('/fl/jobs/' + job.job_id + '/metrics/export?scope=global&start_time=' + past + '&end_time=' + future);
   assert.equal(g.content.trim().split('\n').length, 1 + 4);
   const none = await download('/fl/jobs/' + job.job_id + '/metrics/export?start_time=' + future);
   assert.equal(none.content.trim().split('\n').length, 1);
-  await assert.rejects(download('/fl/jobs/' + job.job_id + '/metrics/export?start_time=bad'), /ISO 8601/);
-  await assert.rejects(download('/fl/jobs/' + job.job_id + '/metrics/export?start_time=' + future + '&end_time=' + past), /不能晚于/);
+  await assert.rejects(download('/fl/jobs/' + job.job_id + '/metrics/export?start_time=bad'), /开始时间格式不正确/);
+  await assert.rejects(download('/fl/jobs/' + job.job_id + '/metrics/export?start_time=' + future + '&end_time=' + past), /开始时间不能晚于结束时间/);
+});
+
+test('[FL-PROC-04] 强制终止的确认文案依据：终止丢弃进行中轮次，已完成轮次与断点保留', async (t) => {
+  const { okData, tick } = boot(t);
+  const job = await newJob(okData);
+  await act(okData, job.job_id, 'start');
+  tick(TICK * 3);
+  await act(okData, job.job_id, 'pause');
+  await act(okData, job.job_id, 'resume');
+  tick(TICK * 1);
+  const killed = await act(okData, job.job_id, 'terminate');
+  assert.equal(killed.current_round, 4, '已完成 4 轮保留');
+  assert.equal((await okData('GET', '/fl/jobs/' + job.job_id + '/metrics')).series[0].points.length, 4);
+  assert.equal(killed.checkpoint.round, 3, '最近断点保留');
+  tick(TICK * 3);
+  assert.equal((await okData('GET', '/fl/jobs/' + job.job_id)).current_round, 4, '第 5 轮未聚合的更新被丢弃');
 });

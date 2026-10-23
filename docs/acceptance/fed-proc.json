@@ -61,7 +61,7 @@
     "page": "#/fed/proc",
     "ui": "过程管控 → 「强制终止」按钮 + 「运行资源与断点」卡",
     "steps": [
-      "训练运行中点击「强制终止」，提示「已强制终止，训练容器已释放」",
+      "训练运行中点击「强制终止」，弹出确认框，写明将以 SIGKILL 结束全部容器、丢弃正在进行那一轮尚未聚合的本地更新、保留已完成轮次指标与断点；点「确认终止」后提示「已强制终止，训练容器已释放」",
       "状态标签变为 Terminated，所有容器状态为「已强制结束 · 资源已释放」，轮次不再增加",
       "任务编排页该任务使用的节点「运行中任务」归零，可删除或改角色"
     ],
@@ -71,9 +71,10 @@
       "GET /projects/{project_id}/nodes"
     ],
     "tests": [
-      "tests/fed-proc.test.mjs: [FL-PROC-04] 强制终止：停止训练、容器 SIGKILL 并释放资源，状态迁移到 Terminated"
+      "tests/fed-proc.test.mjs: [FL-PROC-04] 强制终止：停止训练、容器 SIGKILL 并释放资源，状态迁移到 Terminated",
+      "tests/fed-proc.test.mjs: [FL-PROC-04] 强制终止的确认文案依据：终止丢弃进行中轮次，已完成轮次与断点保留"
     ],
-    "impl": "terminate 仅在 Running / Paused 时允许：停止聚合循环，所有训练容器以 SIGKILL 结束（status = killed，记录 released_at），runtime.released = true，任务迁移到 Terminated 并记录 finished_at。节点的运行中任务数按 Running / Paused 状态实时计算，终止后立即归零，节点管理的删除与改角色限制随之解除。",
+    "impl": "terminate 仅在 Running / Paused 时允许：停止聚合循环，所有训练容器以 SIGKILL 结束（status = killed，记录 released_at），runtime.released = true，任务迁移到 Terminated 并记录 finished_at。节点的运行中任务数按 Running / Paused 状态实时计算，终止后立即归零，节点管理的删除与改角色限制随之解除。页面执行前弹出二次确认，说明丢弃与保留的内容，取消则不发请求。",
     "status": "done"
   },
   "FL-PROC-05": {
@@ -143,7 +144,7 @@
       "开始时间填未来时间再查询，显示 0 条",
       "清空时间后点「导出 CSV」，下载 fl_metrics_{项目 ID}.csv"
     ],
-    "expected": "可按项目 ID、任务 ID 和写入时间范围查询历史指标，导出的 CSV 列为 project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at，行数与查询条数一致；时间格式错误返回 40002，开始晚于结束返回 40003，项目不存在返回 40400",
+    "expected": "可按项目 ID、任务 ID 和写入时间范围查询历史指标，导出的 CSV 列为 project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at(UTC+8)，时间写成「2026-10-23 22:10:05 +08:00」，行数与查询条数一致；时间格式错误返回 40002，开始晚于结束返回 40003 并提示「开始时间不能晚于结束时间」，项目不存在返回 40400",
     "api": [
       "GET /fl/metrics",
       "GET /fl/metrics/export",

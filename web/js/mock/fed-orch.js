@@ -252,7 +252,7 @@
           return err(40902, '项目名称「' + name + '」已存在');
         }
       }
-      if (has('seed_demo') && typeof body.seed_demo !== 'boolean') return err(40000, 'seed_demo 必须是布尔值');
+      if (has('seed_demo') && typeof body.seed_demo !== 'boolean') return err(40000, '「导入演示数据」必须是布尔值');
       if (has('type') && PROJECT_TYPES.indexOf(body.type) < 0) return err(40000, '项目类型必须是 production / pilot / sandbox');
       if (has('description') && String(body.description).length > 500) return err(40003, '描述不能超过 500 个字符');
       if (!partial || has('total_rounds')) {
@@ -365,9 +365,10 @@
       const v = projectView(proj);
       const doc = {
         schema_version: 'fl-project-config/1',
-        exported_at: k.NOW(),
+        timezone: 'UTC+8',
+        exported_at: k.fmtLocal(k.NOW()),
         exported_by: operator(),
-        project: { project_id: v.project_id, name: v.name, type: v.type, description: v.description, created_at: v.created_at },
+        project: { project_id: v.project_id, name: v.name, type: v.type, description: v.description, created_at: k.fmtLocal(v.created_at) },
         training: {
           base_algorithm: v.base_algorithm, model_version: v.model_version, total_rounds: v.total_rounds,
           target: { metric: v.target.metric, op: v.target.op, value: v.target.value }, aggregation_default: v.aggregation_default
@@ -376,7 +377,7 @@
           return { node_id: n.node_id, ip: n.ip, port: n.port, role: n.role, data_partition: n.data_partition, data_dir: n.data_dir };
         }),
         isolation_policy: ISO_POLICY,
-        revision: v.revision, updated_at: v.updated_at, updated_by: v.updated_by
+        revision: v.revision, updated_at: k.fmtLocal(v.updated_at), updated_by: v.updated_by
       };
       return { fileName: 'fl_project_' + proj.project_id + '_config.json', contentType: 'application/json;charset=utf-8', content: JSON.stringify(doc, null, 2) };
     });
@@ -400,6 +401,47 @@
       });
     }
 
+    /** JSON.parse 的英文报错 → 中文说明 + 行列位置（行列号从 1 开始）。 */
+    function jsonErrorCn(text, e) {
+      const msg = String(e && e.message || '');
+      const m = /position (\d+)/.exec(msg);
+      const pos = m ? Number(m[1]) : text.length;
+      const before = text.slice(0, pos).split('\n');
+      const where = '第 ' + before.length + ' 行第 ' + (before[before.length - 1].length + 1) + ' 列';
+      const ch = text.charAt(pos);
+      let why = 'JSON 语法错误';
+      if (text.slice(pos).trim() === '' || /Unexpected end|end of JSON/i.test(msg)) why = '内容不完整，缺少结尾的括号或引号';
+      else if (/property name/i.test(msg)) why = '属性名必须用英文双引号包裹';
+      else if (/Unterminated string/i.test(msg)) why = '字符串缺少结尾的双引号';
+      else if (/Bad control character|control character/i.test(msg)) why = '字符串里有未转义的换行或控制字符';
+      else if (/Expected ',' or '}'/i.test(msg)) why = '此处缺少逗号或右花括号 }';
+      else if (/Expected ',' or ']'/i.test(msg)) why = '此处缺少逗号或右方括号 ]';
+      else if (/Expected ':'|colon/i.test(msg)) why = '属性名后缺少冒号 :';
+      else if (/Unexpected|not valid JSON|Bad/i.test(msg)) why = '此处出现了不应有的字符「' + ch + '」' + (ch === "'" ? '，字符串须用英文双引号' : '');
+      return where + '，' + why;
+    }
+
+    /** IPv4 特殊地址：返回不能用作节点地址的原因，普通主机地址返回 null。网络 / 广播地址按 /24 子网判断。 */
+    function ipReject(s) {
+      if (s.indexOf(':') >= 0) {
+        const v = s.toLowerCase();
+        if (/^:*$/.test(v) || /^(0+:)+0*$/.test(v)) return '未指定地址（::），不能作为节点地址';
+        if (/^(0*:)*:?0*1$/.test(v) && v.replace(/[:0]/g, '') === '1') return '回环地址（::1），只能访问本机';
+        if (/^ff/.test(v)) return '组播地址（ff00::/8），不能作为节点地址';
+        return null;
+      }
+      const o = s.split('.').map(Number);
+      if (s === '0.0.0.0') return '未指定地址（0.0.0.0），不能作为节点地址';
+      if (s === '255.255.255.255') return '受限广播地址（255.255.255.255），不能作为节点地址';
+      if (o[0] === 0) return '0.0.0.0/8 为「本网络」保留地址，不能作为节点地址';
+      if (o[0] === 127) return '回环地址（127.0.0.0/8），只能访问本机';
+      if (o[0] >= 224 && o[0] <= 239) return '组播地址（224.0.0.0/4），不能作为节点地址';
+      if (o[0] >= 240) return '保留地址（240.0.0.0/4），不能作为节点地址';
+      if (o[3] === 0) return '网络地址（按 /24 子网主机位全 0），请填写具体主机地址，例如 ' + o.slice(0, 3).join('.') + '.10';
+      if (o[3] === 255) return '广播地址（按 /24 子网主机位全 1），请填写具体主机地址';
+      return null;
+    }
+
     function isIp(s) {
       if (/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(s)) {
         return s.split('.').every(function (x) { return Number(x) <= 255 && String(Number(x)) === x; });
@@ -418,6 +460,8 @@
       if (!partial || has('ip')) {
         if (!body.ip) return err(40000, 'IP 地址必填');
         if (!isIp(String(body.ip).trim())) return err(40002, 'IP 地址格式不正确：' + body.ip + '（需为 IPv4 如 10.40.3.9 或 IPv6）');
+        const why = ipReject(String(body.ip).trim());
+        if (why) return err(40002, 'IP 地址 ' + body.ip + ' 不可用：' + why);
       }
       if (!partial || has('port')) {
         const port = Number(body.port);
@@ -472,7 +516,7 @@
       if (merged.ip !== undefined && merged.port === undefined) merged.port = node.port;
       const bad = checkNode(merged, true, role);
       if (bad) return bad;
-      if (body.online !== undefined && typeof body.online !== 'boolean') return err(40000, 'online 必须是布尔值');
+      if (body.online !== undefined && typeof body.online !== 'boolean') return err(40000, '「在线状态」必须是布尔值');
       const renamed = body.node_id !== undefined && body.node_id !== node.node_id;
       const structural = renamed || (body.role !== undefined && body.role !== node.role) ||
         (body.data_partition !== undefined && body.data_partition !== node.data_partition) ||
@@ -569,7 +613,7 @@
       const byId = function (id) { return nodes.filter(function (n) { return n.node_id === id; })[0]; };
       let rec;
       if (body.type === 'dir_access') {
-        if (!body.actor_node_id || !body.target_node_id) return err(40000, 'actor_node_id 与 target_node_id 必填');
+        if (!body.actor_node_id || !body.target_node_id) return err(40000, '请选择发起节点和目标数据目录');
         const actor = byId(body.actor_node_id), target = byId(body.target_node_id);
         if (!actor || !target) return err(40400, '节点不属于本项目');
         if (!target.data_dir) return err(40001, target.node_id + ' 是聚合节点，没有本地数据目录');
@@ -598,24 +642,30 @@
         const metricKeys = k.taskTypeOf(job.task_type).metrics.map(function (m) { return m.key; });
         const roleOf = {};
         nodes.forEach(function (n) { roleOf[n.node_id] = n.role; });
+        // 同一模型各节点的梯度 / 全局参数维度相同，取内核参数量表 k.MODEL_PARAMS（未做稀疏化，保留比例 100%）
+        const dim = k.MODEL_PARAMS[job.algorithm] || k.MODEL_PARAMS.custom;
         const perNode = last.nodes.map(function (nm) {
-          const bytes = Math.round(nm.upload_kb * 1024);
           const agg = roleOf[nm.node_id] === 'aggregator';
           const fields = agg ? [
-            { field: 'global_weights', kind: 'model_param', dtype: 'float32', elements: Math.floor((bytes - 8) / 4), bytes: bytes - 8 },
+            { field: 'global_weights', kind: 'model_param', dtype: 'float32', elements: dim, bytes: dim * 4 },
             { field: 'round', kind: 'metadata', dtype: 'int64', elements: 1, bytes: 8 }
           ] : [
-            { field: 'weights_delta', kind: 'gradient', dtype: 'float32', elements: Math.floor((bytes - 64) / 4), bytes: bytes - 64 },
+            { field: 'weights_delta', kind: 'gradient', dtype: 'float32', elements: dim, bytes: dim * 4 },
             { field: 'num_samples', kind: 'metadata', dtype: 'int64', elements: 1, bytes: 8 },
-            { field: 'local_metrics', kind: 'metric', dtype: 'float32', elements: metricKeys.length, bytes: 56 }
+            { field: 'local_metrics', kind: 'metric', dtype: 'float32', elements: metricKeys.length, bytes: metricKeys.length * 4 }
           ];
           const leaked = fields.filter(function (f) { return cols[f.field]; }).length;
-          return { node_id: nm.node_id, role: agg ? 'aggregator' : 'trainer', direction: agg ? 'downlink' : 'uplink', round: last.round, total_bytes: bytes, fields: fields, raw_fields_found: leaked };
+          return {
+            node_id: nm.node_id, role: agg ? 'aggregator' : 'trainer', direction: agg ? 'downlink' : 'uplink', round: last.round,
+            total_bytes: fields.reduce(function (sum, f) { return sum + f.bytes; }, 0),   // 消息明文大小
+            wire_bytes: Math.round(nm.upload_kb * 1024),                                 // 链路实际传输量（含同态密文 / 秘密分享份额开销）
+            fields: fields, raw_fields_found: leaked
+          };
         });
         const leakedTotal = perNode.reduce(function (s, n) { return s + n.raw_fields_found; }, 0);
         rec = {
           check_id: fid('iso'), type: 'payload', at: k.NOW(), operator: operator(),
-          job_id: job.job_id, job_name: job.name, round: last.round,
+          job_id: job.job_id, job_name: job.name, round: last.round, model_params: dim, sparsity_keep_ratio: 1,
           scanned_columns: Object.keys(cols).length, nodes: perNode,
           result: leakedTotal ? 'denied' : 'passed',
           detail: '第 ' + last.round + ' 轮 ' + perNode.length + ' 个节点的消息只含白名单字段（训练节点上传 weights_delta / num_samples / local_metrics，聚合节点下发 global_weights / round）；' +
@@ -623,7 +673,7 @@
           rule: ISO_POLICY.audit_rule
         };
       } else {
-        return err(40000, 'type 必须是 dir_access 或 payload');
+        return err(40000, '检测类型只能是目录访问检测或传输内容审计');
       }
       isoLogs(pid).unshift(rec);
       if (isoLogs(pid).length > 50) isoLogs(pid).length = 50;
@@ -693,7 +743,7 @@
     /** 按 schema 校验参数并补默认值。返回 { params } 或 { error: 响应包 }。 */
     function resolveParams(schema, params) {
       params = params || {};
-      if (typeof params !== 'object' || Array.isArray(params)) return { error: err(40000, 'params 必须是对象') };
+      if (typeof params !== 'object' || Array.isArray(params)) return { error: err(40000, '算法参数必须是键值对象') };
       const props = schema.properties;
       const unknown = Object.keys(params).filter(function (x) { return !props[x]; });
       if (unknown.length) return { error: err(40000, '参数 ' + unknown.join(', ') + ' 不在该算法的参数 schema 中') };
@@ -770,11 +820,11 @@
       if (MODEL_FORMATS.indexOf(body.model_format) < 0) return err(40000, '模型文件格式必须是 ' + MODEL_FORMATS.join(' / '));
       const tts = body.task_types || [];
       if (!Array.isArray(tts) || !tts.length || tts.some(function (t) { return !k.taskTypeOf(t); })) {
-        return err(40000, 'task_types 至少选一个：classification / timeseries');
+        return err(40000, '适用任务类型至少选一个：分类 / 时序预测');
       }
       let schema = body.params_schema;
       if (typeof schema === 'string') {
-        try { schema = JSON.parse(schema); } catch (e) { return err(40002, '参数 schema 不是合法 JSON：' + e.message); }
+        try { schema = JSON.parse(schema); } catch (e) { return err(40002, '参数 schema 不是合法 JSON：' + jsonErrorCn(schema, e)); }
       }
       const se = schemaError(schema);
       if (se) return err(40002, se);
@@ -816,8 +866,8 @@
     k.route('POST', '/fl/algorithms/{algo_id}/actions', function (p, q, body) {
       const a = flo.algos[p.algo_id];
       if (!a) return err(40400, '算法不存在');
-      if (body.action !== 'rollback') return err(40000, 'action 只支持 rollback');
-      if (!body.version) return err(40000, 'version 必填');
+      if (body.action !== 'rollback') return err(40000, '该接口只支持回滚操作');
+      if (!body.version) return err(40000, '请选择要回滚到的版本');
       if (!a.versions.some(function (v) { return v.version === body.version; })) return err(40400, a.name + ' 没有版本 ' + body.version);
       if (body.version === a.current_version) return err(40901, body.version + ' 已是当前版本');
       const prev = a.current_version;
@@ -867,7 +917,7 @@
     k.route('POST', '/projects/{project_id}/fl/models', function (p, q, body) {
       const pid = p.project_id;
       if (!project(pid)) return err(40400, '项目不存在');
-      if (!body.file_id) return err(40000, 'file_id 必填，请先调用 POST /files 上传模型文件');
+      if (!body.file_id) return err(40000, '请先上传模型文件');
       const file = db.files[body.file_id];
       if (!file) return err(40400, '模型文件不存在：' + body.file_id);
       if (file.purpose !== 'fl_model') return err(40000, '文件用途不是 fl_model');
@@ -1244,17 +1294,18 @@
 
     /* --- 指标：按轮次 / 写入时间过滤（扩展内核 GET /fl/jobs/{id}/metrics） --- */
 
+    const SCOPE_MSG = '曲线范围只能是「仅全局」或「全局 + 各节点」';
     function parseTime(v, name) {
       if (v === undefined || v === null || v === '') return { t: null };
       const t = Date.parse(v);
-      if (Number.isNaN(t)) return { error: err(40002, name + ' 不是合法的 ISO 8601 时间：' + v) };
+      if (Number.isNaN(t)) return { error: err(40002, name + '格式不正确：' + v + '（应为日期时间，例如 2026-10-23 08:00）') };
       return { t: t };
     }
     function timeRange(q) {
-      const a = parseTime(q.start_time, 'start_time'), b = parseTime(q.end_time, 'end_time');
+      const a = parseTime(q.start_time, '开始时间'), b = parseTime(q.end_time, '结束时间');
       if (a.error) return a;
       if (b.error) return b;
-      if (a.t !== null && b.t !== null && a.t > b.t) return { error: err(40003, 'start_time 不能晚于 end_time') };
+      if (a.t !== null && b.t !== null && a.t > b.t) return { error: err(40003, '开始时间不能晚于结束时间') };
       return { from: a.t, to: b.t };
     }
     function inRange(m, tr) {
@@ -1266,11 +1317,11 @@
       const job = db.flJobs[p.job_id];
       if (!job) return err(40400, '任务不存在');
       const scope = q.scope || 'global';
-      if (scope !== 'global' && scope !== 'nodes') return err(40000, 'scope 必须是 global 或 nodes');
+      if (scope !== 'global' && scope !== 'nodes') return err(40000, SCOPE_MSG);
       const from = q.from_round !== undefined ? Number(q.from_round) : 1;
       const to = q.to_round !== undefined ? Number(q.to_round) : job.total_rounds;
-      if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1) return err(40002, 'from_round / to_round 必须是正整数');
-      if (from > to) return err(40003, 'from_round 不能大于 to_round');
+      if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1) return err(40002, '起始轮次和结束轮次必须是正整数');
+      if (from > to) return err(40003, '起始轮次不能大于结束轮次');
       const tr = timeRange(q);
       if (tr.error) return tr.error;
       const keys = k.taskTypeOf(job.task_type).metrics.map(function (s) { return s.key; });
@@ -1295,11 +1346,12 @@
     /* --- 历史指标查询与导出：按时间范围、项目 ID、任务 ID --- */
 
     const ALL_KEYS = ['loss', 'accuracy', 'rmse', 'mae'];
+    const TIME_SUFFIX = '(UTC+8)';   // 导出文件里的时间按 k.fmtLocal 写成 UTC+8，列名注明
     function historyRows(q) {
       if (q.project_id && !project(q.project_id)) return { error: err(40400, '项目不存在：' + q.project_id) };
       if (q.job_id && !db.flJobs[q.job_id]) return { error: err(40400, '任务不存在：' + q.job_id) };
       const scope = q.scope || 'global';
-      if (scope !== 'global' && scope !== 'nodes') return { error: err(40000, 'scope 必须是 global 或 nodes') };
+      if (scope !== 'global' && scope !== 'nodes') return { error: err(40000, SCOPE_MSG) };
       const tr = timeRange(q);
       if (tr.error) return tr;
       if (q.project_id) k.seedProject(q.project_id);
@@ -1333,8 +1385,8 @@
       const r = historyRows(q);
       if (r.error) return null;
       const cols = ['project_id', 'job_id', 'task_type', 'round', 'series'].concat(ALL_KEYS, ['recorded_at']);
-      const csv = cols.join(',') + '\n' + r.rows.map(function (row) {
-        return cols.map(function (c) { return row[c] === null ? '' : row[c]; }).join(',');
+      const csv = cols.join(',') + TIME_SUFFIX + '\n' + r.rows.map(function (row) {
+        return cols.map(function (c) { return row[c] === null ? '' : (c === 'recorded_at' ? k.fmtLocal(row[c]) : row[c]); }).join(',');
       }).join('\n') + (r.rows.length ? '\n' : '');
       return { fileName: name, contentType: 'text/csv;charset=utf-8', content: '﻿' + csv };
     }
@@ -1345,12 +1397,12 @@
       const tr = timeRange(q);
       if (tr.error) throw new Error(tr.error.message);
       const scope = q.scope || 'nodes';
-      if (scope !== 'global' && scope !== 'nodes') throw new Error('scope 必须是 global 或 nodes');
+      if (scope !== 'global' && scope !== 'nodes') throw new Error(SCOPE_MSG);
       const keys = k.taskTypeOf(job.task_type).metrics.map(function (x) { return x.key; });
       const line = function (name, src, x) {
-        return [job.job_id, x.round, name].concat(keys.map(function (key) { return src[key]; }), [x.recorded_at]).join(',') + '\n';
+        return [job.job_id, x.round, name].concat(keys.map(function (key) { return src[key]; }), [k.fmtLocal(x.recorded_at)]).join(',') + '\n';
       };
-      let csv = ['job_id', 'round', 'series'].concat(keys, ['recorded_at']).join(',') + '\n';
+      let csv = ['job_id', 'round', 'series'].concat(keys, ['recorded_at']).join(',') + TIME_SUFFIX + '\n';
       job.metrics.filter(function (x) { return inRange(x, tr); }).forEach(function (x) {
         csv += line('global', x.global, x);
         if (scope === 'nodes') x.nodes.forEach(function (n) { csv += line(n.node_id, n, x); });

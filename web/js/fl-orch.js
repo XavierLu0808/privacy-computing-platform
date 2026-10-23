@@ -579,10 +579,9 @@
       const d = el('span', 'hint', c.detail);
       if (c.type === 'payload') {
         d.textContent = c.detail + '。' + c.nodes.map(function (n) {
-          return n.direction === 'downlink'
-            ? n.node_id + ' 下发 ' + UI.bytes(n.total_bytes) + '（全局参数 ' + n.fields[0].elements.toLocaleString('en-US') + ' 个 float32）'
-            : n.node_id + ' 上传 ' + UI.bytes(n.total_bytes) + '（梯度 ' + n.fields[0].elements.toLocaleString('en-US') + ' 个 float32）';
-        }).join('；');
+          return n.node_id + (n.direction === 'downlink' ? ' 下发全局参数 ' : ' 上传梯度 ') + n.fields[0].elements.toLocaleString('en-US') +
+            ' 个 float32（明文 ' + UI.bytes(n.total_bytes) + '，链路实际传输 ' + UI.bytes(n.wire_bytes) + '）';
+        }).join('；') + '。各节点维度一致，等于模型参数量 ' + c.model_params.toLocaleString('en-US') + '，未做稀疏化（保留比例 100%），链路传输量包含同态加密密文或秘密分享份额的开销';
       }
       row.appendChild(d);
       wrap.appendChild(row);
@@ -935,9 +934,11 @@
     body.appendChild(two);
     const result = el('div');
     body.appendChild(result);
+    let nameTouched = false;   // 用户手动改过名称后，换选文件不再覆盖
+    name.addEventListener('input', function () { nameTouched = name.value.trim() !== ''; });
     file.addEventListener('change', function () {
       UI.clear(result);
-      if (file.files[0] && !name.value) name.value = file.files[0].name.replace(/\.[^.]+$/, '');
+      if (file.files[0] && !nameTouched) name.value = file.files[0].name.replace(/\.[^.]+$/, '');
     });
 
     const m = UI.modal({
