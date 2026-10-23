@@ -168,9 +168,9 @@
     }
     const s = m.summary;
     const mg = el('div', 'metric-grid');
-    mg.appendChild(metric('平均裁剪比例', D.pct(s.clip_ratio_avg), '被裁剪的参与方更新占比，按 ' + m.rounds.length + ' 轮平均'));
+    mg.appendChild(metric('平均裁剪比例', D.pct(s.clip_ratio_avg), '被裁剪的样本梯度占比，按 ' + m.rounds.length + ' 轮平均'));
     mg.appendChild(metric('末轮噪声 L2 范数', s.noise_l2_last.toLocaleString('zh-CN'), '聚合后噪声向量 ‖n‖₂，' + (s.mechanism === 'gaussian' ? 'σ' : 'b') + ' = ' + s.noise_scale.toFixed(3) + '，模型维度 d = ' + s.model_dim.toLocaleString('zh-CN')));
-    mg.appendChild(metric('末轮信噪比', s.snr_db_last.toFixed(1) + ' dB', '‖Σ 裁剪后更新‖₂ / ‖n‖₂ = ' + s.snr_last.toExponential(2) + '（' + s.trainers + ' 个参与方，信号取上界）'));
+    mg.appendChild(metric('末轮信噪比', s.snr_db_last.toFixed(1) + ' dB', '‖Σ 裁剪后样本梯度‖₂ / ‖n‖₂ = ' + s.snr_last.toExponential(2) + '（' + s.trainers + ' 个参与方 × 每方 ' + s.batch_size + ' 个样本，信号取上界）'));
     mg.appendChild(metric('噪声分布抽样', m.histogram_samples + ' 个', '末轮噪声坐标抽样，以 ' + (s.mechanism === 'gaussian' ? 'σ' : 'b') + ' 为单位'));
     card.appendChild(mg);
 
@@ -182,7 +182,7 @@
     w1.appendChild(el('span', 'card-label', '每轮裁剪比例'));
     w1.appendChild(D.chart({
       w: 400, h: 170, xmin: x0, xmax: Math.max(T, x0 + 1), ymin: 0, ymax: 1, xTicks: xt, yTicks: [0, 0.25, 0.5, 0.75, 1],
-      yFmt: function (v) { return (v * 100).toFixed(0) + '%'; }, xLabel: '轮次', aria: '每轮被裁剪更新占比',
+      yFmt: function (v) { return (v * 100).toFixed(0) + '%'; }, xLabel: '轮次', aria: '每轮被裁剪样本梯度占比',
       series: [{ color: C.amber, dots: m.rounds.length < 25, points: m.rounds.map(function (r) { return { x: r.round, y: r.clip_ratio }; }) }]
     }));
     row.appendChild(w1);

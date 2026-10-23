@@ -10,9 +10,9 @@
 
 | 值 | 名称 | 累计 ε（单步 ε₀ 重复 t 次） | 累计 δ |
 |---|---|---|---|
-| `basic` | 基础组合（默认，数值与 v1.1 完全一致） | `t · ε₀` | 高斯 `t · δ`；拉普拉斯 0 |
+| `basic` | 基础组合（数值与 v1.1 完全一致） | `t · ε₀` | 高斯 `t · δ`；拉普拉斯 0 |
 | `advanced` | 高级组合（Dwork–Rothblum–Vadhan 2010） | `min(t·ε₀, ε₀·√(2t·ln(1/δ′)) + t·ε₀·(e^ε₀ − 1))`，δ′ = δ | 高斯 `t·δ + δ′`；拉普拉斯 `δ′` |
-| `rdp` | RDP 会计（Mironov 2017，Moments Accountant 的 Rényi 形式，不计子采样放大） | `min_α [t · ε(α) + ln(1/δ) / (α − 1)]`，α ∈ {1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 32, 48, 64, 96, 128, 256}；拉普拉斯再与 `t·ε₀` 取小 | `δ` |
+| `rdp` | RDP 会计（任务默认；Mironov 2017，Moments Accountant 的 Rényi 形式，不计子采样放大） | `min_α [t · ε(α) + ln(1/δ) / (α − 1)]`，α ∈ {1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5, 6, 8, 10, 12, 14, 16, 20, 24, 32, 48, 64, 96, 128, 256}；拉普拉斯再与 `t·ε₀` 取小 | `δ` |
 
 单步 RDP：高斯 `ε(α) = α / (2z²)`，z = σ / Δ；拉普拉斯 `ε(α) = 1/(α−1) · ln[α/(2α−1) · e^((α−1)/λ) + (α−1)/(2α−1) · e^(−α/λ)]`，λ = b / Δ。
 
@@ -28,10 +28,12 @@
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `accountant` | string | `basic` / `advanced` / `rdp`，默认 `basic` |
-| `clip_mode` | string | `fixed` 固定裁剪 / `adaptive` 自适应裁剪（每轮 C 取上一轮更新范数中位数，首轮用 `clip_norm`） |
+| `accountant` | string | `basic` / `advanced` / `rdp`，默认 `rdp`（显式指定 `basic` 时数值与 v1.1 一致） |
+| `clip_mode` | string | `fixed` 固定裁剪 / `adaptive` 自适应裁剪（每轮 C 取上一轮样本梯度范数中位数，首轮用 `clip_norm`） |
 | `apply_to` | string | 恒为 `gradient`（统计查询走 6.8 的项目级配置） |
 | `policy_id` / `policy_dimension` | string \| null | 由策略下发时写入；手动改 ε / 机制 / C 后清空 |
+
+SSE：mock 挂 `k.db.dpAccount(job, round)`，内核 jobTick 推送 `round_completed.dp = { epsilon_spent, epsilon_used, accountant }` 时用它，与 6.4 / 6.5 同一会计方式。
 
 写入内核数据说明：mock 写 `job.dp` 的上述字段（DP 配置本来就挂在任务上）；非运行态读取时把 `job.dp.total_rounds` 同步为任务的 `total_rounds`、`job.dp.provider` 同步为平台当前实现。训练运行期间的配置另存快照 `k.db.dpx.snap[job_id]`，训练结束后再改配置不影响该次运行的预算、审计与 hook 记录。
 
@@ -114,7 +116,7 @@ GET /fl/jobs/{job_id}/dp/audit/export        （文件下载，CSV，UTF-8 BOM�
 | `epsilon_cumulative` | 截至本轮累计 ε |
 | `accountant` / `noise_multiplier` | 会计方式、噪声倍数 |
 | `clip_norm` / `clip_mode` | 本轮实际裁剪阈值（自适应时逐轮变化） |
-| `clip_ratio` | 被裁剪的参与方更新占比（0–1） |
+| `clip_ratio` | 被裁剪的样本梯度占比（0–1） |
 | `noise_l2` / `signal_l2` / `snr` | 见 6.11 |
 | `source` | `engine` 训练引擎逐轮写入；`seed_history` 播种的历史任务按其配置回放 |
 
@@ -177,7 +179,7 @@ POST /dp/adaptive-noise
 
 响应：`stats`（`median`、`mean`、`p01`、`p05`、`p95`、`p99`、`log_sd`、`public_lower`、`public_upper`）、`fixed` 与 `adaptive`（`lower`、`upper`、`sensitivity`、`epsilon_used`、`noise_scale`、`noise_std`、`bias`、`rmse`、`rel_error_pct`）、`candidates[]`、`recommended`（`adaptive` / `fixed`）、`noise_reduction_pct`、`rmse_reduction_pct`、`unit`、`group_size`。
 
-**梯度模式** `target = gradient`，`job_id` 必填：参与方本地更新 L2 范数中位数按 `m(r) = 0.25 + 0.9·e^(−r/12)`、对数标准差 0.5 建模；返回逐轮 `update_norm_median`、`clip_fixed`、`clip_adaptive`、`clip_ratio_fixed`、`clip_ratio_adaptive`、`noise_fixed`、`noise_adaptive`，以及 `summary` 和 `recommended_clip_norm`（第 ⌈T/2⌉ 轮中位数，取一位小数，夹在 0.2–4）。
+**梯度模式** `target = gradient`，`job_id` 必填：样本梯度 L2 范数中位数按 `m(r) = 0.25 + 0.9·e^(−r/12)`、对数标准差 0.5 建模；返回逐轮 `update_norm_median`、`clip_fixed`、`clip_adaptive`、`clip_ratio_fixed`、`clip_ratio_adaptive`、`noise_fixed`、`noise_adaptive`，以及 `summary` 和 `recommended_clip_norm`（第 ⌈T/2⌉ 轮中位数，取一位小数，夹在 0.2–4）。
 
 错误码：`40400` 数据集 / 任务不存在；`40901` 数据集未导入完成；`40000` 字段不存在、参数非法；`40001` 字段不是数值型；`40003` ε 越界；`40002` δ 非法。
 
@@ -283,7 +285,7 @@ GET /fl/jobs/{job_id}/dp/metrics?bins=21
 | `summary` | `clip_ratio_avg`、`noise_l2_last`、`snr_last`、`snr_db_last = 10·log10(snr²)`、`model_dim`、`trainers`、`noise_scale`；无 DP 轮次时为 `null` |
 | `histogram[]` | 末轮噪声坐标抽样 4000 个（以 σ 或 b 为单位，种子 = job_id + 轮次），`{ x, count, density（峰值归一）, theory（理论密度峰值归一） }` |
 
-计算：`clip_ratio = P(‖Δw‖₂ > C) = 1 − Φ((ln C − ln m(r)) / 0.5)`；聚合后噪声范数高斯 `‖n‖₂ = σ·√d`、拉普拉斯 `b·√(2d)`，d 为模型参数维度（逻辑回归 64、XGBoost 2,048、CNN 61,706、LSTM 12,416、TCN 18,944、自定义 10,000）；信号 `‖Σ clip(Δw_i)‖₂` 取上界 `n · E[min(‖Δw‖₂, C)]`；`snr = 信号 / 噪声`。错误码：`40400`、`40003`（bins 不是 5–61 的整数）。
+计算：`clip_ratio = P(‖g‖₂ > C) = 1 − Φ((ln C − ln m(r)) / 0.5)`；聚合后噪声范数高斯 `‖n‖₂ = σ·√d`、拉普拉斯 `b·√(2d)`，d 为模型参数维度（逻辑回归 64、XGBoost 2,048、CNN 61,706、LSTM 12,416、TCN 18,944、自定义 10,000）；按 DP-SGD 逐样本裁剪：每个参与方每轮对 B = 256 个样本梯度逐个裁剪后求和再加噪，信号 `‖Σ clip(g)‖₂` 取上界 `n · B · E[min(‖g‖₂, C)]`；`snr = 信号 / 噪声`。错误码：`40400`、`40003`（bins 不是 5–61 的整数）。
 
 #### 初始化检查
 

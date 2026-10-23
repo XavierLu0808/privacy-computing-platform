@@ -502,8 +502,8 @@
     row.appendChild(UI.el('span', 'cell-muted', a.epsilon_spent.toFixed(4)));
     row.appendChild(UI.el('span', 'cell-muted', a.epsilon_cumulative.toFixed(3)));
     row.appendChild(UI.el('span', 'cell-muted', a.mechanism === 'gaussian'
-      ? '高斯噪声 σ = ' + a.noise_scale.toFixed(3) + '，δ = ' + a.delta + '，被裁剪更新占 ' + pct(a.clip_ratio)
-      : '拉普拉斯噪声 b = ' + a.noise_scale.toFixed(3) + '，被裁剪更新占 ' + pct(a.clip_ratio)));
+      ? '高斯噪声 σ = ' + a.noise_scale.toFixed(3) + '，δ = ' + a.delta + '，被裁剪样本梯度占 ' + pct(a.clip_ratio)
+      : '拉普拉斯噪声 b = ' + a.noise_scale.toFixed(3) + '，被裁剪样本梯度占 ' + pct(a.clip_ratio)));
     row.appendChild(UI.el('span', 'cell-muted', a.clip_norm.toFixed(3) + (a.clip_mode === 'adaptive' ? '（自适应）' : '')));
     return row;
   }

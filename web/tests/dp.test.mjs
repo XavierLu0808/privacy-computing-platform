@@ -165,6 +165,8 @@ test('[DP-EVAL-01] 效果展示：预算按会计方式累计；basic 与内核�
   const { okData, errCode, tick } = boot(t);
   const { created } = await jobsOf(okData);
   const id = created.job_id;
+  assert.equal((await okData('GET', `/fl/jobs/${id}/dp`)).accountant, 'rdp', '默认 RDP 会计');
+  await okData('PUT', `/fl/jobs/${id}/dp`, { ...GAUSS, accountant: 'basic' });
   await okData('POST', `/fl/jobs/${id}/actions`, { action: 'start' });
   tick(650 * 6);
   const b = await okData('GET', `/fl/jobs/${id}/dp/budget`);
@@ -279,6 +281,27 @@ test('[DP-FW-02] DP 初始化：启用 DP 的任务启动后 hook 链在聚合�
   assert.equal(h.dp_enabled, false);
   assert.deepEqual(h.steps.filter((s) => s.status === 'skipped').map((s) => s.key), ['clip', 'noise', 'account']);
   assert.equal(await errCode('GET', '/fl/jobs/fl_none/dp/hooks'), 40400);
+});
+
+test('[DP-EVAL-01][DP-FW-02] SSE round_completed 的 ε 与 DP 页同一会计方式；默认配置效用损失 ≤ 3 个百分点', async (t) => {
+  const { okData, M, tick } = boot(t);
+  const { created } = await jobsOf(okData);
+  const id = created.job_id;
+  const cfg = await okData('GET', `/fl/jobs/${id}/dp`);
+  const est = await okData('POST', '/dp/estimate', { ...cfg, baseline_job_id: id });
+  assert.equal(est.accountant, 'rdp');
+  assert.ok(est.accuracy_loss <= 0.03, `默认配置效用损失 ${est.accuracy_loss}`);
+  const seen = [];
+  M.subscribe(`/fl/jobs/${id}/events`, { round_completed: (e) => seen.push(e.dp) });
+  await okData('POST', `/fl/jobs/${id}/actions`, { action: 'start' });
+  tick(650 * 4);
+  const b = await okData('GET', `/fl/jobs/${id}/dp/budget`);
+  const a = await okData('GET', `/fl/jobs/${id}/dp/audit`);
+  assert.equal(seen.length, 4);
+  assert.equal(seen[3].accountant, 'rdp');
+  assert.equal(seen[3].epsilon_used, a.items[0].epsilon_cumulative);
+  assert.equal(seen[3].epsilon_spent, a.items[0].epsilon_spent);
+  assert.ok(Math.abs(seen[3].epsilon_used - b.epsilon_used) < 1e-3);
 });
 
 test('[DP-FW-03] DP 指标：每轮裁剪比例、噪声 L2 范数、信噪比与噪声直方图', async (t) => {

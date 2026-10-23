@@ -911,7 +911,7 @@
       job.algorithm = body.algorithm;
     }
     if (body.aggregation) job.aggregation = body.aggregation;
-    if (body.total_rounds) job.total_rounds = body.total_rounds;
+    if (body.total_rounds) { job.total_rounds = body.total_rounds; job.dp.total_rounds = body.total_rounds; }
     if (body.dp_enabled !== undefined) job.dp_enabled = body.dp_enabled;
     return ok(jobView(job));
   });

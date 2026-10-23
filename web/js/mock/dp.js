@@ -23,7 +23,8 @@
     const DELTAS = ['1e-4', '1e-5', '1e-6'];
     const ACC_CN = { basic: '基础组合', advanced: '高级组合', rdp: 'RDP 会计' };
     const MECH_CN = { gaussian: '高斯机制', laplace: '拉普拉斯机制' };
-    const DEFAULT_EXT = { accountant: 'basic', clip_mode: 'fixed', apply_to: 'gradient', policy_id: null, policy_dimension: null };
+    // 默认 RDP 会计：同样总预算下每轮噪声最小（basic 仍可选，数值与内核 v1.1 一致）
+    const DEFAULT_EXT = { accountant: 'rdp', clip_mode: 'fixed', apply_to: 'gradient', policy_id: null, policy_dimension: null };
 
     /* ================= 数学工具 ================= */
 
@@ -130,7 +131,7 @@
       const dp = job.dp;
       Object.keys(DEFAULT_EXT).forEach(function (key) { if (dp[key] === undefined) dp[key] = DEFAULT_EXT[key]; });
       if (!running(job)) {
-        dp.total_rounds = job.total_rounds;   // 任务轮数可能在编排页改过，非运行态同步
+        dp.total_rounds = job.total_rounds;   // createJob 已同步；PATCH /fl/jobs/{id} 改轮数时内核不同步 job.dp，这里兜底
         dp.provider = S.provider;
       }
       if (running(job)) {
@@ -260,7 +261,8 @@
     /* ================= 每轮记录（审计 / 框架指标共用） ================= */
 
     const MODEL_DIM = { lr: 64, xgb: 2048, cnn: 61706, lstm: 12416, tcn: 18944, custom: 10000 };
-    const GRAD_S = 0.5;   // 参与方本地更新 L2 范数的对数标准差
+    const BATCH = 256;    // DP-SGD：每个参与方每轮逐样本裁剪后求和加噪的样本数
+    const GRAD_S = 0.5;   // 样本梯度 L2 范数的对数标准差
     function gradMedian(r) { return 0.25 + 0.9 * Math.exp(-r / 12); }
     function clipExpect(m, s, C) {
       const mu = Math.log(m);
@@ -268,7 +270,7 @@
     }
     function clipAt(dp, r) {
       if (dp.clip_mode !== 'adaptive' || r <= 1) return dp.clip_norm;
-      return gradMedian(r - 1);   // 自适应：用上一轮更新范数的中位数（目标分位 0.5）作为本轮 C
+      return gradMedian(r - 1);   // 自适应：用上一轮样本梯度范数的中位数（目标分位 0.5）作为本轮 C
     }
 
     function trainers(job) {
@@ -283,7 +285,7 @@
       const noise = cal.scale * C;
       const d = MODEL_DIM[job.algorithm] || 10000;
       const noiseL2 = dp.mechanism === 'gaussian' ? noise * Math.sqrt(d) : noise * Math.sqrt(2 * d);
-      const signal = trainers(job) * clipExpect(m, GRAD_S, C);
+      const signal = trainers(job) * BATCH * clipExpect(m, GRAD_S, C);
       const cum = composeAt(acc, dp.mechanism, cal.scale, delta, r);
       return {
         round: r,
@@ -302,6 +304,7 @@
         signal_l2: round(signal, 4),
         snr: round(signal / noiseL2, 6),
         model_dim: d,
+        batch_size: BATCH,
         trainers: trainers(job)
       };
     }
@@ -340,6 +343,16 @@
         dp_active: rc.enabled
       });
     });
+
+    // 内核 jobTick 推送 round_completed 时调用：SSE 里的本轮 / 累计 ε 与 DP 页按同一会计方式计算
+    db.dpAccount = function (job, r) {
+      const rc = runCfg(job);
+      const dp = Object.assign({}, DEFAULT_EXT, rc.dp);
+      const cal = calibrate(dp);
+      const delta = deltaNum(dp.delta);
+      const cum = composeAt(dp.accountant, dp.mechanism, cal.scale, delta, r);
+      return { epsilon_spent: round(cum - composeAt(dp.accountant, dp.mechanism, cal.scale, delta, r - 1), 4), epsilon_used: round(cum, 4), accountant: dp.accountant };
+    };
 
     function auditSlice(job, q) {
       let rows = rowsOf(job);
@@ -840,11 +853,11 @@
       const nz = dp.mechanism === 'gaussian' ? 'N(0, σ²/' + n + ')' : 'Lap(0, b)';
       const steps = [
         { key: 'load', name: '数据加载', impl: 'DataLoader（本地分区）', dp: false, calls: r * n, detail: '各参与方按轮读取本地分区，原始数据不出域' },
-        { key: 'train', name: '本地训练', impl: (k.ALGO_CN[job.algorithm] || job.algorithm) + ' 本地迭代', dp: false, calls: r * n, detail: '计算本地模型更新 Δw' },
+        { key: 'train', name: '本地训练', impl: (k.ALGO_CN[job.algorithm] || job.algorithm) + ' 本地迭代', dp: false, calls: r * n, detail: '按样本计算梯度 g（DP-SGD，逐样本）' },
         { key: 'clip', name: '梯度裁剪', impl: map.GradientDP || '—', dp: true, calls: r * n,
-          detail: dp.clip_mode === 'adaptive' ? '自适应裁剪：C 取上一轮更新范数中位数（初始 C = ' + dp.clip_norm + '）' : '固定裁剪：‖Δw‖₂ 超过 C = ' + dp.clip_norm + ' 时按比例缩放' },
+          detail: dp.clip_mode === 'adaptive' ? '自适应裁剪：C 取上一轮样本梯度范数中位数（初始 C = ' + dp.clip_norm + '）' : '逐样本固定裁剪：‖g‖₂ 超过 C = ' + dp.clip_norm + ' 时按比例缩放（每参与方每轮 ' + BATCH + ' 个样本）' },
         { key: 'noise', name: '加噪', impl: dp.mechanism === 'laplace' ? (map.GradientDPL || '—') : (map.GradientDP || '—'), dp: true, calls: r * n,
-          detail: MECH_CN[dp.mechanism] + '，噪声倍数 z = ' + cal.scale.toFixed(3) + '；各参与方加 ' + nz + '，聚合后总噪声满足所配 ε' },
+          detail: MECH_CN[dp.mechanism] + '，噪声倍数 z = ' + cal.scale.toFixed(3) + '；各参与方对 ' + BATCH + ' 个裁剪后样本梯度之和加 ' + nz + '，聚合后总噪声满足所配 ε' },
         { key: 'agg', name: '安全聚合', impl: job.aggregation === 'he' ? 'HE 聚合器（同态加密）' : (map.SecureAggregator || '—'), dp: false, calls: r,
           detail: job.aggregation === 'he' ? '加噪后的更新以同态密文上传并求和' : '加噪后的更新以秘密分片上传并求和' },
         { key: 'account', name: '预算记账', impl: map.Accountant || '—', dp: true, calls: r,
@@ -904,7 +917,7 @@
         }),
         summary: last ? {
           clip_ratio_avg: round(avg('clip_ratio'), 4), noise_l2_last: last.noise_l2, snr_last: last.snr,
-          snr_db_last: round(10 * Math.log10(last.snr * last.snr), 2), model_dim: last.model_dim, trainers: last.trainers,
+          snr_db_last: round(10 * Math.log10(last.snr * last.snr), 2), model_dim: last.model_dim, trainers: last.trainers, batch_size: last.batch_size,
           mechanism: last.mechanism, noise_scale: last.noise_scale
         } : null,
         histogram: histogram, histogram_samples: samples

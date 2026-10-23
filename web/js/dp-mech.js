@@ -256,11 +256,11 @@
     const deltaRow = UI.formRow('松弛参数 δ', delta, '仅高斯机制；建议小于 1 / 样本数');
     deltaRow.hidden = cfg.mechanism !== 'gaussian';
     g.appendChild(deltaRow);
-    g.appendChild(UI.formRow('裁剪阈值 C（梯度 L2 敏感度）', clip, '0.2 – 4；每个参与方更新的 L2 范数上限'));
+    g.appendChild(UI.formRow('裁剪阈值 C（梯度 L2 敏感度）', clip, '0.2 – 4；单个样本梯度的 L2 范数上限'));
     const cmRow = el('div', 'field-col');
     cmRow.appendChild(el('label', null, '裁剪方式'));
     cmRow.appendChild(cm.el);
-    cmRow.appendChild(el('span', 'hint', '自适应：每轮取上一轮更新范数中位数作为 C'));
+    cmRow.appendChild(el('span', 'hint', '自适应：每轮取上一轮样本梯度范数中位数作为 C'));
     g.appendChild(cmRow);
     g.appendChild(UI.formRow('预算会计方式', acc, '决定同一总 ε 下每轮可加多少噪声'));
     body.appendChild(g);
@@ -533,10 +533,10 @@
     if (!job) { card.appendChild(el('div', 'table-empty', '当前项目没有训练任务')); return; }
     const r = await Api.post('/dp/adaptive-noise', { target: 'gradient', job_id: jobId });
     if (my !== seq) return;
-    card.appendChild(el('div', 'banner-note', '任务「' + job.name + '」：参与方本地更新的 L2 范数随训练下降。固定裁剪沿用 C = ' + cfg.clip_norm +
-      '；自适应裁剪每轮把 C 设为上一轮更新范数的中位数（目标分位 0.5，Andrew 等 2021），噪声 σ = z · C 随之下降，z = ' + r.noise_multiplier.toFixed(3) + '（' + D.ACC_CN[r.accountant] + '）。'));
+    card.appendChild(el('div', 'banner-note', '任务「' + job.name + '」：样本梯度的 L2 范数随训练下降。固定裁剪沿用 C = ' + cfg.clip_norm +
+      '；自适应裁剪每轮把 C 设为上一轮样本梯度范数的中位数（目标分位 0.5，Andrew 等 2021），噪声 σ = z · C 随之下降，z = ' + r.noise_multiplier.toFixed(3) + '（' + D.ACC_CN[r.accountant] + '）。'));
     const mg = el('div', 'metric-grid');
-    mg.appendChild(metric('平均裁剪比例 · 固定', D.pct(r.summary.clip_ratio_fixed_avg), '被裁剪的参与方更新占比，越高偏差越大'));
+    mg.appendChild(metric('平均裁剪比例 · 固定', D.pct(r.summary.clip_ratio_fixed_avg), '被裁剪的样本梯度占比，越高偏差越大'));
     mg.appendChild(metric('平均裁剪比例 · 自适应', D.pct(r.summary.clip_ratio_adaptive_avg), '稳定在目标分位 50% 附近'));
     mg.appendChild(metric('平均每轮噪声 σ', r.summary.noise_fixed_avg.toFixed(2) + ' → ' + r.summary.noise_adaptive_avg.toFixed(2), '固定 → 自适应，按 ' + r.series.length + ' 轮平均'));
     mg.appendChild(metric('噪声降低', r.summary.noise_reduction_pct.toFixed(1) + '%', '相同 ε 下注入的噪声总量减少'));
@@ -545,11 +545,11 @@
     const maxC = Math.max(cfg.clip_norm, r.series[0].update_norm_median) * 1.15;
     const w1 = el('div', 'dp-chart-wrap');
     w1.appendChild(D.legend([
-      { color: C.primary, label: '更新范数中位数' }, { color: C.amber, label: '固定 C' }, { color: C.teal, label: '自适应 C' }
+      { color: C.primary, label: '样本梯度范数中位数' }, { color: C.amber, label: '固定 C' }, { color: C.teal, label: '自适应 C' }
     ]));
     w1.appendChild(D.chart({
       w: 820, h: 180, xmin: 1, xmax: T, ymin: 0, ymax: maxC, xTicks: D.ticks(1, T, Math.min(6, T - 1)).map(Math.round), yTicks: D.niceTicks(0, maxC, 4),
-      yFmt: function (v) { return v.toFixed(2); }, xLabel: '轮次', yLabel: 'L2 范数', aria: '每轮更新范数与裁剪阈值',
+      yFmt: function (v) { return v.toFixed(2); }, xLabel: '轮次', yLabel: 'L2 范数', aria: '每轮样本梯度范数与裁剪阈值',
       series: [
         { color: C.primary, points: r.series.map(function (x) { return { x: x.round, y: x.update_norm_median }; }) },
         { color: C.amber, dash: '5 4', points: r.series.map(function (x) { return { x: x.round, y: x.clip_fixed }; }) },
@@ -558,7 +558,7 @@
     }));
     card.appendChild(w1);
     const w2 = el('div', 'dp-chart-wrap');
-    w2.appendChild(D.legend([{ color: C.amber, label: '固定裁剪 · 被裁剪更新占比' }, { color: C.teal, label: '自适应裁剪 · 被裁剪更新占比' }]));
+    w2.appendChild(D.legend([{ color: C.amber, label: '固定裁剪 · 被裁剪样本梯度占比' }, { color: C.teal, label: '自适应裁剪 · 被裁剪样本梯度占比' }]));
     w2.appendChild(D.chart({
       w: 820, h: 150, xmin: 1, xmax: T, ymin: 0, ymax: 1, xTicks: D.ticks(1, T, Math.min(6, T - 1)).map(Math.round), yTicks: [0, 0.25, 0.5, 0.75, 1],
       yFmt: function (v) { return (v * 100).toFixed(0) + '%'; }, xLabel: '轮次', aria: '每轮裁剪比例',
