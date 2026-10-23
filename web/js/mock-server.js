@@ -16,6 +16,14 @@
 
   function ok(data) { return { code: 0, message: 'ok', data: data, request_id: rid() }; }
   function err(code, message, data) { return { code: code, message: message, data: data || null, request_id: rid() }; }
+  /** ISO 时间 → '2026-10-23 22:10:05 +08:00'（导出文件统一按 UTC+8 书写） */
+  function fmtLocal(iso) {
+    if (!iso) return '';
+    const d = new Date(new Date(iso).getTime() + 8 * 3600000);
+    const p = function (x) { return String(x).padStart(2, '0'); };
+    return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate()) + ' ' +
+      p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds()) + ' +08:00';
+  }
   function rid() { return 'req_' + Math.random().toString(16).slice(2, 10); }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
@@ -1384,7 +1392,7 @@
         const scope = q.scope || 'nodes';
         const keys = taskTypeOf(job.task_type).metrics.map(function (s) { return s.key; });
         const line = function (series, src, x) {
-          return [job.job_id, x.round, series].concat(keys.map(function (k) { return src[k]; }), [x.recorded_at]).join(',') + '\n';
+          return [job.job_id, x.round, series].concat(keys.map(function (k) { return src[k]; }), [fmtLocal(x.recorded_at)]).join(',') + '\n';
         };
         let csv = ['job_id', 'round', 'series'].concat(keys, ['recorded_at']).join(',') + '\n';
         job.metrics.forEach(function (x) {
@@ -1402,7 +1410,7 @@
         let csv = '任务 ID,协议,算子,参与方数,总通信量(MB),总耗时(秒),结束时间,状态\n';
         MPC_HISTORY.forEach(function (t) {
           csv += [t.task_id, t.protocol, t.operator, t.party_count,
-            (t.total_comm_bytes / 1048576).toFixed(1), t.total_duration_sec, t.finished_at, t.status].join(',') + '\n';
+            (t.total_comm_bytes / 1048576).toFixed(1), t.total_duration_sec, fmtLocal(t.finished_at), t.status].join(',') + '\n';
         });
         return { fileName: 'mpc_tasks_' + m[1] + '.csv', contentType: 'text/csv;charset=utf-8', content: '﻿' + csv };
       }
@@ -1466,6 +1474,7 @@
    *   k.download(rx, build)                    追加文件下载（build(m, query) → { fileName, contentType, content }）
    *   k.downloadFirst(rx, build)               前置文件下载（覆盖内核同路径导出）
    *   k.ok / k.err / k.db / k.nextId / k.NOW / k.hashHex / k.emit / k.subscribe / k.sleep
+   *   k.fmtLocal(iso)                          导出文件里的时间统一写成 '2026-10-23 22:10:05 +08:00'
    *   以及内核常量与函数（见下方对象），只读使用；需要改内核行为请用 routeFirst 包一层。
    */
   function extend(fn) {
@@ -1477,7 +1486,7 @@
       },
       download: function (rx, build) { downloads.push({ rx: rx, build: build }); },
       downloadFirst: function (rx, build) { downloads.unshift({ rx: rx, build: build }); },
-      ok: ok, err: err, db: db, nextId: nextId, NOW: NOW, hashHex: hashHex,
+      ok: ok, err: err, db: db, nextId: nextId, NOW: NOW, hashHex: hashHex, fmtLocal: fmtLocal,
       emit: emit, subscribe: subscribe, sleep: sleep,
       TOTAL_ROUNDS: TOTAL_ROUNDS, ALGO_CN: ALGO_CN, MODEL_PARAMS: MODEL_PARAMS, TASK_TYPES: TASK_TYPES, taskTypeOf: taskTypeOf,
       HE_SCHEMES: HE_SCHEMES, MPC_OPERATORS: MPC_OPERATORS, MPC_EST: MPC_EST, MPC_PARTY_DEFS: MPC_PARTY_DEFS,
