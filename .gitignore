@@ -4,3 +4,4 @@ node_modules/
 *.log
 dist/
 docs/acceptance/unit-results.json
+__pycache__/
