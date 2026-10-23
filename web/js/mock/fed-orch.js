@@ -4,7 +4,7 @@
  * 自有数据挂在 k.db.flo 下（语义上对应 fl_project_config / fl_algorithm / fl_algorithm_version /
  * fl_param_template / fl_isolation_audit 五张表）。另外按文档写两处内核数据：
  *   k.db.projects / k.db.nodes   新建项目、节点增删改（节点对象补 data_dir、last_heartbeat_at）
- *   k.db.seeded[新项目]          置 true，新项目不播种演示数据
+ *   k.db.seeded[新项目]          不导入演示数据时置 true；导入时先写 3 个演示节点再调 k.seedProject
  *   k.db.files                   注册算法时登记一条模型制品文件记录，新建任务时作为 model_file_id
  */
 (function () {
@@ -252,6 +252,7 @@
           return err(40902, '项目名称「' + name + '」已存在');
         }
       }
+      if (has('seed_demo') && typeof body.seed_demo !== 'boolean') return err(40000, 'seed_demo 必须是布尔值');
       if (has('type') && PROJECT_TYPES.indexOf(body.type) < 0) return err(40000, '项目类型必须是 production / pilot / sandbox');
       if (has('description') && String(body.description).length > 500) return err(40003, '描述不能超过 500 个字符');
       if (!partial || has('total_rounds')) {
@@ -303,8 +304,19 @@
       const pid = 'p' + n;
       const proj = { project_id: pid, name: body.name.trim(), type: body.type || 'pilot', created_at: k.NOW() };
       db.projects.push(proj);
-      db.nodes[pid] = [];
-      db.seeded[pid] = true;   // 新项目不播种演示数据集与任务，从空项目开始
+      if (body.seed_demo === true) {
+        // 导入演示数据：先登记 2 个训练节点 + 1 个聚合节点，再由内核 seedProject 按原逻辑播种数据集与任务
+        db.nodes[pid] = DEMO_NODES.map(function (d, i) {
+          const n = { node_id: d[0] + '-' + pid, ip: '10.8' + i + '.' + n4(pid) + '.' + (11 + i), port: d[1] === 'aggregator' ? 9090 : 8471,
+            role: d[1], role_label: roleLabel(d[1]), data_partition: d[2], online: true, last_heartbeat_at: k.NOW() };
+          n.data_dir = defaultDir(pid, n);
+          return n;
+        });
+        k.seedProject(pid);
+      } else {
+        db.nodes[pid] = [];
+        db.seeded[pid] = true;   // 空项目：不播种演示数据集与任务
+      }
       flo.configs[pid] = {
         description: body.description || '', base_algorithm: body.base_algorithm, model_version: body.model_version,
         total_rounds: Number(body.total_rounds), target: { metric: body.target.metric, value: Number(body.target.value) },
@@ -312,6 +324,9 @@
       };
       return ok(projectView(proj));
     });
+
+    const DEMO_NODES = [['node-baotou', 'trainer', 'part-A'], ['node-ganzhou', 'trainer', 'part-B'], ['node-center-agg', 'aggregator', null]];
+    function n4(pid) { return parseInt(k.hashHex(pid, 1).slice(0, 2), 16) % 200 + 1; }
 
     k.route('GET', '/projects/{project_id}', function (p) {
       const proj = project(p.project_id);
@@ -964,7 +979,45 @@
         job.params = params;
         if (req.template_id && flo.templates[req.template_id]) job.algo_ref.template_id = req.template_id;
       }
-      return ok(Object.assign(k.jobView(job), { algo_ref: job.algo_ref || null, params: job.params || null }));
+      return ok(withRef(job));
+    });
+
+    /* --- 任务读接口补 algo_ref：列表 / 详情 / 动作返回注册算法或自定义模型的真实名称与版本 --- */
+
+    function withRef(job) {
+      const v = k.jobView(job);
+      v.algo_ref = job.algo_ref || null;
+      v.params = job.params || null;
+      v.algo_ref_name = job.algorithm === 'custom' && job.algo_ref && job.algo_ref.kind !== 'builtin'
+        ? job.algo_ref.name + ' v' + job.algo_ref.version + (job.algo_ref.kind === 'custom' ? '（自定义模型）' : '（已注册）')
+        : null;
+      return v;
+    }
+
+    // 过滤逻辑与内核 GET /projects/{id}/fl/jobs 一致
+    k.routeFirst('GET', '/projects/{project_id}/fl/jobs', function (p, q) {
+      let list = k.jobsOfProject(p.project_id);
+      if (q.status) {
+        const want = q.status.split(',');
+        list = list.filter(function (j) { return want.indexOf(j.status) >= 0; });
+      }
+      if (q.task_type) list = list.filter(function (j) { return j.task_type === q.task_type; });
+      if (q.latest === 'true' || q.latest === true) list = list.slice(0, 1);
+      return ok({ items: list.map(withRef), page: 1, page_size: 20, total: list.length });
+    });
+
+    k.routeFirst('GET', '/fl/jobs/{job_id}', function (p) {
+      const job = db.flJobs[p.job_id];
+      if (!job) return err(40400, '任务不存在');
+      return ok(withRef(job));
+    });
+
+    k.routeFirst('POST', '/fl/jobs/{job_id}/actions', function (p, q, body) {
+      const job = db.flJobs[p.job_id];
+      if (!job) return err(40400, '任务不存在');
+      const r = k.flAction(job, (body || {}).action);
+      if (r.code === 0) r.data = withRef(job);
+      return r;
     });
   });
 })();

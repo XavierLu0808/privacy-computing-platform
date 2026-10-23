@@ -306,6 +306,16 @@
     body.appendChild(three);
     const targetNote = el('span', 'hint');
     body.appendChild(targetNote);
+    let demo = null;
+    if (!edit) {
+      const lb = el('label', 'check-item');
+      demo = el('input');
+      demo.type = 'checkbox'; demo.id = 'fpDemo'; demo.checked = true;
+      lb.appendChild(demo);
+      lb.appendChild(document.createTextNode('导入演示数据'));
+      lb.appendChild(el('span', 'hint', '2 个训练节点 + 1 个聚合节点、4 张稀土演示数据集、2 个示例训练任务；不勾选则创建空项目'));
+      body.appendChild(lb);
+    }
 
     async function fillVersions() {
       UI.clear(ver);
@@ -359,8 +369,9 @@
           renderProject();
           loadProjects();
         } else {
+          req.seed_demo = demo.checked;
           const created = await Api.post('/projects', req);
-          UI.toast('已创建项目「' + created.name + '」并切换到该项目，请先添加参与方节点');
+          UI.toast('已创建项目「' + created.name + '」并切换到该项目' + (req.seed_demo ? '，已导入演示节点、数据集与任务' : '，请先添加参与方节点'));
           await App.reloadProjects(created.project_id);
         }
       }

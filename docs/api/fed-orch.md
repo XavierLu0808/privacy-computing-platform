@@ -28,6 +28,7 @@
 | 18 | POST | `/fl/algorithms/{algo_id}/templates` | 另存参数模板 | FL-ORCH-09 |
 | 19 | DELETE | `/fl/param-templates/{template_id}` | 删除自定义模板 | FL-ORCH-09 |
 | 20 | POST | `/projects/{project_id}/fl/jobs` | 创建训练任务（v1.2 扩展：注册算法、`params`、项目默认值） | FL-ORCH-06 / 07 / 09 |
+| 21 | GET | `/projects/{project_id}/fl/jobs`、`/fl/jobs/{job_id}`；POST `/fl/jobs/{job_id}/actions` | 任务列表 / 详情 / 动作响应补 `algo_ref`、`params`、`algo_ref_name` | FL-ORCH-06 / 07 |
 
 ## 持久化（表结构语义）
 
@@ -44,7 +45,7 @@ mock 存在浏览器内存 `k.db.flo`，真后端按下表落库：
 | `fl_param_template` | `template_id` | `algo_id`、`name`（同算法内唯一）、`params`（JSON）、`preset`、`created_by`、`created_at` |
 | `fl_isolation_audit` | `check_id` | `project_id`、`type`、`actor_node_id`、`target_node_id`、`path`、`job_id`、`result`、`detail`、`at`、`operator` |
 
-mock 对内核数据的写入：新建项目时向 `db.projects` 追加项目、`db.nodes[新项目]` 置空数组、`db.seeded[新项目] = true`（新项目不播种演示数据集与任务）；节点增删改直接写 `db.nodes`；注册算法时向 `db.files` 登记一条模型制品记录；新建任务时在内核任务对象上追加 `algo_ref`、`params`。聚合策略只读 `db.fla[project_id].strategy`（聚合与安全页维护）。
+mock 对内核数据的写入：新建项目时向 `db.projects` 追加项目；不导入演示数据时 `db.nodes[新项目]` 置空数组、`db.seeded[新项目] = true`，导入时写 3 个演示节点后调用 `k.seedProject`；节点增删改直接写 `db.nodes`；注册算法时向 `db.files` 登记一条模型制品记录；新建任务时在内核任务对象上追加 `algo_ref`、`params`。聚合策略只读 `db.fla[project_id].strategy`（聚合与安全页维护）。
 
 ---
 
@@ -87,6 +88,7 @@ POST /projects
 | `total_rounds` | int | 是 | 1–200 |
 | `target.metric` | string | 是 | `accuracy` / `auc` / `loss`（分类）、`rmse` / `mae`（时序，归一化值） |
 | `target.value` | number | 是 | Accuracy / AUC / RMSE / MAE 取 (0, 1]，Loss 取 (0, 10] |
+| `seed_demo` | bool | 否 | 默认 `false`（空项目）。`true` 时登记 3 个演示节点 `node-baotou-{project_id}` / `node-ganzhou-{project_id}`（训练，分区 part-A / part-B）与 `node-center-agg-{project_id}`（聚合），再按内核原逻辑播种 4 张演示数据集和 2 个示例训练任务。界面复选框「导入演示数据」默认勾选 |
 
 比较方向由指标决定：`loss` / `rmse` / `mae` 为 `≤`，`accuracy` / `auc` 为 `≥`。训练目标所属任务类型须被基准模型支持。
 
@@ -98,11 +100,11 @@ POST /projects
 }
 ```
 
-响应 `data`：项目对象（同 1.1 的 `items[]`），例 `"target": { "metric": "rmse", "label": "RMSE（归一化）", "op": "<=", "value": 0.12, "task_type": "timeseries" }`。新项目没有节点，前端随后调用 `App.reloadProjects(project_id)` 切换顶栏。
+响应 `data`：项目对象（同 1.1 的 `items[]`），例 `"target": { "metric": "rmse", "label": "RMSE（归一化）", "op": "<=", "value": 0.12, "task_type": "timeseries" }`。`seed_demo` 不传或为 `false` 时新项目没有节点，前端随后调用 `App.reloadProjects(project_id)` 切换顶栏。
 
 | 情形 | code |
 |---|---|
-| 名称为空 / 指标不在枚举内 / 基准模型不支持该训练目标的任务类型 | 40000 |
+| 名称为空 / 指标不在枚举内 / 基准模型不支持该训练目标的任务类型 / `seed_demo` 不是布尔值 | 40000 |
 | 目标值不是数字 | 40002 |
 | 名称超长、轮数不在 1–200、目标值越界 | 40003 |
 | 基准模型或版本不存在 | 40400 |
@@ -380,7 +382,7 @@ DELETE /fl/param-templates/{template_id}
 | `total_rounds` | 未传时取项目配置 `total_rounds` |
 | `name` | 未传且使用注册算法 / 自定义模型时默认「{算法名} {版本} · {任务类型}」 |
 
-响应在任务详情基础上增加 `algo_ref`（`{ algo_id, name, kind, version, template_id? }`，使用内置算法时同样返回）与 `params`。内置算法且不带 `params` 时行为与 API.md §2.3 完全一致。
+响应在任务详情基础上增加 `algo_ref`（`{ algo_id, name, kind, version, template_id? }`，使用内置算法时同样返回）、`params` 与 `algo_ref_name`。`algo_ref_name` 仅在 `algorithm = custom` 且来自注册算法 / 自定义模型时有值，例「稀土价格 Transformer v1.2.0（已注册）」「违约树模型 v1.0.0（自定义模型）」，其余为 `null`；任务列表、任务详情、任务动作三个接口同样返回这三个字段（过滤参数与 API.md §2.2 一致），过程管控页的「算法」列、当前任务头和算法下拉用它显示真实算法名。`PATCH /fl/jobs/{job_id}` 仍为内核实现，响应不含这三个字段，前端在算法未变时沿用原值。内置算法且不带 `params` 时行为与 API.md §2.3 完全一致。
 
 | 新增情形 | code |
 |---|---|

@@ -30,6 +30,9 @@
   let sse = null;
   let booted = false;
 
+  /** 注册算法 / 自定义模型的任务 algorithm 为 custom，真实名称与版本在 algo_ref_name（任务编排 mock 补充）。 */
+  function algoLabel(j) { return j.algo_ref_name || ALGO_CN[j.algorithm] || j.algorithm; }
+
   function typeDef(t) { return taskTypes.filter(function (x) { return x.task_type === t; })[0]; }
   function spec() { return job.metrics_spec; }
 
@@ -65,7 +68,10 @@
 
   async function patch(body) {
     try {
+      const prev = job;
       job = await Api.patch('/fl/jobs/' + job.job_id, body);
+      // PATCH 响应不含 algo_ref_name：算法未变时沿用
+      if (job.algo_ref_name === undefined && job.algorithm === prev.algorithm) job.algo_ref_name = prev.algo_ref_name;
       syncListItem();
       render();
       UI.toast('配置已更新');
@@ -400,7 +406,7 @@
     $('flJobName').textContent = job.name;
     $('flJobType').textContent = t ? t.name : job.task_type;
     $('flJobType').className = 'tag ' + (job.task_type === 'timeseries' ? 'tag-ts' : 'tag-cls');
-    const meta = [job.job_id, job.node_ids.length + ' 个节点'];
+    const meta = [job.job_id, '算法 ' + algoLabel(job), job.node_ids.length + ' 个节点'];
     if (job.timeseries) meta.push('时间列 ' + job.timeseries.time_column + ' · 窗口 ' + job.timeseries.window_size + ' 天 · 预测 ' + job.timeseries.horizon + ' 天');
     if (job.dataset_source) {
       meta.push(job.dataset_source.type === 'psi_pipeline'
@@ -431,7 +437,7 @@
     UI.clear(algoSel);
     (t ? t.algorithms : [job.algorithm]).forEach(function (a) {
       const o = document.createElement('option');
-      o.value = a; o.textContent = ALGO_CN[a] || a;
+      o.value = a; o.textContent = a === job.algorithm ? algoLabel(job) : (ALGO_CN[a] || a);
       algoSel.appendChild(o);
     });
     const locked = st === 'Running' || st === 'Paused';
@@ -477,7 +483,7 @@
 
     $('flChartHint').textContent = job.current_round < 2
       ? '启动训练后，每完成一轮聚合即写入一次全局与各节点指标。'
-      : '算法 ' + ALGO_CN[job.algorithm] + ' · 已写入 ' + job.current_round + ' 轮指标，可导出 CSV。';
+      : '算法 ' + algoLabel(job) + ' · 已写入 ' + job.current_round + ' 轮指标，可导出 CSV。';
   }
 
   function renderJobs() {
@@ -499,7 +505,10 @@
       row.appendChild(nameCell);
       const t = typeDef(j.task_type);
       row.appendChild(UI.el('span', 'tag ' + (j.task_type === 'timeseries' ? 'tag-ts' : 'tag-cls'), t ? t.name : j.task_type));
-      row.appendChild(UI.el('span', 'cell-muted', ALGO_CN[j.algorithm] || j.algorithm));
+      const algoCell = UI.el('span', 'cell-muted', algoLabel(j));
+      algoCell.style.cssText = 'overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+      algoCell.title = algoLabel(j);
+      row.appendChild(algoCell);
       row.appendChild(UI.el('span', 'cell-muted', AGG_CN[j.aggregation]));
       row.appendChild(UI.el('span', 'cell-muted', j.current_round + ' / ' + j.total_rounds));
       const st = UI.el('span', 'tag', STATE_CN[j.status]);

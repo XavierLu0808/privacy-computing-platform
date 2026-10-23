@@ -319,3 +319,46 @@ test('[FL-ORCH-01][FL-ORCH-04] 新建任务默认聚合策略取聚合与安全�
   assert.equal(job.aggregation, 'ss');
   assert.equal((await okData('GET', '/projects/p2')).aggregation_default, null);
 });
+
+test('[FL-ORCH-01] 新建项目可选导入演示数据：节点、数据集、示例任务按内核原逻辑播种，参数非布尔被拒', async (t) => {
+  const { okData, errCode } = boot(t);
+  assert.equal(await errCode('POST', '/projects', { ...NEW_PROJECT, seed_demo: 'yes' }), 40000);
+  const p = await okData('POST', '/projects', { ...NEW_PROJECT, seed_demo: true });
+  const nodes = (await okData('GET', '/projects/' + p.project_id + '/nodes')).items;
+  assert.deepEqual(nodes.map((n) => n.node_id), ['node-baotou-p4', 'node-ganzhou-p4', 'node-center-agg-p4']);
+  assert.equal(nodes[0].data_dir, '/data/fl/p4/part-a');
+  const jobs = (await okData('GET', '/projects/p4/fl/jobs')).items;
+  assert.equal(jobs.length, 2);
+  assert.ok(jobs.every((j) => j.node_ids.length === 3));
+  assert.equal((await okData('GET', '/projects/p4/datasets')).total, 4);
+  assert.equal((await okData('GET', '/projects/p4')).node_count, 3);
+  // 演示任务可直接启动，隔离审计能取到训练轮次
+  await okData('POST', '/fl/jobs/' + jobs[0].job_id + '/actions', { action: 'start' });
+  const iso = await okData('GET', '/projects/p4/isolation');
+  assert.equal(iso.data_dirs.length, 2);
+});
+
+test('[FL-ORCH-06][FL-ORCH-07] 任务列表 / 详情 / 动作返回注册算法与自定义模型的真实名称和版本', async (t) => {
+  const { okData } = boot(t);
+  const a = await okData('POST', '/fl/algorithms', {
+    name: '稀土价格 Transformer', version: '1.2.0', task_types: ['timeseries'], model_format: 'pt',
+    params_schema: { type: 'object', properties: { d_model: { type: 'integer', minimum: 16, maximum: 512, default: 64 } } }
+  });
+  const job = await okData('POST', '/projects/p1/fl/jobs', {
+    ...CLS_JOB, task_type: 'timeseries', algorithm: a.algo_id,
+    dataset_source: { type: 'dataset', dataset_ids: ['ds_p1_ree_price'] }, timeseries: { time_column: 'trade_date', window_size: 30, horizon: 7 }
+  });
+  assert.equal(job.algo_ref_name, '稀土价格 Transformer v1.2.0（已注册）');
+  const listed = (await okData('GET', '/projects/p1/fl/jobs')).items;
+  assert.equal(listed.find((j) => j.job_id === job.job_id).algo_ref_name, '稀土价格 Transformer v1.2.0（已注册）');
+  assert.equal(listed.find((j) => j.job_id !== job.job_id).algo_ref_name, null);   // 内置算法与内核种子任务不带名称
+  assert.equal((await okData('GET', '/fl/jobs/' + job.job_id)).algo_ref_name, '稀土价格 Transformer v1.2.0（已注册）');
+  const started = await okData('POST', '/fl/jobs/' + job.job_id + '/actions', { action: 'start' });
+  assert.equal(started.status, 'Running');
+  assert.equal(started.algo_ref.version, '1.2.0');
+  assert.equal((await okData('GET', '/projects/p1/fl/jobs?status=Running')).total, 1);
+  const f = await okData('POST', '/files', { file: { name: 'tree.pkl', size: 9000 }, purpose: 'fl_model', project_id: 'p1' });
+  const m = await okData('POST', '/projects/p1/fl/models', { file_id: f.file_id, name: '违约树模型' });
+  const j2 = await okData('POST', '/projects/p1/fl/jobs', { ...CLS_JOB, algorithm: m.algo_id });
+  assert.equal(j2.algo_ref_name, '违约树模型 v1.0.0（自定义模型）');
+});
