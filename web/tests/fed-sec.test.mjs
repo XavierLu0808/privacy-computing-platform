@@ -156,6 +156,37 @@ test('[FL-AGG-04] 项目生成密钥后，过程管控页任务公钥（/fl/jobs
   assert.match((await okData('GET', '/fl/jobs/' + p2.job_id + '/he-public-key')).key_id, /^hek_/);
 });
 
+test('[FL-AGG-04] 项目聚合密钥与同态加密模块共用一套：写入 heKeys + 生命周期表，旧聚合密钥轮换；同态页轮换 / 销毁后本页同步', async (t) => {
+  const { okData, errCode, M } = boot(t);
+  const c = await cfgOf(okData);
+  const k1 = await okData('POST', AGG + '/keys', { he: c.he });
+  // 内核表：同 key_id，可直接用于同态四步流程
+  const core = M._db.heKeys[k1.key_id];
+  assert.equal(core.scheme, 'paillier');
+  assert.equal(core.key_params.key_size_bits, 2048);
+  assert.equal(core.project_id, 'p1');
+  const enc = await okData('POST', '/he/encrypt', { key_id: k1.key_id, values: [{ name: 'a', value: 12 }], precision: 0 });
+  assert.ok(enc);
+  // 同态加密密钥管理页：只有这一把在用的 fl_aggregation 密钥，播种的旧聚合密钥被轮换到它
+  const list = await okData('GET', '/he/keys?project_id=p1&purpose=fl_aggregation');
+  const active = list.items.filter((x) => x.status === 'active');
+  assert.deepEqual(active.map((x) => x.key_id), [k1.key_id]);
+  assert.equal(active[0].purpose, 'fl_aggregation');
+  assert.equal(active[0].distributed_to.length, 4);
+  assert.ok(active[0].rotated_from);
+  assert.equal(list.items.find((x) => x.key_id === active[0].rotated_from).rotated_to, k1.key_id);
+
+  // 同态页手动轮换 → 本页列表纳入接替密钥，公钥接口跟随
+  const rot = await okData('POST', '/he/keys/' + k1.key_id + '/rotate', {});
+  const mine = await okData('GET', AGG + '/keys');
+  assert.deepEqual(mine.items.map((x) => [x.key_id, x.status]), [[rot.new_key.key_id, 'active'], [k1.key_id, 'rotated']]);
+  assert.equal((await okData('GET', AGG + '/public-key')).key_id, rot.new_key.key_id);
+  // 同态页销毁在用密钥 → 本页无有效密钥
+  await okData('DELETE', '/he/keys/' + rot.new_key.key_id);
+  assert.equal((await okData('GET', AGG + '/keys')).items[0].status, 'destroyed');
+  assert.equal(await errCode('GET', AGG + '/public-key'), 40402);
+});
+
 test('[FL-AGG-05] 参数重置：恢复默认策略并落库，密钥保留', async (t) => {
   const { okData, M, errCode } = boot(t);
   const c = await cfgOf(okData);

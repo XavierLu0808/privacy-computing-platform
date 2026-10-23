@@ -245,8 +245,85 @@
         fingerprint: key.fingerprint, status: key.status, created_at: key.created_at
       };
     }
+    /**
+     * 与同态加密模块共用一套密钥：项目聚合密钥同时登记在内核 k.db.heKeys 与 he.js 的生命周期表 k.db.he.keys
+     * （purpose = 'fl_aggregation'）。同态加密页对该密钥做轮换 / 销毁后，这里按生命周期表同步状态。
+     */
+    function heLife() { return db.he && db.he.keys ? db.he : null; }
+    function syncKeys(pid) {
+      const life = heLife();
+      const list = db.flaKeys[pid] || [];
+      if (!life) return list;
+      list.slice().forEach(function (x) {
+        const m = life.keys[x.key_id];
+        if (!m) return;
+        if (m.status !== x.status) { x.status = m.status; x.rotated_at = m.rotated_at || m.destroyed_at || x.rotated_at; }
+        // 同态加密页轮换了本页的密钥：把接替的新密钥纳入本项目聚合密钥列表
+        const nid = m.rotated_to;
+        if (nid && db.heKeys[nid] && !list.some(function (y) { return y.key_id === nid; })) {
+          list.unshift(importedKey(db.heKeys[nid], x, life.keys[nid]));
+        }
+      });
+      if (list.length > 1) list.sort(function (a, b) { return Date.parse(b.created_at) - Date.parse(a.created_at); });
+      return list;
+    }
+    function importedKey(core, from, meta) {
+      const pid = core.project_id, id = core.key_id;
+      const seed = pid + id + core.scheme;
+      const kp = core.key_params || {};
+      const ks = core.scheme === 'paillier' ? (kp.key_size_bits || from.key_size_bits || 2048) : null;
+      const N = core.scheme === 'ckks' ? (kp.poly_modulus_degree || from.poly_modulus_degree) : null;
+      const Q = core.scheme === 'ckks' ? (kp.coeff_modulus_bits || from.coeff_modulus_bits) : null;
+      return {
+        key_id: id, project_id: pid, scheme: core.scheme,
+        key_size_bits: ks, poly_modulus_degree: N, coeff_modulus_bits: Q,
+        public_key: core.scheme === 'paillier' ? k.hashHex('n' + seed, ks / 32) : k.hashHex('pk' + seed, 16),
+        public_key_bytes: core.scheme === 'paillier' ? ks / 8 : 2 * N * Q / 8,
+        public_key_truncated: core.scheme === 'ckks',
+        generator: core.scheme === 'paillier' ? 'g = n + 1' : null,
+        security_bits: core.scheme === 'paillier' ? { 2048: 112, 3072: 128, 4096: 152 }[ks] : 128,
+        fingerprint: 'SHA256:' + k.hashHex('fp' + seed, 8),
+        private_key_ref: 'kms://fl-agg/' + pid + '/' + id,
+        status: meta ? meta.status : 'active',
+        created_at: core.created_at
+      };
+    }
     function activeKey(pid) {
-      return (db.flaKeys[pid] || []).filter(function (x) { return x.status === 'active'; })[0] || null;
+      return syncKeys(pid).filter(function (x) { return x.status === 'active'; })[0] || null;
+    }
+
+    /** 把新生成的聚合密钥写入同态加密模块的两张表，并把该项目其余在用的 fl_aggregation 密钥置为已轮换。 */
+    function registerHeKey(key, he) {
+      if (!db.heKeys) return;
+      const pid = key.project_id;
+      const life = heLife();
+      const now = key.created_at;
+      const period = life && life.policy[pid] ? life.policy[pid].period_days : 30;
+      let prev = null;
+      if (life) {
+        Object.keys(life.keys).forEach(function (id) {
+          const m = life.keys[id];
+          if (m.project_id !== pid || m.purpose !== 'fl_aggregation' || m.status !== 'active') return;
+          m.status = 'rotated'; m.rotated_to = key.key_id; m.rotated_at = now; m.rotate_reason = 'manual';
+          prev = id;
+        });
+      }
+      db.heKeys[key.key_id] = {
+        key_id: key.key_id, scheme: key.scheme, project_id: pid,
+        key_params: key.scheme === 'paillier' ? { key_size_bits: he.key_size_bits }
+          : { poly_modulus_degree: he.poly_modulus_degree, coeff_modulus_bits: he.coeff_modulus_bits, scale_bits: he.scale_bits },
+        public_key_preview: key.public_key.slice(0, 56),
+        elapsed_ms: 8.5, created_at: now,
+        expires_at: new Date(Date.parse(now) + period * 86400000).toISOString()
+      };
+      if (life) {
+        life.keys[key.key_id] = {
+          key_id: key.key_id, project_id: pid, scheme: key.scheme, scheme_name: key.scheme === 'paillier' ? 'Paillier' : 'CKKS',
+          purpose: 'fl_aggregation', status: 'active', storage: '平台密钥服务（KMS）托管，私钥不出域',
+          distributed_to: (db.nodes[pid] || []).map(function (n) { return { node_id: n.node_id, distributed_at: now }; }),
+          rotated_from: prev, rotated_to: null, rotated_at: null, rotate_reason: null, destroyed_at: null
+        };
+      }
     }
     function keyMatches(key, he) {
       if (!key || key.scheme !== he.scheme) return false;
@@ -322,12 +399,14 @@
 
     k.route('GET', '/projects/{project_id}/fl/aggregation/keys', function (p) {
       const nf = needProject(p); if (nf) return nf;
-      const items = (db.flaKeys[p.project_id] || []).map(keySummary);
+      const items = syncKeys(p.project_id).map(keySummary);
       return k.ok({ items: items, page: 1, page_size: 20, total: items.length });
     });
 
-    k.route('POST', '/projects/{project_id}/fl/aggregation/keys', function (p, q, body) {
+    k.route('POST', '/projects/{project_id}/fl/aggregation/keys', async function (p, q, body) {
       const nf = needProject(p); if (nf) return nf;
+      // 同态加密模块首次访问项目时会播种聚合密钥；先触发它的播种，再登记新密钥，保证该项目只有一把在用的聚合密钥
+      if (heLife() && !db.he.seeded[p.project_id]) await window.MockServer.handle('GET', '/he/keys?project_id=' + encodeURIComponent(p.project_id));
       const pid = p.project_id;
       const cur = db.fla[pid] || defaults(pid);
       const v = validateConfig({ strategy: 'he', ss: cur.ss, he: (body && body.he) || {}, sparsification: cur.sparsification }, pid);
@@ -354,6 +433,7 @@
         created_at: k.NOW()
       };
       list.unshift(key);
+      registerHeKey(key, he);
       return k.ok(publicKeyView(key));
     });
 

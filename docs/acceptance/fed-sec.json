@@ -72,13 +72,15 @@
       "GET /projects/{project_id}/fl/aggregation/keys",
       "GET /projects/{project_id}/fl/aggregation/public-key",
       "PUT /projects/{project_id}/fl/aggregation",
-      "GET /fl/jobs/{job_id}/he-public-key"
+      "GET /fl/jobs/{job_id}/he-public-key",
+      "GET /he/keys?project_id={project_id}&purpose=fl_aggregation"
     ],
     "tests": [
       "tests/fed-sec.test.mjs: [FL-AGG-04] 密钥对生成：未生成时查看公钥 40402；生成后公钥可查看、私钥只给 key_id；再生成则旧钥轮换",
-      "tests/fed-sec.test.mjs: [FL-AGG-04] 项目生成密钥后，过程管控页任务公钥（/fl/jobs/{id}/he-public-key）与项目密钥一致；未生成时回落内核逻辑"
+      "tests/fed-sec.test.mjs: [FL-AGG-04] 项目生成密钥后，过程管控页任务公钥（/fl/jobs/{id}/he-public-key）与项目密钥一致；未生成时回落内核逻辑",
+      "tests/fed-sec.test.mjs: [FL-AGG-04] 项目聚合密钥与同态加密模块共用一套：写入 heKeys + 生命周期表，旧聚合密钥轮换；同态页轮换 / 销毁后本页同步"
     ],
-    "impl": "密钥存于 k.db.flaKeys[project_id]（最新在前），每条记录 key_id、scheme、密钥参数、public_key、fingerprint（SHA256）、private_key_ref（kms:// 引用）、status。生成新密钥时旧的 active 置为 rotated；无有效密钥时查看公钥返回 40402。保存同态策略时要求有效密钥的方案与长度（CKKS 为 N 与系数模数）和 he 参数一致，否则 40901，避免任务用错密钥。 用 routeFirst 覆盖 GET /fl/jobs/{job_id}/he-public-key：同态任务所属项目有有效项目密钥时返回该密钥（字段兼容 API.md §2.8），否则回落内核逻辑，过程管控页看到的公钥与本页一致。",
+    "impl": "密钥存于 k.db.flaKeys[project_id]（最新在前），每条记录 key_id、scheme、密钥参数、public_key、fingerprint（SHA256）、private_key_ref（kms:// 引用）、status。生成新密钥时旧的 active 置为 rotated；无有效密钥时查看公钥返回 40402。保存同态策略时要求有效密钥的方案与长度（CKKS 为 N 与系数模数）和 he 参数一致，否则 40901，避免任务用错密钥。 用 routeFirst 覆盖 GET /fl/jobs/{job_id}/he-public-key：同态任务所属项目有有效项目密钥时返回该密钥（字段兼容 API.md §2.8），否则回落内核逻辑，过程管控页看到的公钥与本页一致。 生成时同一 key_id 同时写入内核 k.db.heKeys 与同态模块生命周期表 k.db.he.keys（purpose = fl_aggregation），并把项目其余在用的聚合密钥置为已轮换；同态加密页的轮换、销毁按生命周期表同步回本页，两边只有一套密钥。",
     "status": "done"
   },
   "FL-AGG-05": {

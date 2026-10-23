@@ -18,7 +18,7 @@
     }
   };
   const SCHEME_CN = { paillier: 'Paillier', ckks: 'CKKS' };
-  const KEY_ST = { active: ['有效', 'st-ready'], rotated: ['已轮换', 'cell-muted'] };
+  const KEY_ST = { active: ['有效', 'st-ready'], rotated: ['已轮换', 'cell-muted'], destroyed: ['已销毁', 'st-failed'] };
 
   const SS_FIELDS = [
     { key: 'parties', label: '参与方数量 n', unit: '方', hint: '2 至 16，默认取本项目训练节点数' },

@@ -182,6 +182,8 @@ GET /projects/{project_id}/fl/aggregation/public-key
 
 返回当前有效密钥的公钥详情。错误码：`40402` 尚未生成密钥对；`40400` 项目不存在。
 
+与同态加密模块共用一套密钥：生成时同一 `key_id` 同时写入内核 `k.db.heKeys`（`key_params` 为 Paillier `{ key_size_bits }` 或 CKKS `{ poly_modulus_degree, coeff_modulus_bits, scale_bits }`，可直接用于 §3 四步流程）与 he.js 生命周期表 `k.db.he.keys`（`purpose = "fl_aggregation"`、`status = "active"`、`distributed_to` 为项目全部节点、`rotated_from` 指向被替换的旧聚合密钥）。生成前先触发同态模块对该项目的密钥播种，再把该项目其余在用的 `fl_aggregation` 密钥置为 `rotated`（`rotate_reason = "manual"`），保证项目同时只有一把在用的聚合密钥。同态加密页对该密钥轮换后，接替的新密钥自动纳入本列表；销毁后状态同步为 `destroyed`，`GET …/public-key` 返回 `40402`。
+
 #### 2.12.7 任务聚合公钥（覆盖 API.md §2.8）
 
 ```
