@@ -221,6 +221,7 @@
   };
   const HE_SWITCHABLE = ['Created', 'Terminated', 'Failed'];
   const KEY_ST = { active: ['使用中', 'he-st-active'], rotated: ['已轮换', 'he-st-rotated'], destroyed: ['已销毁', 'he-st-destroyed'] };
+  const ROTATE_CN = { auto: '自动', manual: '手动', superseded: '被新钥替代' };
   const PURPOSE_CN = { fl_aggregation: '联邦聚合', session: '流程会话' };
   const SCHEME_CN = { paillier: 'Paillier', ckks: 'CKKS', bgv: 'BGV', tfhe: 'TFHE' };
   const ICON_OK = '<svg class="he-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M5 12.5l4.2 4.2L19 7"></path></svg>';
@@ -498,7 +499,7 @@
       st.style.gap = '2px';
       const ks = KEY_ST[k.status] || KEY_ST.active;
       st.appendChild(UI.el('span', ks[1], ks[0]));
-      if (k.rotated_to) st.appendChild(UI.el('span', 'hint-2', '→ ' + k.rotated_to + (k.rotate_reason === 'auto' ? '（自动）' : '（手动）')));
+      if (k.rotated_to) st.appendChild(UI.el('span', 'hint-2', '→ ' + k.rotated_to + (ROTATE_CN[k.rotate_reason] ? '（' + ROTATE_CN[k.rotate_reason] + '）' : '')));
       if (k.rotated_from && k.status === 'active') st.appendChild(UI.el('span', 'hint-2', '← ' + k.rotated_from));
       const dist = (k.distributed_to || []).length ? k.distributed_to.map(function (d) { return d.node_id; }).join('、') : '未分发';
       const ops = UI.el('span', 'he-ops');
@@ -562,7 +563,9 @@
         const req = { scheme: sch.value, project_id: projectId, purpose: 'fl_aggregation', node_ids: checks.picked() };
         if (sch.value === 'paillier') req.key_params = { key_size_bits: Number(size.value) };
         const k = await Api.post('/he/keys', req);
-        UI.toast('已生成密钥 ' + k.key_id + '，分发到 ' + k.distributed_to.length + ' 个节点');
+        const sup = k.superseded_key_ids || [];
+        UI.toast('已生成密钥 ' + k.key_id + '，分发到 ' + k.distributed_to.length + ' 个节点' +
+          (sup.length ? '；原在用聚合密钥 ' + sup.join('、') + ' 已标记为已轮换（一个项目只保留一把在用聚合密钥）' : ''));
         loadKeys();
       }
     });

@@ -470,12 +470,19 @@
         if (!m.distributed_to.some(function (d) { return d.node_id === nid; })) m.distributed_to.push({ node_id: nid, distributed_at: at || k.NOW() });
       });
     }
+    /** 标记已轮换，并同步写 db.heKeys 上的 status / rotated_to（fed-sec 按 db.heKeys 判断项目在用密钥）。 */
+    function markRotated(id, toId, reason, at) {
+      const m = db.keys[id];
+      m.status = 'rotated'; m.rotated_to = toId; m.rotated_at = at || k.NOW(); m.rotate_reason = reason;
+      const c = k.db.heKeys[id];
+      if (c) { c.status = 'rotated'; c.rotated_to = toId; c.rotated_at = m.rotated_at; c.rotate_reason = reason; }
+    }
     function rotate(id, reason, at) {
       const m = db.keys[id];
       const old = k.db.heKeys[id];
       const nk = newKey(m.project_id, algo(m.scheme) ? m.scheme : 'paillier', { purpose: m.purpose, rotated_from: id, key_params: old && old.key_params && Object.keys(old.key_params).length ? old.key_params : undefined, created_at: at });
       distribute(db.keys[nk.key_id], m.distributed_to.map(function (d) { return d.node_id; }), at);
-      m.status = 'rotated'; m.rotated_to = nk.key_id; m.rotated_at = at || k.NOW(); m.rotate_reason = reason;
+      markRotated(id, nk.key_id, reason, at);
       return nk.key_id;
     }
 
@@ -512,9 +519,22 @@
       const bad = ids.filter(function (x) { return known.indexOf(x) < 0; });
       if (bad.length) return k.err(40400, '节点不属于本项目：' + bad.join('、'));
       seedKeys(body.project_id);
+      adoptForeign(body.project_id);
       const key = newKey(body.project_id, body.scheme, { purpose: body.purpose, key_size_bits: ks });
       distribute(db.keys[key.key_id], ids);
-      return k.ok(keyView(key.key_id));
+      // 同一项目同一时间只允许一把在用的联邦聚合密钥（不区分方案）：新钥生成后其余在用的标记为被替代
+      const superseded = [];
+      if (body.purpose === 'fl_aggregation') {
+        Object.keys(db.keys).forEach(function (id) {
+          const m = db.keys[id];
+          if (id === key.key_id || m.project_id !== body.project_id || m.purpose !== 'fl_aggregation') return;
+          syncStatus(m);
+          if (m.status !== 'active') return;
+          markRotated(id, key.key_id, 'superseded');
+          superseded.push(id);
+        });
+      }
+      return k.ok(Object.assign(keyView(key.key_id), { superseded_key_ids: superseded }));
     });
     k.routeFirst('DELETE', '/he/keys/{key_id}', function (p) {
       const m = db.keys[p.key_id];

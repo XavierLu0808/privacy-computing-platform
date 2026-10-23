@@ -200,6 +200,8 @@ POST /he/keys
 
 响应在 §3.2 字段外补充：`purpose`、`status`（`active` / `rotated` / `destroyed`）、`storage`、`distributed_to[]`（`node_id`、`distributed_at`）、`rotated_from`、`rotated_to`、`rotated_at`、`rotate_reason`（`manual` / `auto`）、`destroyed_at`、`next_rotation_at`。
 
+同一项目同一时间只允许一把在用的 `fl_aggregation` 密钥（不区分方案）：新钥生成后，该项目其余在用的聚合密钥（含其他模块写入 `db.heKeys` 的）标记为 `rotated`，`rotated_to` 指向新钥，`rotate_reason = 'superseded'`，并同步写 `db.heKeys[id].status / rotated_to`；响应附 `superseded_key_ids[]`。会话密钥不受影响。轮换（H.7.4）同样同步写 `db.heKeys`。
+
 错误：方案未知、`project_id` 缺失、`purpose` 或 `key_size_bits` 非法 `40000`；节点不属于本项目 `40400`。
 
 ### H.7.2 密钥列表

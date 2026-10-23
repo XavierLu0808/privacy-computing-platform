@@ -196,7 +196,17 @@ test('[HE-APP-03] 密钥管理：播种在用 + 已轮换；生成、分发、�
   const seededActive = first.items.find((x) => x.status === 'active');
   assert.equal(seededActive.distributed_to.length, 4, '轮换继承分发节点');
   assert.ok(seededActive.next_rotation_at);
+  // 自动轮换：周期从 30 天改为 7 天，12 天前生成的播种密钥立即被轮换
+  const pol = await okData('PUT', '/projects/p1/he/rotation-policy', { enabled: true, period_days: 7 });
+  assert.equal(pol.period_days, 7);
+  const after = await okData('GET', '/he/keys?project_id=p1');
+  const old = after.items.find((x) => x.key_id === seededActive.key_id);
+  assert.equal(old.status, 'rotated');
+  assert.equal(old.rotate_reason, 'auto');
+  assert.ok(after.items.some((x) => x.rotated_from === seededActive.key_id && x.status === 'active'));
+  assert.ok(Date.parse(after.items.find((x) => x.rotated_from === seededActive.key_id).next_rotation_at) - Date.now() > 6 * DAY);
   const k = await okData('POST', '/he/keys', { scheme: 'paillier', project_id: 'p1', purpose: 'fl_aggregation', key_params: { key_size_bits: 3072 }, node_ids: ['node-shanghai-01'] });
+  assert.equal(k.superseded_key_ids.length, 1, '新聚合密钥替代原在用的那把');
   assert.equal(k.key_params.key_size_bits, 3072);
   const d = await okData('POST', '/he/keys/' + k.key_id + '/distribute', { node_ids: ['node-hangzhou-02', 'node-shanghai-01'] });
   assert.deepEqual(d.distributed_to.map((x) => x.node_id), ['node-shanghai-01', 'node-hangzhou-02']);
@@ -212,15 +222,6 @@ test('[HE-APP-03] 密钥管理：播种在用 + 已轮换；生成、分发、�
   const destroyed = await okData('GET', '/he/keys?project_id=p1&status=destroyed');
   assert.deepEqual(destroyed.items.map((x) => x.key_id), [rot.new_key.key_id]);
   assert.equal(await errCode('POST', '/he/keys/' + rot.new_key.key_id + '/distribute', { node_ids: ['node-shanghai-01'] }), 40901);
-  // 自动轮换：周期从 30 天改为 7 天，12 天前生成的播种密钥立即被轮换
-  const pol = await okData('PUT', '/projects/p1/he/rotation-policy', { enabled: true, period_days: 7 });
-  assert.equal(pol.period_days, 7);
-  const after = await okData('GET', '/he/keys?project_id=p1');
-  const old = after.items.find((x) => x.key_id === seededActive.key_id);
-  assert.equal(old.status, 'rotated');
-  assert.equal(old.rotate_reason, 'auto');
-  assert.ok(after.items.some((x) => x.rotated_from === seededActive.key_id && x.status === 'active'));
-  assert.ok(Date.parse(after.items.find((x) => x.rotated_from === seededActive.key_id).next_rotation_at) - Date.now() > 6 * DAY);
   assert.equal(await errCode('PUT', '/projects/p1/he/rotation-policy', { enabled: true, period_days: 0 }), 40003);
   assert.equal(await errCode('PUT', '/projects/p1/he/rotation-policy', { enabled: 'yes', period_days: 7 }), 40000);
   assert.equal((await call('GET', '/he/keys')).code, 40000);
@@ -336,4 +337,31 @@ test('[HE-APP-03] 外部 CKKS 聚合密钥：轮换整体继承 key_params，外
   const old = items.find((x) => x.key_id === 'hek_ck02');
   assert.equal(old.status, 'rotated');
   assert.equal(old.rotated_to, 'hek_ck03');
+});
+
+test('[HE-APP-03] 一个项目只保留一把在用的联邦聚合密钥：新建时其余在用的（含外部写入、不同方案）标记为被替代', async (t) => {
+  const { M, okData } = boot(t);
+  const db = M._db;
+  await okData('GET', '/he/keys?project_id=p1');
+  db.heKeys.hek_ext1 = { key_id: 'hek_ext1', project_id: 'p1', scheme: 'ckks', purpose: 'fl_aggregation', created_at: new Date().toISOString(),
+    key_params: { poly_modulus_degree: 8192, coeff_modulus_bits: 200, scale_bits: 40 } };
+  const sess = await okData('POST', '/he/keys', { scheme: 'ckks', project_id: 'p1' });
+  const p2 = await okData('POST', '/he/keys', { scheme: 'paillier', project_id: 'p2', purpose: 'fl_aggregation' });
+  const nk = await okData('POST', '/he/keys', { scheme: 'bgv', project_id: 'p1', purpose: 'fl_aggregation' });
+  assert.equal(nk.superseded_key_ids.length, 2, '播种的在用 Paillier 密钥 + 外部写入的 CKKS 密钥');
+  assert.ok(nk.superseded_key_ids.includes('hek_ext1'));
+  const { items } = await okData('GET', '/he/keys?project_id=p1');
+  const activeAgg = items.filter((x) => x.purpose === 'fl_aggregation' && x.status === 'active');
+  assert.deepEqual(activeAgg.map((x) => x.key_id), [nk.key_id], '全项目只有一把 active 的聚合密钥');
+  nk.superseded_key_ids.forEach((id) => {
+    const v = items.find((x) => x.key_id === id);
+    assert.equal(v.status, 'rotated');
+    assert.equal(v.rotated_to, nk.key_id);
+    assert.equal(v.rotate_reason, 'superseded');
+    assert.equal(db.heKeys[id].status, 'rotated', '同步写 db.heKeys');
+    assert.equal(db.heKeys[id].rotated_to, nk.key_id);
+  });
+  assert.equal(items.find((x) => x.key_id === sess.key_id).status, 'active', '会话密钥不受影响');
+  const p2v = (await okData('GET', '/he/keys?project_id=p2')).items.filter((x) => x.purpose === 'fl_aggregation' && x.status === 'active');
+  assert.deepEqual(p2v.map((x) => x.key_id), [p2.key_id], '其他项目不受影响');
 });
