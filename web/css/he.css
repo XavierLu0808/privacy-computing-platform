@@ -1,1 +1,76 @@
-/* he 模块样式 */
+/* he 模块样式（算法管理 #/he/algo、应用集成 #/he/app） */
+
+/* ---------- 通用 ---------- */
+.he-card-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.he-card-head .card-title { margin-right: 4px; }
+.he-form { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.he-form .field-col { min-width: 120px; }
+.he-form .input { height: 40px; }
+.he-form .input-sm { width: 110px; }
+.he-form .input-wide { width: 300px; }
+.he-ok { color: var(--success); font-weight: 600; }
+.he-bad { color: var(--danger); font-weight: 600; }
+.he-warn { color: var(--amber); }
+.he-mono { font-family: "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+.he-num { font-feature-settings: 'tnum'; }
+.he-table-scroll { max-height: 420px; overflow-y: auto; }
+.table-row.he-hl { background: var(--primary-soft); }
+.he-steps-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.he-flow-step {
+  flex: 1 1 150px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px;
+  background: #FAFBFC; display: flex; flex-direction: column; gap: 4px; min-width: 0;
+}
+.he-flow-step b { font-size: 13px; color: var(--ink); }
+.he-flow-step span { font-size: 12px; color: var(--muted); line-height: 18px; }
+.he-steps-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.he-form > .check-item { height: 40px; }
+.he-form > .btn-link { height: 40px; }
+.he-ic { width: 14px; height: 14px; flex-shrink: 0; vertical-align: -2px; }
+.he-check-row { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; line-height: 20px; }
+.he-rules { margin: 0; padding-left: 18px; font-size: 12px; line-height: 21px; color: var(--muted-3); }
+.he-guide { font-size: 13px; color: var(--muted-3); }
+.he-guide b { color: var(--primary); }
+
+/* ---------- 算法管理 ---------- */
+.hea-algo-grid { grid-template-columns: 110px 130px minmax(150px, 1.1fr) 150px 150px 150px minmax(220px, 1.6fr); }
+.hea-lib-grid { grid-template-columns: minmax(200px, 1.3fr) 130px 84px 84px 84px 84px minmax(220px, 1.6fr); }
+.hea-cell-btn {
+  height: 26px; padding: 0 8px; border: 1px solid var(--primary-bd); border-radius: 4px;
+  background: var(--card); color: var(--success); font-size: 12px; font-weight: 600; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px; width: max-content;
+}
+.hea-cell-btn:hover { background: var(--primary-soft); }
+.hea-cell-btn.on { background: var(--primary); border-color: var(--primary); color: #FFFFFF; }
+.hea-cell-no { font-size: 12px; color: var(--muted-2); }
+.hea-verify-grid { grid-template-columns: 40px minmax(90px, 1fr) minmax(90px, 1fr) minmax(130px, 1.2fr) minmax(150px, 1.4fr) minmax(130px, 1.2fr) 110px; }
+.hea-enc-grid { grid-template-columns: minmax(90px, 1fr) 110px minmax(120px, 1.2fr) 80px minmax(110px, 1fr) 120px; }
+.hea-sweep-grid { grid-template-columns: 90px 100px 130px 130px 110px minmax(150px, 1.3fr) minmax(150px, 1.3fr); }
+.hea-cand-grid { grid-template-columns: 100px minmax(150px, 1.2fr) 130px 80px 80px 90px 100px 100px minmax(180px, 1.6fr); }
+.hea-sec-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.hea-metric5 { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+.hea-metric5 .metric-value { font-size: 22px; }
+.hea-split { display: flex; flex-direction: column; gap: 14px; }
+.hea-split > .card { min-width: 0; }
+.hea-errbar { width: 100%; max-width: 160px; }
+
+/* ---------- 应用集成 ---------- */
+.he-app-grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.he-kv { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 8px 12px; font-size: 13px; }
+.he-kv dt { color: var(--muted); }
+.he-kv dd { margin: 0; color: var(--ink); min-width: 0; }
+.he-key-grid { grid-template-columns: 96px 80px 90px 128px 80px minmax(150px, 1.4fr) 128px 190px; }
+.he-log-grid { grid-template-columns: 80px minmax(150px, 1.4fr) 50px 80px minmax(130px, 1.1fr) 90px 100px 80px 128px; }
+.he-st-active { color: var(--success); font-weight: 600; font-size: 12px; }
+.he-st-rotated { color: var(--amber); font-weight: 600; font-size: 12px; }
+.he-st-destroyed { color: var(--muted-2); font-weight: 600; font-size: 12px; }
+.he-ops { display: flex; gap: 6px; flex-wrap: wrap; }
+.he-ops .btn-sm { height: 28px; padding: 0 9px; font-size: 12px; }
+
+@media (max-width: 1280px) {
+  .he-app-grid2 { grid-template-columns: minmax(0, 1fr); }
+  .hea-metric5 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+/* 表格单元格允许在长英文 token 处换行，避免溢出到相邻列 */
+#screen-he-algo .table-row > *, #screen-he-algo .table-head > *,
+#screen-he-app .table-row > *, #screen-he-app .table-head > * { min-width: 0; overflow-wrap: anywhere; }

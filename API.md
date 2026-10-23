@@ -737,7 +737,7 @@ GET /he/schemes
 | `scheme` | string | `paillier` / `ckks` / `bgv` |
 | `name` | string | 例 `Paillier` |
 | `description` | string | 例 `半同态 · 整数加、数乘` |
-| `library` | string | 例 `Pyfhel (Paillier)` |
+| `library` | string | 例 `python-paillier (phe)` |
 | `input_type` | string | `integer`（需定点化）/ `float` / `integer_exact` |
 | `supported_ops` | string[] | 见下 |
 | `key_params` | object | 密钥参数说明 |
@@ -747,7 +747,7 @@ GET /he/schemes
 ```json
 {
   "items": [
-    { "scheme": "paillier", "name": "Paillier", "description": "半同态 · 整数加、数乘", "library": "Pyfhel (Paillier)", "input_type": "integer", "supported_ops": ["add_ct_ct", "mul_ct_pt"], "key_params": { "key_size_bits": 2048 } },
+    { "scheme": "paillier", "name": "Paillier", "description": "半同态 · 整数加、数乘", "library": "python-paillier (phe)", "input_type": "integer", "supported_ops": ["add_ct_ct", "mul_ct_pt"], "key_params": { "key_size_bits": 2048 } },
     { "scheme": "ckks", "name": "CKKS", "description": "全同态 · 浮点近似计算", "library": "SEAL TenSEAL (CKKS)", "input_type": "float", "supported_ops": ["add_ct_ct", "mul_ct_ct", "mul_ct_pt"], "key_params": { "poly_modulus_degree": 8192 } },
     { "scheme": "bgv", "name": "BGV", "description": "全同态 · 整数精确计算", "library": "SEAL (BGV)", "input_type": "integer_exact", "supported_ops": ["add_ct_ct", "mul_ct_ct", "mul_ct_pt"], "key_params": { "poly_modulus_degree": 8192 } }
   ]

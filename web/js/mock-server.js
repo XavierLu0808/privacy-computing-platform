@@ -194,7 +194,7 @@
   function taskTypeOf(t) { return TASK_TYPES.filter(function (x) { return x.task_type === t; })[0]; }
 
   const HE_SCHEMES = [
-    { scheme: 'paillier', name: 'Paillier', description: '半同态 · 整数加、数乘', library: 'Pyfhel (Paillier)', input_type: 'integer', supported_ops: ['add_ct_ct', 'mul_ct_pt'], key_params: { key_size_bits: 2048 } },
+    { scheme: 'paillier', name: 'Paillier', description: '半同态 · 整数加、数乘', library: 'python-paillier (phe)', input_type: 'integer', supported_ops: ['add_ct_ct', 'mul_ct_pt'], key_params: { key_size_bits: 2048 } },
     { scheme: 'ckks', name: 'CKKS', description: '全同态 · 浮点近似计算', library: 'SEAL TenSEAL (CKKS)', input_type: 'float', supported_ops: ['add_ct_ct', 'mul_ct_ct', 'mul_ct_pt'], key_params: { poly_modulus_degree: 8192 } },
     { scheme: 'bgv', name: 'BGV', description: '全同态 · 整数精确计算', library: 'SEAL (BGV)', input_type: 'integer_exact', supported_ops: ['add_ct_ct', 'mul_ct_ct', 'mul_ct_pt'], key_params: { poly_modulus_degree: 8192 } }
   ];
@@ -893,8 +893,9 @@
   route('PATCH', '/fl/jobs/{job_id}', function (p, q, body) {
     const job = db.flJobs[p.job_id];
     if (!job) return err(40400, '任务不存在');
-    if (['Running', 'Paused'].indexOf(job.status) >= 0) {
-      return err(40901, '任务运行中不允许修改配置', { status: job.status });
+    // API.md §2.5：只允许在 Created / Terminated / Failed 状态修改
+    if (['Created', 'Terminated', 'Failed'].indexOf(job.status) < 0) {
+      return err(40901, '当前状态 ' + job.status + ' 不允许修改配置', { status: job.status });
     }
     if (body.algorithm) {
       if (!ALGO_CN[body.algorithm]) return err(40000, '未知算法 ' + body.algorithm);

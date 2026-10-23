@@ -106,7 +106,7 @@ test('时序任务全流程：创建 → 启动 → 每轮推送 RMSE/MAE → �
 });
 
 test('分类任务指标字段保持向后兼容（global_loss / global_accuracy）', async (t) => {
-  const { okData, tick } = boot(t);
+  const { okData, errCode, tick } = boot(t);
   const list = await okData('GET', '/projects/p1/fl/jobs');
   const id = list.items[0].job_id;
   await okData('POST', '/fl/jobs/' + id + '/actions', { action: 'start' });
@@ -115,8 +115,8 @@ test('分类任务指标字段保持向后兼容（global_loss / global_accuracy
   assert.equal(j.global_loss, j.global_metrics.loss);
   assert.equal(j.global_accuracy, j.global_metrics.accuracy);
   assert.equal(j.global_loss_prev, j.global_metrics_prev.loss);
-  const bad = await okData('PATCH', '/fl/jobs/' + list.items[1].job_id, { aggregation: 'he' });
-  assert.equal(bad.aggregation, 'he');
+  // 已完成（Success）的任务不允许再改配置（API.md §2.5）
+  assert.equal(await errCode('PATCH', '/fl/jobs/' + list.items[1].job_id, { aggregation: 'he' }), 40901);
 });
 
 test('数据接入：校验、接入中→就绪、重名、文件来源、详情脱敏、删除', async (t) => {

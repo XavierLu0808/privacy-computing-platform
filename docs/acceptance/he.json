@@ -1,0 +1,269 @@
+{
+  "HE-ALGO-01": {
+    "page": "#/he/algo",
+    "ui": "算法管理 → 「算法目录」卡片 Paillier 行；「运算验证」卡片",
+    "steps": [
+      "打开同态加密 / 算法管理，查看算法目录 Paillier 行：半同态、支持「密文 + 密文、密文 × 明文」、安全强度 112 位（n = 2048 bit）",
+      "在运算验证选择 Paillier，点「整数示例」",
+      "运算选「明文数乘 A ⊗ b」后运行，查看解密还原值与绝对误差",
+      "确认「密文乘法」选项被禁用并标注 Paillier 不支持"
+    ],
+    "expected": "整数加与明文数乘解密结果与明文直接计算一致，最大绝对误差 0；密文 × 密文被拒绝（40001）",
+    "api": [
+      "GET /he/algorithms",
+      "POST /he/verify"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-ALGO-01] 半同态 Paillier：目录给出整数加、数乘；整数精确加与数乘，不支持密文乘"
+    ],
+    "impl": "Paillier 以 python-paillier (phe) 为默认底层库，模数 n = 2048 bit（按 NIST SP 800-57 约 112 位安全，可选 3072 bit 达 128 位），每个明文一条 4096 bit 密文（0.5 KB）。目录接口给出 supported_ops = [add_ct_ct, mul_ct_pt]；/he/verify 对 Paillier + mul（密文乘密文）返回 40001。整数运算在 mock 中以 BigInt 精确计算，明文空间按 |m| < 2^2045 校验。",
+    "status": "done"
+  },
+  "HE-ALGO-02": {
+    "page": "#/he/algo",
+    "ui": "算法管理 → 「算法目录」卡片 CKKS / BGV 行；「运算验证」卡片",
+    "steps": [
+      "查看算法目录 CKKS（浮点近似）、BGV（模 t 整数精确）两行的支持运算、明文类型、典型参数",
+      "运算验证选 CKKS，点「浮点示例」，运算为密文乘法，查看误差为 1e-6 量级的非零近似误差",
+      "切换 BGV，输入整数（如 120, -35 与 42, 7）做密文乘法，误差为 0"
+    ],
+    "expected": "CKKS 加、乘可用且结果为近似值（误差非 0、远小于 1e-4）；BGV 整数加、乘精确",
+    "api": [
+      "GET /he/algorithms",
+      "POST /he/verify"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-ALGO-02] 全同态 CKKS / BGV：CKKS 浮点乘为近似（误差非 0 且 < 1e-4），BGV 整数乘精确"
+    ],
+    "impl": "CKKS 默认 N = 8192、模数链 [60, 40, 40, 60] bit、Δ = 2^40（总模数 200 bit ≤ 128 位上限 218 bit），向量按 4096 槽位打包为一条密文；mock 中解密值 = 明文结果 + 确定性仿真噪声（加法 (1+|x|)·2^-28，乘法含重缩放 (1+|x|)·2^-22，种子取输入哈希）。BGV 默认 N = 8192、明文模数 t = 1032193（20 bit 批处理素数），整数运算用 BigInt 精确计算并按 |m| ≤ 516096 校验溢出。另列 TFHE（FheInt32，可编程自举）作为 TFHE-rs / OpenFHE BinFHE 的对应方案。",
+    "status": "done"
+  },
+  "HE-ALGO-03": {
+    "page": "#/he/algo",
+    "ui": "算法管理 → 「加密算法配置」卡片（默认方案、底层库、默认保留小数位、库 × 方案矩阵）",
+    "steps": [
+      "查看矩阵：5 个底层库 × 4 个方案，支持处为可点击的「支持」按钮",
+      "点矩阵中 OpenFHE 1.2 × BGV，再点「保存为项目默认」",
+      "把底层库改为 TFHE-rs 0.7、方案改为 CKKS，提示行变红说明不支持，点保存被拒绝",
+      "切换顶栏项目，配置回到该项目自己的值"
+    ],
+    "expected": "合法组合保存成功并显示保存时间；不支持的组合返回 40001 并列出可选库，原配置不变；各项目配置独立",
+    "api": [
+      "GET /he/libraries",
+      "GET /projects/{project_id}/he/config",
+      "PUT /projects/{project_id}/he/config"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-ALGO-03] 加密算法配置：库 × 方案矩阵；合法组合保存为项目默认，不支持的组合 40001"
+    ],
+    "impl": "底层库目录 seal（Microsoft SEAL 4.1 / TenSEAL 0.3：CKKS、BGV）、pyfhel（Pyfhel 3.4：CKKS、BGV）、openfhe（OpenFHE 1.2：CKKS、BGV、TFHE/BinFHE）、tfhe-rs（TFHE-rs 0.7：TFHE）、phe（python-paillier 1.5：Paillier），矩阵与各库公开能力一致。项目默认配置 { scheme, library, precision } 按 project_id 存在 k.db.he.config，未保存时为 ckks / seal / 4；PUT 校验库是否支持方案（40001）与精度 0–8（40003）。运算验证会带上项目默认库并同样校验。",
+    "status": "done"
+  },
+  "HE-ALGO-04": {
+    "page": "#/he/algo",
+    "ui": "算法管理 → 「运算验证」卡片（整数输入）",
+    "steps": [
+      "方案选 BGV 或 TFHE，点「整数示例」或手输整数",
+      "选择密文加法 / 密文乘法 / 明文数乘并运行",
+      "查看 5 步耗时（密钥生成、编码、加密、密态运算、解密）与逐行结果表",
+      "TFHE 下输入 50000 × 50000，提示超出 FheInt32 范围"
+    ],
+    "expected": "整数数据加密、密态运算、解密还原值与明文一致，误差 0；超出明文空间时返回 40003 并在结果区说明",
+    "api": [
+      "POST /he/verify"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-ALGO-04] 整型数据：BGV / TFHE 加乘精确还原；超出明文空间 40003，非数值 40002"
+    ],
+    "impl": "全为整数的输入走 mode = integer，缩放因子 1，直接以 BigInt 加 / 乘；按方案明文空间校验每个编码值与结果（BGV |m| ≤ 516096，TFHE |m| ≤ 2^31 − 1，Paillier |m| < 2^2045），溢出返回 40003 并指出第几组与编码值。耗时与密文大小按方案基准折算（BGV 加密 24.1 ms / 条、密态乘 46.3 ms、密文 318.4 KB 且整组打包；TFHE 每个数一条密文）。",
+    "status": "done"
+  },
+  "HE-ALGO-05": {
+    "page": "#/he/algo",
+    "ui": "算法管理 → 「运算验证」卡片（浮点输入）",
+    "steps": [
+      "方案选 CKKS，点「浮点示例」（氧化钕 / 氧化铈 / 氧化镧 均价 × 调价系数）",
+      "分别运行密文加法与密文乘法，比较最大绝对误差",
+      "方案改为 Paillier、运算为密文加法，查看「编码后整数」列（如 41.2356 → 412356）与还原误差"
+    ],
+    "expected": "CKKS 浮点加、乘解密结果为近似值，乘法误差大于加法误差；Paillier 浮点输入自动定点化后误差不超过 0.5 × 10^-p",
+    "api": [
+      "POST /he/verify"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-ALGO-05] 浮点型数据：CKKS 加法误差 < 乘法误差；Paillier 浮点自动定点化后误差受精度约束"
+    ],
+    "impl": "CKKS 原生浮点编码（Δ = 2^40），噪声模型见 HE-ALGO-02。整数方案收到浮点时自动定点化：加法两边同乘 10^p，乘法各操作数独立缩放（整数操作数不放大）、结果缩放为指数之和，解密后除回；表格同时展示编码整数与解码结果，误差 = |解密值 − 明文直接计算值|。",
+    "status": "done"
+  },
+  "HE-ALGO-06": {
+    "page": "#/he/algo",
+    "ui": "算法管理 → 「数据类型自动转换与精度设置」卡片左侧表",
+    "steps": [
+      "目标方案选 BGV（或 Paillier / TFHE），输入 41.2356, 0.6821, 0.3957",
+      "查看提示：BGV 仅支持整数，按 round(x · 10^p) 自动转为定点整数",
+      "表中逐个查看缩放因子、编码后整数、位数、解码还原值、量化误差",
+      "目标方案改为 CKKS，提示原生支持浮点无需转换"
+    ],
+    "expected": "浮点输入被转为定点整数，给出缩放因子与还原值；全整数输入缩放因子为 1；CKKS 不做转换",
+    "api": [
+      "POST /he/encode"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-ALGO-06] 数据类型自动转换：整数方案输入浮点 → 定点整数，给出缩放因子、编码整数、还原值"
+    ],
+    "impl": "编码 encoded = round(x · 10^p)，按十进制字符串逐位四舍五入（1.005 @p=2 → 101），不经过二进制浮点，结果以字符串返回避免精度丢失；解码 encoded / 10^p。按方案明文空间判断溢出（BGV t = 1032193 时 |m| ≤ 516096）。与运算验证、HE-APP-01 Paillier 定点化使用同一规则。",
+    "status": "done"
+  },
+  "HE-ALGO-07": {
+    "page": "#/he/algo",
+    "ui": "算法管理 → 「数据类型自动转换与精度设置」卡片的保留小数位滑块、「精度对误差的影响」表、「设为项目默认精度」按钮；「加密算法配置」默认保留小数位",
+    "steps": [
+      "拖动保留小数位滑块 0–8，左侧编码结果实时刷新",
+      "查看右侧逐档表：最大量化误差、理论上界、编码最大位数、加法与乘法后是否溢出，当前档高亮",
+      "BGV 下观察 p ≥ 5 时 41.2356 编码溢出、p ≥ 1 时同精度相乘溢出",
+      "点「设为项目默认精度」，加密算法配置提示行更新"
+    ],
+    "expected": "精度每增 1 位，误差上界缩小 10 倍、编码位数约增 3.3 bit；超出明文空间的档位标注拒绝加密；默认精度保存到项目配置",
+    "api": [
+      "POST /he/encode",
+      "PUT /projects/{project_id}/he/config"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-ALGO-07] 浮点转换精度：0–8 位逐档误差单调不增，BGV 高精度触发溢出提示；越界 40003"
+    ],
+    "impl": "/he/encode 对同一组输入逐档计算 p = 0…8 的 max_abs_error、error_bound = 0.5 × 10^-p、max_encoded_bits、overflow，以及同精度两数相乘（缩放 10^2p）后的 mul_overflow，前端以表格和误差量级条展示。默认精度存在项目配置 precision 字段（0–8，越界 40003），运算验证与本卡片挂载时读取该值。",
+    "status": "done"
+  },
+  "HE-ALGO-08": {
+    "page": "#/he/algo",
+    "ui": "算法管理 → 「密态计算参数智能寻优（CKKS）」卡片",
+    "steps": [
+      "输入安全强度 128 位、乘法深度 2、精度需求 6 位小数、批大小 4096，点「开始寻优」",
+      "查看推荐：N = 8192、模数链 [60, 40, 40, 60] bit、Δ = 2^40、加 / 乘估算耗时、密文 384 KB",
+      "查看候选对比：N = 4096 不可行（200 bit > 109 bit 上限），N = 8192 推荐，N = 16384 可行但开销更大",
+      "把深度改为 3，推荐升到 N = 16384；改为 256 位、深度 20、8 位小数，提示无可行解",
+      "阅读「寻优依据」"
+    ],
+    "expected": "给出推荐 N、模数链、Δ 与性能估计，2–3 个候选对比，并写明依据；不可行输入返回 40003 及原因",
+    "api": [
+      "POST /he/param-optimize"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-ALGO-08] 参数智能寻优：按安全标准表选最小 N，给出模数链、Δ、性能估计与候选对比；不可行 40003"
+    ],
+    "impl": "Δ 位数 = ⌈d · log2 10⌉ + 20（20 bit 为编码与重缩放噪声余量，限 20–60 bit）；模数链 [q0, Δ × 深度, P]，q0 = P = min(60, Δ + 20)；N 取满足 HomomorphicEncryption.org 安全标准上限（三元秘密、经典攻击：128 位下 N = 8192 → 218 bit、16384 → 438 bit 等，与 SEAL CoeffModulus::MaxBitCount 相同）且 N/2 ≥ 批大小的最小值。性能以 SEAL 4.1 单线程 N = 8192、L = 3 量级为基准（加 0.07 ms、乘含重线性化与重缩放 2.9 ms），按 N·L 与 N·log2N·L·(L+1) 外推；密文 = 2·N·L·8 字节。候选为推荐值、更大的可行 N，以及小一档的不可行对照。",
+    "status": "done"
+  },
+  "HE-APP-01": {
+    "page": "#/he/app",
+    "ui": "应用集成 → 步骤条与步骤引导、「参数配置」、「执行面板」",
+    "steps": [
+      "选择加密算法、填写明文 A / B、选择密态运算与精度",
+      "按步骤引导依次点 ① 生成密钥对、② 加密、③ 密态运算、④ 解密，步骤条与引导文字随之推进",
+      "执行面板逐步显示公钥摘要、密文预览、耗时与密文大小，最后显示校验通过",
+      "生成的会话密钥同时出现在下方密钥管理列表（用途「流程会话」），点「重置」后标记已销毁"
+    ],
+    "expected": "四步按序可用，未到的步骤按钮禁用；解密结果与明文计算一致；切换项目时本次密钥被销毁、流程回到第 0 步",
+    "api": [
+      "GET /he/schemes",
+      "POST /he/keys",
+      "POST /he/encrypt",
+      "POST /he/evaluate",
+      "POST /he/decrypt",
+      "DELETE /he/keys/{key_id}"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-APP-01] 可视化配置：密钥 → 加密 → 密态运算 → 解密 四步走通；密钥销毁后加密 40402"
+    ],
+    "impl": "沿用 v1.1 的四步流程（API.md §3），新增步骤引导文案（每步说明做什么、私钥不出平台密钥服务）与 data-acc 标注。POST /he/keys 由 mock 扩展以 routeFirst 接管，响应字段与内核一致并补充 status、purpose = session 等生命周期字段；DELETE 保留销毁记录，便于在密钥管理中追溯。换项目时检测 projectId 变化并销毁上一项目的会话密钥。",
+    "status": "done"
+  },
+  "HE-APP-02": {
+    "page": "#/he/app",
+    "ui": "应用集成 → 「联邦学习一键配置」卡片",
+    "steps": [
+      "在训练任务下拉中选择当前项目的任务（显示状态与当前聚合方式）",
+      "对「已创建 / 已终止 / 失败」且为秘密共享聚合的任务点「一键启用同态加密聚合」",
+      "启用后显示本任务聚合公钥：key_id、Paillier 2048 bit、SHA256 指纹、公钥前 64 位、生成时间",
+      "选择「已完成」或运行中的任务，按钮禁用并提示原因，提供「去过程管控」入口"
+    ],
+    "expected": "允许状态下一键切换为 he 聚合并显示公钥；其他状态有明确提示，后端对运行中 / 暂停任务返回 40901",
+    "api": [
+      "GET /projects/{project_id}/fl/jobs",
+      "PATCH /fl/jobs/{job_id}",
+      "GET /fl/jobs/{job_id}/he-public-key"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-APP-02] 联邦学习一键配置：Created 任务启用 he 后可查公钥；运行中任务 40901"
+    ],
+    "impl": "复用联邦学习已有接口：PATCH /fl/jobs/{job_id} { aggregation: 'he' } 切换聚合方式，GET /fl/jobs/{job_id}/he-public-key 取聚合公钥。前端只对 Created / Terminated / Failed 开放按钮（与 V5 要求一致），Success 提示先重置；内核对 Running / Paused 返回 40901。启用后该任务训练的每一轮会进入 HE-APP-05 性能日志。",
+    "status": "done"
+  },
+  "HE-APP-03": {
+    "page": "#/he/app",
+    "ui": "应用集成 → 「密钥管理」卡片（生成密钥、轮换策略、状态筛选、密钥表的分发 / 轮换 / 销毁）",
+    "steps": [
+      "查看密钥表：密钥 ID、方案与参数、用途、生成时间、状态（使用中 / 已轮换 / 已销毁及前后继密钥）、已分发节点、下次自动轮换时间",
+      "点「生成密钥」，选 Paillier 3072 bit 与分发节点，提交",
+      "对新密钥点「分发」追加节点、点「轮换」生成新钥并把旧钥标记为已轮换（新钥继承分发节点）",
+      "对密钥点「销毁」并确认，状态变为已销毁",
+      "把轮换周期改为 7 天并保存策略，12 天前生成的聚合密钥被自动轮换（标注自动）"
+    ],
+    "expected": "密钥全生命周期可操作且状态正确；非使用中的密钥不能分发 / 轮换（40901）；自动轮换按周期生效",
+    "api": [
+      "GET /he/keys",
+      "POST /he/keys",
+      "POST /he/keys/{key_id}/distribute",
+      "POST /he/keys/{key_id}/rotate",
+      "DELETE /he/keys/{key_id}",
+      "GET /projects/{project_id}/he/rotation-policy",
+      "PUT /projects/{project_id}/he/rotation-policy"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-APP-03] 密钥管理：播种在用 + 已轮换；生成、分发、轮换、销毁与自动轮换策略"
+    ],
+    "impl": "密钥元数据存 k.db.he.keys（status、purpose、distributed_to[{node_id, distributed_at}]、rotated_from / rotated_to / rotate_reason、destroyed_at），公钥与参数仍在内核 db.heKeys，私钥标注由平台 KMS 托管不出域。轮换 = 生成同方案同参数新钥并继承分发节点，旧钥保留用于解密历史密文；销毁删除密钥与其密文并留记录。自动轮换策略 { enabled, period_days 1–365 } 按项目存储，GET 列表与 PUT 策略时检查 fl_aggregation 密钥是否已满周期并自动轮换；会话密钥 24 小时过期，不参与轮换。首次访问项目播种 1 把在用聚合密钥及其已轮换前身。",
+    "status": "done"
+  },
+  "HE-APP-04": {
+    "page": "#/he/app",
+    "ui": "应用集成 → 「流程测试模拟」卡片",
+    "steps": [
+      "选择加密方案 Paillier、梯度维度 10 000 维、参与方 3 方、定点精度 6 位、容差 1e-4，点「运行模拟」",
+      "查看结论横幅、4 步（密钥生成、加密、密态聚合、解密）耗时与密文条数 / 大小",
+      "查看逐项校验：密文条数一致、聚合维度、最大绝对误差 ≤ 容差、打包槽位不溢出",
+      "把定点精度改为 2 位再运行，结论为未通过并给出原因"
+    ],
+    "expected": "正常参数下判定通过；精度不足导致误差超容差时判定未通过并说明；结果同时写入性能日志",
+    "api": [
+      "POST /projects/{project_id}/he/simulations",
+      "GET /projects/{project_id}/he/simulations"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-APP-04] 流程测试模拟：3 方 × 10 000 维模拟梯度 加密→聚合→解密 通过；精度不足判失败；参数校验"
+    ],
+    "impl": "每个参与方生成 dim 维 N(0, 0.02²) 模拟梯度（种子 = 项目 + 方案 + 维度 + 参与方数，同参数同结果）。Paillier 逐元素 round(g·10^p) 整数求和后除回，每 32 个定点数打包进 2048 bit 明文的 64 bit 槽位（10 000 维 → 313 条密文）；CKKS 按 4096 槽位打包，聚合噪声 √参与方数 · 2^-28。与明文求和逐元素比较得最大 / 平均绝对误差，四项校验全部通过才判定通过。",
+    "status": "done"
+  },
+  "HE-APP-05": {
+    "page": "#/he/app",
+    "ui": "应用集成 → 「加解密性能日志」卡片（来源、任务 / 测试筛选、刷新、导出 CSV、环节汇总、日志表）",
+    "steps": [
+      "运行一次流程测试模拟，日志表出现密钥生成、各参与方加密、密态聚合、解密记录",
+      "在过程管控启动一个已启用同态加密聚合的训练任务，回到本页点「刷新」，出现按轮次的加密 / 聚合 / 解密记录",
+      "来源选「训练任务」并在任务下拉中选择该任务，只显示该任务日志",
+      "点「导出 CSV」下载当前筛选结果"
+    ],
+    "expected": "每条日志写明环节、节点或参与方、耗时（ms）、密文大小（KB）与条数；可按来源与任务 / 测试筛选并导出 CSV",
+    "api": [
+      "GET /projects/{project_id}/he/logs",
+      "GET /projects/{project_id}/he/logs/export"
+    ],
+    "tests": [
+      "tests/he.test.mjs: [HE-APP-05] 日志：模拟与同态聚合训练的每环节耗时与密文大小，可按来源 / 任务筛选并导出 CSV"
+    ],
+    "impl": "日志由两类来源实时展开：流程测试按步骤与参与方展开；aggregation = he 的训练任务按已完成轮次展开为每个训练节点加密 + 聚合方密态聚合 + 密钥服务解密，密文条数 = ⌈模型参数量 / 32⌉（xgb 4096 → 128 条，单条 0.52 KB），耗时按 Paillier 基准（加密 3.4 ms / 条、聚合 0.8 ms / 条 / 方、解密 4.2 ms / 条）加 ±6% 确定性抖动。接口返回按环节汇总（次数、平均耗时、密文合计），CSV 为 UTF-8 BOM，列含耗时(ms)、密文大小(KB)。",
+    "status": "done"
+  }
+}
