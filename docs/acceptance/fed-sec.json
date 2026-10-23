@@ -1,0 +1,211 @@
+{
+  "FL-AGG-01": {
+    "page": "#/fed/agg",
+    "ui": "聚合与安全 → 聚合策略卡 → 「策略」下拉 + 「套用推荐配置」",
+    "steps": [
+      "打开 #/fed/agg",
+      "「策略」下拉在秘密共享聚合与同态加密聚合之间切换，观察下方参数卡随之切换（秘密共享参数卡 / 同态加密参数卡 + 密钥对卡）",
+      "点击「套用推荐配置」，表单填入推荐值，页头提示「有未保存的修改」"
+    ],
+    "expected": "切换策略后只显示该策略的参数表单与说明；推荐配置说明行写清门限 t = ⌊n/2⌋ + 1、掉线容忍 d = n − t 等推荐规则，套用后各输入框为推荐值",
+    "api": [
+      "GET /projects/{project_id}/fl/aggregation",
+      "POST /projects/{project_id}/fl/aggregation/estimate"
+    ],
+    "tests": [
+      "tests/fed-sec.test.mjs: [FL-AGG-01] 一键聚合策略配置：未保存时给出默认 + 两种策略的推荐配置，推荐门限取多数派"
+    ],
+    "impl": "GET 接口一次返回已保存配置、平台默认 defaults、按项目训练节点数计算的 recommended 与参数范围 limits；页面持有表单副本，切换策略只改 strategy 并重绘对应表单。推荐规则：门限取多数派 ⌊n/2⌋+1、掉线容忍取满 n−t、掩码 10 轮轮换；Paillier 批打包取明文空间可容纳的最大值 ⌊(密钥长度−1)/(精度+⌈log₂n⌉+1)⌋，CKKS 取 N=8192 标准参数。",
+    "status": "done"
+  },
+  "FL-AGG-02": {
+    "page": "#/fed/agg",
+    "ui": "聚合与安全 → 秘密共享聚合参数卡",
+    "steps": [
+      "策略选「秘密共享聚合」",
+      "修改参与方数量 n、门限 t、掉线容忍数 d、有限域位数、掩码种子轮换周期",
+      "把门限 t 改为大于 n 的值（如 4），观察输入框下的错误提示",
+      "改回合法值后点击「保存到项目」"
+    ],
+    "expected": "越界值即时在对应输入框下显示「门限 t 超出范围：允许 2 至 3，当前 4」类提示，估算区显示参数不合法；合法值保存成功，刷新页面后保持",
+    "api": [
+      "POST /projects/{project_id}/fl/aggregation/estimate",
+      "PUT /projects/{project_id}/fl/aggregation"
+    ],
+    "tests": [
+      "tests/fed-sec.test.mjs: [FL-AGG-02] 秘密共享参数：保存 + 越界校验（门限 / 掉线容忍 / 有限域 / 轮换周期）"
+    ],
+    "impl": "参数存于 k.db.fla[project_id].ss = { parties, threshold, dropout_tolerance, field_bits, mask_rotation_rounds }。校验只在后端一处：2 ≤ t ≤ n ≤ 16，0 ≤ d ≤ n−t，16 ≤ 有限域位数 ≤ 64 且 ≥ 量化位数 + ⌈log₂n⌉（保证 n 方加和在有限域内不溢出），轮换周期 1–100；失败返回 40000/40002/40003 并带 data.field，前端按字段定位错误。每次输入 220 ms 去抖调用 estimate 接口实现实时校验。",
+    "status": "done"
+  },
+  "FL-AGG-03": {
+    "page": "#/fed/agg",
+    "ui": "聚合与安全 → 同态加密聚合参数卡",
+    "steps": [
+      "策略选「同态加密聚合」",
+      "方案选 Paillier，修改密钥长度、定点编码精度、批打包大小；把批打包改为 128 观察超出明文空间的提示",
+      "方案切换为 CKKS，修改多项式阶数 N、系数模数总位数、缩放因子位数、批打包大小；把系数模数改为 300（N = 8192）观察提示"
+    ],
+    "expected": "两种方案的参数表单动态切换；Paillier 打包超出明文空间、CKKS 系数模数超过 128 bit 安全上限或批打包超过 N/2 时给出带具体数值的错误；估算区同步显示密文个数与单密文位数",
+    "api": [
+      "POST /projects/{project_id}/fl/aggregation/estimate",
+      "PUT /projects/{project_id}/fl/aggregation"
+    ],
+    "tests": [
+      "tests/fed-sec.test.mjs: [FL-AGG-03] 同态加密参数：Paillier / CKKS 可编辑；打包超明文空间、系数模数超安全上限被拒"
+    ],
+    "impl": "参数存于 k.db.fla[project_id].he（scheme、key_size_bits、precision_bits、batch_size、poly_modulus_degree、coeff_modulus_bits、scale_bits），只校验当前方案用到的字段。Paillier：密钥长度限 2048/3072/4096，批打包 × (精度 + ⌈log₂n⌉ + 1 位符号) ≤ 密钥长度 − 1；CKKS：N ∈ {4096…32768}，系数模数 ≤ HomomorphicEncryption.org 128 bit 安全表上限（109/218/438/881）且 ≥ 缩放因子位数 + 20，批打包 ≤ N/2。",
+    "status": "done"
+  },
+  "FL-AGG-04": {
+    "page": "#/fed/agg",
+    "ui": "聚合与安全 → 同态加密聚合 → 同态加密密钥对卡 → 「生成密钥对」「查看公钥」",
+    "steps": [
+      "策略选「同态加密聚合」，未生成密钥时直接点「保存到项目」，提示需先生成密钥对",
+      "点击「生成密钥对」，密钥列表出现一条「有效」记录",
+      "点击「查看公钥」，弹窗显示密钥 ID、所属项目、方案、密钥长度与安全强度、公钥大小、SHA256 指纹、生成时间、完整公钥（Paillier 模数 n）与私钥托管说明",
+      "修改密钥长度后再生成一次，旧密钥变为「已轮换」"
+    ],
+    "expected": "公钥信息完整可查看；私钥只显示 KMS 引用与 key_id，不出现任何私钥材料；同态参数与有效密钥不一致时不能保存",
+    "api": [
+      "POST /projects/{project_id}/fl/aggregation/keys",
+      "GET /projects/{project_id}/fl/aggregation/keys",
+      "GET /projects/{project_id}/fl/aggregation/public-key",
+      "PUT /projects/{project_id}/fl/aggregation"
+    ],
+    "tests": [
+      "tests/fed-sec.test.mjs: [FL-AGG-04] 密钥对生成：未生成时查看公钥 40402；生成后公钥可查看、私钥只给 key_id；再生成则旧钥轮换"
+    ],
+    "impl": "密钥存于 k.db.flaKeys[project_id]（最新在前），每条记录 key_id、scheme、密钥参数、public_key、fingerprint（SHA256）、private_key_ref（kms:// 引用）、status。生成新密钥时旧的 active 置为 rotated；无有效密钥时查看公钥返回 40402。保存同态策略时要求有效密钥的方案与长度（CKKS 为 N 与系数模数）和 he 参数一致，否则 40901，避免任务用错密钥。",
+    "status": "done"
+  },
+  "FL-AGG-05": {
+    "page": "#/fed/agg",
+    "ui": "聚合与安全 → 页头「恢复默认」→ 确认弹窗",
+    "steps": [
+      "修改任意参数并保存",
+      "点击「恢复默认」，弹窗说明将恢复的默认值",
+      "点击弹窗「恢复默认」"
+    ],
+    "expected": "策略回到秘密共享聚合，门限 2、有限域 16 bit、Top-k 15%、量化 8 bit、开启误差反馈，并已保存（页头显示保存时间）；已生成的密钥对保留",
+    "api": [
+      "POST /projects/{project_id}/fl/aggregation/reset"
+    ],
+    "tests": [
+      "tests/fed-sec.test.mjs: [FL-AGG-05] 参数重置：恢复默认策略并落库，密钥保留"
+    ],
+    "impl": "后端用 defaults(project) 覆盖 k.db.fla[project_id] 并写 updated_at，一步完成恢复与落库；默认参与方数取项目训练节点数（2–16 截断）。密钥列表不动，便于恢复后再切回同态策略时复用。",
+    "status": "done"
+  },
+  "FL-AGG-06": {
+    "page": "#/fed/agg",
+    "ui": "聚合与安全 → 页头「保存到项目」+ 保存状态提示",
+    "steps": [
+      "修改参数，页头出现「有未保存的修改」",
+      "点击「保存到项目」",
+      "切换到其他项目再切回，或刷新后重新进入"
+    ],
+    "expected": "提示「已保存…配置到「项目名」」，页头显示保存时间；配置按项目隔离，切回后保持；任务编排页新建任务默认聚合方式随之变化",
+    "api": [
+      "PUT /projects/{project_id}/fl/aggregation",
+      "GET /projects/{project_id}/fl/aggregation"
+    ],
+    "tests": [
+      "tests/fed-sec.test.mjs: [FL-AGG-06] 参数配置保存：k.db.fla[projectId] 结构固定，项目间隔离；非法配置不落库"
+    ],
+    "impl": "落库结构固定为 k.db.fla[project_id] = { strategy: 'ss'|'he', ss, he, sparsification, updated_at }，任务编排页读取 strategy 作为新建任务默认聚合方式。保存前整体校验，任一字段不合法则整单拒绝且不覆盖旧值。页面以已保存配置的 JSON 快照与表单副本比对判断是否有未保存修改。",
+    "status": "done"
+  },
+  "FL-AGG-07": {
+    "page": "#/fed/agg",
+    "ui": "聚合与安全 → 梯度稀疏化卡（开关、Top-k 保留比例、误差反馈、量化位数、四个估算指标、公式说明）",
+    "steps": [
+      "查看默认估算：每客户端每轮上传 59.5 KB、本算法单轮 610.1 KB、FedAvg 单轮 4.6 MB、压缩比 7.80 倍（达标）",
+      "把 Top-k 保留比例改为 40%，压缩比降到 6 倍以下并显示「未达标」",
+      "关闭「启用 Top-k 稀疏化」，观察压缩比与公式说明变化",
+      "切换到同态加密聚合，观察密文膨胀导致压缩比下降"
+    ],
+    "expected": "四个指标与公式说明随参数实时刷新，公式写明 压缩比 = FedAvg 单轮平均通信总量 ÷ 本算法单轮平均通信总量，并代入当前数值",
+    "api": [
+      "POST /projects/{project_id}/fl/aggregation/estimate",
+      "PUT /projects/{project_id}/fl/aggregation"
+    ],
+    "tests": [
+      "tests/fed-sec.test.mjs: [FL-AGG-07] 梯度稀疏化：按公式估算每轮上传量与压缩比；比例越界被拒"
+    ],
+    "impl": "采用全局 Top-k：服务端按上一轮聚合结果下发统一下标集合，客户端只上传对应 k = ⌈ρP⌉ 个位置的量化梯度，使秘密共享掩码与同态密文槽位对齐、上行不带下标；未上传残差通过误差反馈累积。估算公式：FedAvg = n×2×P×32 bit；本算法 = n×(上行 + 下行) + 掩码种子协商，上行 = k×有限域位数（同态为 ⌈k/批打包⌉×单密文位数），下行 = k×32 + min(k×18, P)，种子协商 = n(n−1)×512/轮换周期；P = 203,143（验收用 2 层 LSTM）。",
+    "status": "done"
+  },
+  "FL-EVAL-01": {
+    "page": "#/fed/eval",
+    "ui": "技术指标验证 → 梯度重构攻击评估卡",
+    "steps": [
+      "打开 #/fed/eval，梯度重构攻击评估卡保持默认配置（攻击样本 200 个、迭代 300 次、全部客户端、种子 2026）",
+      "点击「开始评估」，观察进度条与阶段文字（加载数据集 → 截获上行梯度 → DLG / iDLG 分组攻击 → 统计）",
+      "完成后查看达标横幅与结果表，展开「评估方法」核对攻击实现与判定口径",
+      "点击「导出 CSV」下载评估报告；把攻击样本数改为 5 再开始，提示超出范围"
+    ],
+    "expected": "本算法 DLG、iDLG 还原成功率均为 0.0%（0 / 200 个样本），达标（合同阈值 ≤ 5%）；对照明文 FedAvg DLG 84.0%（168 / 200）、iDLG 85.0%（170 / 200）；表中每组给出攻击样本数、还原成功数、成功率、平均还原 MSE；同配置重复评估结果一致",
+    "api": [
+      "GET /projects/{project_id}/fl/evaluations/defaults",
+      "POST /projects/{project_id}/fl/evaluations",
+      "SSE /fl/evaluations/{eval_id}/events",
+      "GET /fl/evaluations/{eval_id}",
+      "GET /fl/evaluations/{eval_id}/export"
+    ],
+    "tests": [
+      "tests/fed-sec.test.mjs: [FL-EVAL-01] 梯度重构攻击：本算法 DLG / iDLG 0 / 200，明文 FedAvg 80%–90%，结果确定可复现"
+    ],
+    "impl": "场景固定为 ds_{project}_ree_price（Nd₂O₃ / CeO₂ / La₂O₃ 日度价格，Min-Max 归一化，30 日窗口 × 9 维特征）、1 服务端 + 3 客户端、2 层 LSTM、批大小 1。攻击者截获客户端上行：对照组为明文梯度；本算法组为 Top-k 稀疏 + 8 bit 量化 + 高斯 DP（ε=8，δ=1e-5，C=1.0）后的单方梯度（保守假设掩码已去除）。DLG 用 L-BFGS 最小化 ‖∇W(x′,y′)−∇W‖²；iDLG 先由输出层梯度解析标签再只优化输入。还原样本与原样本逐元素 MSE ≤ 0.0025 记为成功，成功率 = 成功数 ÷ 攻击样本数，DLG / iDLG 分开统计。当前 mock 用确定性仿真给出数值（种子 = 项目 + 配置的 FNV 哈希，同配置同结果），接口契约、判定口径与统计字段按真实评估设计；接真后端时由评估引擎实际运行后按同一结构返回。",
+    "status": "partial",
+    "missing": "界面、接口契约、判定与统计口径已完成并通过测试与浏览器自测；评估数值目前由 mock 确定性仿真给出，尚未接入真实执行 DLG / iDLG 的后端评估引擎。"
+  },
+  "FL-EVAL-02": {
+    "page": "#/fed/eval",
+    "ui": "技术指标验证 → 通信压缩比评估卡",
+    "steps": [
+      "保持默认配置（20 轮，Top-k 保留比例取项目配置 15%，量化 8 bit，误差反馈开启，有限域 16 bit），点击「开始评估」",
+      "完成后查看达标横幅、模型效果表（RMSE / MAE）与逐轮通信数据量表",
+      "把 Top-k 保留比例改为 40% 再评估，结果为未达标；关闭误差反馈再评估，RMSE 增幅变大",
+      "点击「导出 CSV」"
+    ],
+    "expected": "单轮平均通信压缩比约 7.38 倍（FedAvg 4.650 MB ÷ 本算法 0.630 MB，20 轮平均），达标（合同阈值 ≥ 6）；本算法测试集 RMSE 相对 FedAvg 增加约 1.3%；逐轮表首轮保留量最多、随轮次回落",
+    "api": [
+      "GET /projects/{project_id}/fl/evaluations/defaults",
+      "POST /projects/{project_id}/fl/evaluations",
+      "SSE /fl/evaluations/{eval_id}/events",
+      "GET /fl/evaluations/{eval_id}",
+      "GET /fl/evaluations/{eval_id}/export"
+    ],
+    "tests": [
+      "tests/fed-sec.test.mjs: [FL-EVAL-02] 通信压缩比：逐轮通信量 + 平均压缩比 7–9，含 RMSE / MAE 对比；保留比例过大则未达标"
+    ],
+    "impl": "同一时序任务（稀土氧化物价格，1 服务端 + 3 客户端，LSTM P = 203,143），逐轮统计全部上下行字节：FedAvg = 3×2×P×32 bit；本算法按 FL-AGG-07 同一公式（秘密共享聚合，掩码种子每 10 轮协商），保留数量按梯度能量动态调整 ρ_r = ρ×(1 + 0.3e^−(r−1)/4 + 抖动)。压缩比 = 两者各自对全部轮次取算术平均后相除。模型效果在时间上最后 20% 的测试窗口计算 RMSE / MAE（归一化价格），给出相对 FedAvg 的变化百分比。默认参数取项目已保存的稀疏化与有限域配置。当前 mock 用确定性仿真给出数值（种子 = 项目 + 配置的 FNV 哈希，同配置同结果），接口契约、判定口径与统计字段按真实评估设计；接真后端时由评估引擎实际运行后按同一结构返回。",
+    "status": "partial",
+    "missing": "通信量按公式逐轮精确计算；RMSE / MAE 目前为 mock 仿真值，尚未接入真实联邦训练评估引擎。"
+  },
+  "FL-EVAL-03": {
+    "page": "#/fed/eval",
+    "ui": "技术指标验证 → 联邦训练精度衰减评估卡",
+    "steps": [
+      "保持默认配置（联邦 50 轮、本地 1 epoch、IID、种子 2026），点击「开始评估」",
+      "完成后查看两数据集的集中式明文 Accuracy、联邦 Accuracy、下降百分点、相对下降与判定",
+      "把联邦轮次改为 10 再评估，CIFAR-10 下降超过 3 个百分点、判定未达标",
+      "点击「导出 CSV」；历史评估记录中可「查看」任一历史结果"
+    ],
+    "expected": "MNIST 99.28% → 98.55%，下降 0.73 个百分点；CIFAR-10 81.17% → 79.14%，下降 2.03 个百分点，均达标（合同阈值 ≤ 3，按百分点判定）",
+    "api": [
+      "GET /projects/{project_id}/fl/evaluations/defaults",
+      "POST /projects/{project_id}/fl/evaluations",
+      "SSE /fl/evaluations/{eval_id}/events",
+      "GET /projects/{project_id}/fl/evaluations",
+      "GET /fl/evaluations/{eval_id}/export"
+    ],
+    "tests": [
+      "tests/fed-sec.test.mjs: [FL-EVAL-03] 精度衰减：MNIST 0.5–1.0、CIFAR-10 1.5–2.5 个百分点；轮次过少时未达标"
+    ],
+    "impl": "同一 CNN 结构与 SGD 超参（lr 0.01，动量 0.9，批大小 64）；集中式明文基线合并 3 方数据训练「联邦轮次 × 本地 epoch」个 epoch，与联邦总计算量一致；联邦侧 3 客户端，Top-k 稀疏化 + 高斯 DP（ε=8，δ=1e-5）+ 秘密共享安全聚合，支持 IID 与 Dirichlet α=0.5 划分。Accuracy 在官方 10,000 张测试集上计算，下降幅度 = 集中式 − 联邦（百分点），合同「≤3%」按百分点判定（比相对下降更严格），同时给出相对下降。当前 mock 用确定性仿真给出数值（种子 = 项目 + 配置的 FNV 哈希，同配置同结果），接口契约、判定口径与统计字段按真实评估设计；接真后端时由评估引擎实际运行后按同一结构返回。",
+    "status": "partial",
+    "missing": "界面、接口与判定口径已完成；Accuracy 数值目前为 mock 仿真，尚未接入真实 MNIST / CIFAR-10 训练任务。"
+  }
+}

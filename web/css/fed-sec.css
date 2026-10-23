@@ -1,1 +1,47 @@
 /* 联邦学习 · 聚合与安全 / 技术指标验证 样式 */
+
+.fla-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.fla-desc { font-size: 13px; line-height: 22px; color: var(--muted-3); }
+.fla-dirty { color: var(--amber); font-weight: 600; }
+.fla-err { font-size: 12px; line-height: 18px; color: var(--danger); }
+.input.fla-invalid, .select.fla-invalid { border-color: var(--danger); }
+.fla-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; word-break: break-all; }
+.fla-warn { background: #FCF2E3; color: #8A5B12; }
+
+.fla-sp-form { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 14px; align-items: start; }
+.field-col label.fla-check { cursor: pointer; font-weight: 400; }
+.fla-check input { width: 16px; height: 16px; accent-color: var(--primary); }
+.fla-formula { flex-direction: column; gap: 4px; }
+.fla-est-err { grid-column: 1 / -1; color: var(--danger); }
+
+.fla-key-grid { grid-template-columns: 110px 90px minmax(150px, 1fr) minmax(200px, 1.6fr) 140px 70px; }
+.fla-key-detail { display: flex; flex-direction: column; gap: 8px; }
+.fla-kv { display: grid; grid-template-columns: 110px 1fr; gap: 10px; font-size: 13px; line-height: 20px; }
+.fla-k { color: var(--muted-2); }
+.fla-pk { max-height: 160px; overflow-y: auto; padding: 10px 12px; background: #F5F7FA; border-radius: 6px; color: var(--muted-3); }
+
+/* 达标判定 */
+.tag.fs-pass { background: #E9F4EF; color: var(--success); }
+.tag.fs-fail { background: #FBEDEA; color: var(--danger); }
+.metric-value .fs-verdict { margin-left: 10px; vertical-align: middle; }
+
+/* 技术指标验证 */
+.fle-cards { display: flex; flex-direction: column; gap: 16px; }
+.fle-progress { display: flex; flex-direction: column; gap: 6px; }
+.fle-result { display: flex; flex-direction: column; gap: 10px; }
+.fle-result .banner { align-items: flex-start; }
+.fle-result .banner strong { flex-shrink: 0; }
+.fle-table { display: flex; flex-direction: column; }
+.fle-scroll { max-height: 300px; overflow-y: auto; }
+.fle-ops { display: inline-flex; gap: 6px; }
+
+.fle-sum-grid { grid-template-columns: minmax(220px, 1.4fr) 110px minmax(220px, 1.6fr) 80px 140px; }
+.fle-atk-grid { grid-template-columns: minmax(220px, 1.6fr) 80px 120px 120px 100px 120px; }
+.fle-util-grid { grid-template-columns: minmax(220px, 1.6fr) 1fr 1fr; }
+.fle-comm-grid { grid-template-columns: 60px minmax(180px, 1.4fr) 1fr 1fr 1fr; }
+.fle-acc-grid { grid-template-columns: 80px minmax(220px, 2fr) 1fr 1.2fr 1fr 80px 70px; }
+.fle-hist-grid { grid-template-columns: 90px 140px minmax(180px, 1.6fr) minmax(180px, 1.6fr) 70px 130px 120px; }
+
+.fs-method { font-size: 13px; color: var(--muted-3); line-height: 22px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.fs-method summary { cursor: pointer; font-weight: 600; color: var(--primary); }
+.fs-method p { margin: 8px 0 0; }
