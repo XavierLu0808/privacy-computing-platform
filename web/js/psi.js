@@ -1,4 +1,7 @@
-/** 隐私求交模块。接口见 API.md §5。 */
+/**
+ * 隐私求交 · 数据接入（opts.sub = data）与平台集成（opts.sub = pipe）。接口见 API.md §5、docs/api/psi.md。
+ * 协议与参数在算法配置页（PSIA）维护，这里只读取「当前配置」或已保存模板来启动流水线。
+ */
 (function () {
   'use strict';
   const $ = UI.$;
@@ -20,8 +23,8 @@
   let datasets = [];         // 当前项目已登记数据集
   let tab = 'data';
   let pollTimer = null;
-  let selected = 'ecdh';
-  let paramValues = {};      // key -> value（可编辑）
+  let config = null;         // GET /projects/{id}/psi/config（算法配置页保存的当前配置）
+  let templates = [];
   let pipeline = null;
   let sse = null;
   let booted = false;
@@ -33,12 +36,12 @@
     booted = true;
     $('psiRun').addEventListener('click', run);
     $('psiPipeReset').addEventListener('click', cancel);
-    $('psiSave').addEventListener('click', saveTemplate);
-    $('psiLoad').addEventListener('click', loadTemplate);
+    $('psiCfgSel').addEventListener('change', renderConfig);
     $('psiGoFed').addEventListener('click', function () {
-      window.App.go('fed', { focusJobId: pipeline && pipeline.fl_job_id });
+      window.App.go('fed', { sub: 'proc', focusJobId: pipeline && pipeline.fl_job_id });
     });
     $('psiToData').addEventListener('click', function () { window.App.go('psi', { sub: 'data' }); });
+    $('psiToAlgo').addEventListener('click', function () { window.App.go('psi', { sub: 'algo' }); });
     $('dsNew').addEventListener('click', openImport);
     $('dsPartyFilter').addEventListener('change', renderDatasets);
     $('dsDetailClose').addEventListener('click', function () { $('dsDetail').hidden = true; });
@@ -147,14 +150,17 @@
     } catch (e) { UI.fail(e); }
   }
 
-  async function removeDataset(d) {
-    if (!window.confirm('删除数据集「' + d.name + '」的登记信息？参与方本地数据不受影响。')) return;
-    try {
-      await Api.del('/datasets/' + d.dataset_id);
-      UI.toast('已删除 ' + d.name);
-      $('dsDetail').hidden = true;
-      await loadDatasets();
-    } catch (e) { UI.fail(e); }
+  function removeDataset(d) {
+    const body = UI.el('div', 'hint', '删除数据集「' + d.name + '」的登记信息？参与方本地数据不受影响；被运行中的求交流水线使用时不允许删除。');
+    UI.modal({
+      title: '删除数据集', body: body, submitText: '删除', width: 460,
+      onSubmit: async function () {
+        await Api.del('/datasets/' + d.dataset_id);   // 40901 时错误留在弹窗底部
+        UI.toast('已删除 ' + d.name);
+        $('dsDetail').hidden = true;
+        await loadDatasets();
+      }
+    });
   }
 
   function openImport() {
@@ -281,93 +287,67 @@
       : (a !== b ? '两方求交键列名不同（' + a + ' / ' + b + '），请确认哈希口径一致' : '按 ' + a + ' 求交，原始数据不出域');
   }
 
-  /* ---------- 协议与参数 ---------- */
+  /* ---------- 求交配置（来自算法配置页） ---------- */
 
-  function renderProtocols() {
-    const wrap = $('psiProtos');
-    UI.clear(wrap);
-    protocols.forEach(function (p) {
-      const btn = UI.el('button', 'psi-proto' + (p.protocol === selected ? ' on' : ''));
-      btn.type = 'button';
-      const radio = UI.el('span', 'psi-radio');
-      radio.appendChild(UI.el('i'));
-      btn.appendChild(radio);
-      const text = UI.el('span', 'psi-proto-text');
-      text.appendChild(UI.el('span', 'psi-proto-name', p.name));
-      text.appendChild(UI.el('span', 'psi-proto-desc', p.description));
-      btn.appendChild(text);
-      btn.addEventListener('click', function () {
-        selected = p.protocol;
-        paramValues = {};
-        p.params.forEach(function (pa) { paramValues[pa.key] = pa.value; });
-        renderProtocols();
-        renderParams();
-        renderRunNote();
-      });
-      wrap.appendChild(btn);
+  async function loadConfig() {
+    const res = await Promise.all([
+      Api.get('/projects/' + ctx.projectId + '/psi/config'),
+      Api.get('/projects/' + ctx.projectId + '/psi/templates')
+    ]);
+    config = res[0];
+    templates = res[1].items;
+    const sel = $('psiCfgSel');
+    const keep = sel.value;
+    UI.clear(sel);
+    const cur = document.createElement('option');
+    cur.value = ''; cur.textContent = '当前算法配置（' + protoDef(config.protocol).name + '）';
+    sel.appendChild(cur);
+    templates.forEach(function (t) {
+      const o = document.createElement('option');
+      o.value = t.template_id; o.textContent = '模板：' + t.name;
+      sel.appendChild(o);
     });
+    sel.value = templates.some(function (t) { return t.template_id === keep; }) ? keep : '';
+    renderConfig();
   }
 
-  function renderParams() {
-    const def = protoDef(selected);
-    const wrap = $('psiParams');
-    UI.clear(wrap);
-    def.params.forEach(function (pa) {
-      const row = UI.el('div', 'psi-param');
-      row.appendChild(UI.el('span', 'psi-param-label', pa.label));
-      if (pa.editable) {
-        const input = UI.el('input', 'input');
-        input.style.height = '38px';
-        input.style.flexGrow = '1';
-        input.value = paramValues[pa.key] !== undefined ? paramValues[pa.key] : pa.value;
-        input.addEventListener('change', function () {
-          const raw = input.value;
-          const num = Number(raw);
-          paramValues[pa.key] = (raw !== '' && !Number.isNaN(num)) ? num
-            : (raw === 'true' ? true : (raw === 'false' ? false : raw));
-        });
-        row.appendChild(input);
-      } else {
-        row.appendChild(UI.el('span', 'psi-param-value', pa.display));
-      }
-      wrap.appendChild(row);
+  /** 流水线将使用的 { protocol, params, template_id }。 */
+  function chosenConfig() {
+    const tid = $('psiCfgSel').value;
+    const tpl = templates.filter(function (t) { return t.template_id === tid; })[0];
+    if (tpl) return { protocol: tpl.protocol, params: tpl.params, template_id: tpl.template_id, label: '模板「' + tpl.name + '」' };
+    return { protocol: config.protocol, params: config.params, template_id: config.template_id, label: '当前算法配置' };
+  }
+
+  function renderConfig() {
+    const c = chosenConfig();
+    const def = protoDef(c.protocol);
+    $('psiCfgName').textContent = def.name;
+    $('psiCfgSec').textContent = def.security ? def.security.security_bits + ' 位计算安全' : '—';
+    const list = $('psiCfgParams');
+    UI.clear(list);
+    const rows = window.PSIA ? window.PSIA.summary(def, c.params)
+      : def.params.map(function (pa) { return { label: pa.label, text: String(c.params[pa.key]) }; });
+    rows.forEach(function (r) {
+      const row = UI.el('div', 'psi-cfg-row');
+      row.appendChild(UI.el('span', null, r.label));
+      row.appendChild(UI.el('span', null, r.text));
+      list.appendChild(row);
     });
+    $('psiCfgNote').textContent = $('psiCfgSel').value
+      ? '使用已保存模板启动，不改变算法配置页的当前配置'
+      : (config.updated_at ? '算法配置页保存于 ' + UI.datetime(config.updated_at) : '算法配置页尚未保存，使用协议默认参数');
+    renderRunNote();
   }
 
   function renderRunNote() {
-    const def = protoDef(selected);
-    $('psiRunNote').textContent = def.name + ' · 求交结果直接作为联邦学习的数据准备步骤';
-  }
-
-  /* ---------- 模板 ---------- */
-
-  async function saveTemplate() {
-    try {
-      const def = protoDef(selected);
-      const tpl = await Api.post('/projects/' + ctx.projectId + '/psi/templates', {
-        name: def.name + ' · 自定义参数',
-        protocol: selected,
-        params: paramValues
-      });
-      $('psiTplNote').textContent = '已保存模板「' + tpl.name + '」（' + tpl.template_id + '）';
-      UI.toast('模板已保存');
-    } catch (e) { UI.fail(e); }
-  }
-
-  async function loadTemplate() {
-    try {
-      const res = await Api.get('/projects/' + ctx.projectId + '/psi/templates', { protocol: selected });
-      if (!res.items.length) {
-        $('psiTplNote').textContent = '当前协议下没有已保存的模板';
-        UI.toast('没有可加载的模板', true);
-        return;
-      }
-      const tpl = await Api.get('/psi/templates/' + res.items[res.items.length - 1].template_id);
-      paramValues = Object.assign({}, tpl.params);
-      renderParams();
-      $('psiTplNote').textContent = '已加载模板「' + tpl.name + '」';
-      UI.toast('模板已加载');
-    } catch (e) { UI.fail(e); }
+    const c = chosenConfig();
+    let text = protoDef(c.protocol).name + ' · ' + c.label + ' · 求交结果直接作为联邦学习的数据准备步骤';
+    if (pipeline && pipeline.status !== 'canceled') {
+      const total = pipeline.stages.reduce(function (s, x) { return s + (x.duration_sec || 0); }, 0);
+      text = '流水线 ' + pipeline.pipeline_id + ' · ' + protoDef(pipeline.protocol).name + ' · 各阶段执行时长合计 ' + UI.duration(total);
+    }
+    $('psiRunNote').textContent = text;
   }
 
   /* ---------- 流水线 ---------- */
@@ -376,9 +356,10 @@
     try {
       $('psiRun').disabled = true;
       const projNodes = (await Api.get('/projects/' + ctx.projectId + '/nodes')).items;
-      pipeline = await Api.post('/projects/' + ctx.projectId + '/psi/pipelines', {
-        protocol: selected,
-        params: paramValues,
+      const c = chosenConfig();
+      const req = {
+        protocol: c.protocol,
+        params: c.params,
         parties: [
           { party_id: parties[0].party_id, dataset_id: $('psiDsA').value, id_column: $('psiKeyA').value },
           { party_id: parties[1].party_id, dataset_id: $('psiDsB').value, id_column: $('psiKeyB').value }
@@ -391,7 +372,9 @@
           },
           auto_start: false
         }
-      });
+      };
+      if (c.template_id) req.template_id = c.template_id;
+      pipeline = await Api.post('/projects/' + ctx.projectId + '/psi/pipelines', req);
       listen();
       render();
     } catch (e) { UI.fail(e); $('psiRun').disabled = false; }
@@ -413,6 +396,7 @@
         const idx = pipeline.stages.findIndex(function (x) { return x.stage === s.stage; });
         if (idx >= 0) pipeline.stages[idx] = s;
         renderStages();
+        renderRunNote();
       },
       pipeline_finished: function (ev) {
         pipeline.status = ev.status;
@@ -428,7 +412,9 @@
     const finished = pipeline && pipeline.status === 'finished';
     $('psiRun').disabled = running;
     $('psiRun').textContent = running ? '执行中…' : (finished ? '重新执行' : '一键启动');
+    $('psiPipeReset').disabled = !pipeline || pipeline.status === 'canceled';
     renderStages();
+    renderRunNote();
     $('psiDone').hidden = !finished;
     if (finished) {
       $('psiDoneText').textContent =
@@ -440,7 +426,7 @@
   function renderStages() {
     const wrap = $('psiStages');
     UI.clear(wrap);
-    const stages = pipeline ? pipeline.stages : placeholderStages();
+    const stages = pipeline && pipeline.status !== 'canceled' ? pipeline.stages : placeholderStages();
     stages.forEach(function (s, i) {
       const cls = s.status === 'finished' ? 'psi-stage done' : (s.status === 'running' ? 'psi-stage on' : 'psi-stage');
       const card = UI.el('div', cls);
@@ -492,7 +478,7 @@
   function statsExtra(s) {
     const st = s.stats || {};
     if (s.progress_pct === 0) return '等待上一步完成';
-    if (s.stage === 'intersect') return '交集 ' + UI.rows(st.intersection_rows) + '条';
+    if (s.stage === 'intersect') return '交集 ' + UI.rows(st.intersection_rows) + '条 · ' + protoDef(pipeline.protocol).name;
     if (s.stage === 'align') return '原始数据不出域';
     return '交由联邦学习模块执行';
   }
@@ -509,6 +495,17 @@
 
   let lastProject = null;
 
+  /** 回到平台集成页时恢复本项目最近一条流水线（运行中则重新订阅进度）。 */
+  async function resumePipeline() {
+    if (pipeline) pipeline = await Api.get('/psi/pipelines/' + pipeline.pipeline_id);
+    else {
+      const items = (await Api.get('/projects/' + ctx.projectId + '/psi/pipelines')).items;
+      const last = items[items.length - 1];
+      pipeline = last && last.status !== 'canceled' ? last : null;
+    }
+    if (pipeline && pipeline.status === 'running') listen();
+  }
+
   async function mount(c, el, opts) {
     ctx = c;
     tab = (opts && opts.sub) || 'data';
@@ -523,7 +520,6 @@
         const res = await Promise.all([Api.get('/psi/protocols'), Api.get('/psi/parties')]);
         protocols = res[0].items;
         parties = res[1].items;
-        protoDef(selected).params.forEach(function (pa) { paramValues[pa.key] = pa.value; });
         const pf = $('dsPartyFilter');
         parties.forEach(function (p) {
           const o = document.createElement('option');
@@ -534,10 +530,11 @@
       $('dsDetail').hidden = true;
       await loadDatasets();
       switchTab(tab);
-      renderProtocols();
-      renderParams();
-      renderRunNote();
-      render();
+      if (tab === 'pipe') {
+        await loadConfig();
+        await resumePipeline();
+        render();
+      }
     } catch (e) { UI.fail(e); }
   }
 

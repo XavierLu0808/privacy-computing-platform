@@ -1,1 +1,50 @@
-/* psi 模块样式 */
+/* psi 模块样式（隐私求交：数据接入 / 算法配置 / 平台集成） */
+
+/* ---------- 平台集成 ---------- */
+.psi-side { display: flex; flex-direction: column; gap: 16px; }
+.psi-cfg-proto { display: flex; align-items: center; gap: 10px; }
+.psi-cfg-list { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: #FAFBFC; border: 1px solid var(--line); border-radius: 6px; }
+.psi-cfg-row { display: flex; gap: 12px; font-size: 13px; }
+.psi-cfg-row span:first-child { width: 150px; flex-shrink: 0; color: var(--muted-3); }
+.psi-cfg-row span:last-child { color: var(--ink); font-weight: 600; }
+#psiStages { display: flex; flex-direction: column; gap: 12px; }
+
+/* ---------- 算法配置 ---------- */
+.psia-top { display: grid; grid-template-columns: 440px minmax(0, 1fr); gap: 16px; align-items: start; }
+.psia-sec { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; background: var(--primary-soft); border: 1px solid var(--primary-bd); border-radius: 6px; font-size: 12px; line-height: 20px; color: var(--muted-3); }
+.psia-sec strong { color: var(--primary-ink); }
+.psia-sec-tag { margin-left: auto; flex-shrink: 0; white-space: nowrap; }
+#psiaProtos .psi-proto-text { flex-grow: 1; min-width: 0; }
+
+.psia-param { display: grid; grid-template-columns: 170px minmax(0, 1fr); column-gap: 14px; row-gap: 4px; align-items: center; }
+.psia-param-label { font-size: 13px; font-weight: 600; color: var(--muted-3); }
+.psia-param-ctl { display: flex; align-items: center; gap: 10px; }
+.psia-param-ctl .input, .psia-param-ctl .select { height: 38px; flex-grow: 1; min-width: 0; }
+.psia-param-unit { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.psia-param-note { grid-column: 2; font-size: 12px; line-height: 18px; color: var(--muted-2); }
+.psia-param-err { grid-column: 2; font-size: 12px; color: var(--danger); }
+.psia-param.bad .input { border-color: var(--danger); }
+
+.psia-switch { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink); cursor: pointer; }
+.psia-switch input { appearance: none; -webkit-appearance: none; width: 38px; height: 22px; margin: 0; border-radius: 11px; background: #C3CBD6; position: relative; cursor: pointer; transition: background .15s; }
+.psia-switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 8px; background: #FFFFFF; transition: left .15s; }
+.psia-switch input:checked { background: var(--primary); }
+.psia-switch input:checked::after { left: 19px; }
+.psia-switch input:focus-visible { outline: 2px solid var(--primary-lt); outline-offset: 2px; }
+
+.psia-foot { display: flex; align-items: center; gap: 10px; }
+.psia-dirty { color: var(--amber); font-weight: 600; }
+
+.psia-tpl-grid { grid-template-columns: minmax(180px, 1.2fr) 130px minmax(220px, 2fr) 130px 130px; }
+.psia-tpl-new { display: flex; align-items: center; gap: 10px; }
+.psia-tpl-new .input { height: 36px; width: 300px; }
+
+.psia-route-in { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 14px; align-items: end; }
+.psia-route-in .input { height: 38px; }
+.psia-est-grid { grid-template-columns: minmax(150px, 1.2fr) 130px 100px 160px 110px 130px 120px; }
+.psia-est-grid.best { background: var(--primary-soft); }
+.psia-bench-grid { grid-template-columns: 130px 190px repeat(3, minmax(140px, 1fr)) 140px; }
+.psia-formula { margin: 0; padding: 12px 14px; background: #F5F7FA; border-radius: 6px; font-size: 12px; line-height: 20px; color: var(--muted-3); white-space: pre-wrap; font-family: inherit; }
+.psi-side .psi-party { grid-template-columns: 56px minmax(0, 1fr) 180px; }
+.psi-side .psi-party .select { width: 100%; min-width: 0; }
+#psiGoFed, #psiRun, #psiPipeReset { white-space: nowrap; flex-shrink: 0; }

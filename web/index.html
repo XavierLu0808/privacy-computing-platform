@@ -349,12 +349,14 @@
 
       <!-- ========== 隐私求交 ========== -->
       <section class="screen" id="screen-psi-data" hidden>
-        <div class="page-head-text">
-          <span class="crumb">隐私求交 / 数据接入</span>
-          <h1>数据接入</h1>
+        <div class="page-head">
+          <div class="page-head-text">
+            <span class="crumb">隐私求交 / 数据接入</span>
+            <h1>数据接入</h1>
+          </div>
         </div>
         <div id="psiPanelData" style="display:flex; flex-direction:column; gap:16px;">
-          <div class="card card-lg">
+          <div class="card card-lg" data-acc="PSI-DATA-01 PSI-DATA-03">
             <div style="display:flex; align-items:center; gap:12px;">
               <span class="card-title">已接入数据集</span>
               <span class="hint">数据保留在各参与方本地，平台只登记元数据与 schema</span>
@@ -370,7 +372,7 @@
             </div>
             <div id="dsList"></div>
           </div>
-          <div class="card card-lg" id="dsDetail" hidden>
+          <div class="card card-lg" id="dsDetail" data-acc="PSI-DATA-02" hidden>
             <div style="display:flex; align-items:center; gap:12px;">
               <span class="card-title" id="dsDetailTitle">—</span>
               <span class="hint" id="dsDetailMeta">—</span>
@@ -389,41 +391,33 @@
       <section class="screen" id="screen-psi-algo" hidden></section>
 
       <section class="screen" id="screen-psi-pipe" hidden>
-        <div class="page-head-text">
-          <span class="crumb">隐私求交 / 平台集成</span>
-          <h1>安全求交 → 特征对齐 → 联合训练</h1>
+        <div class="page-head">
+          <div class="page-head-text">
+            <span class="crumb">隐私求交 / 平台集成</span>
+            <h1>安全求交 → 特征对齐 → 联合训练</h1>
+          </div>
         </div>
         <div class="psi-split" id="psiPanelPipe">
-          <div class="card card-xl psi-config">
-            <span class="card-title">PSI 协议</span>
-            <div style="display:flex; flex-direction:column; gap:8px;" id="psiProtos"></div>
-
-            <div class="divider-h"></div>
-
-            <div style="display:flex; align-items:center; gap:10px;">
-              <span style="font-size:14px; font-weight:700; flex-grow:1;">参数调优</span>
-              <span class="hint">随协议切换</span>
-            </div>
-            <div style="display:flex; flex-direction:column; gap:14px;" id="psiParams"></div>
-
-            <div style="display:flex; gap:10px;">
-              <button type="button" class="btn-link" id="psiSave">保存为模板</button>
-              <button type="button" class="btn-sm" id="psiLoad">加载模板</button>
-            </div>
-            <span class="hint" id="psiTplNote">尚未保存模板</span>
-          </div>
-
-          <div class="psi-pipe">
-            <div class="card card-lg card-row" style="padding:18px 20px; gap:14px;">
-              <div style="flex-grow:1; display:flex; flex-direction:column; gap:4px;">
-                <span class="card-title">一键流水线</span>
-                <span class="hint" id="psiRunNote">—</span>
+          <div class="psi-config psi-side">
+            <div class="card card-xl" style="gap:14px;" data-acc="PSI-PIPE-01">
+              <div style="display:flex; align-items:center; gap:12px;">
+                <span class="card-title">求交配置</span>
+                <span class="spacer"></span>
+                <button type="button" class="btn-link" id="psiToAlgo">去算法配置修改</button>
               </div>
-              <button type="button" class="btn-primary" id="psiRun" style="height:42px; padding:0 22px; font-size:15px;">一键启动</button>
-              <button type="button" class="btn" id="psiPipeReset" style="height:42px;">重置</button>
+              <div class="field-col">
+                <label for="psiCfgSel">配置来源</label>
+                <select class="select select-lg" id="psiCfgSel"></select>
+              </div>
+              <div class="psi-cfg-proto">
+                <span class="psi-proto-name" id="psiCfgName">—</span>
+                <span class="tag tag-cls" id="psiCfgSec">—</span>
+              </div>
+              <div class="psi-cfg-list" id="psiCfgParams"></div>
+              <span class="hint" id="psiCfgNote">—</span>
             </div>
 
-            <div class="card card-lg" style="gap:12px;">
+            <div class="card card-xl" style="gap:12px;" data-acc="PSI-PIPE-01">
               <div style="display:flex; align-items:center; gap:12px;">
                 <span class="card-title">求交数据</span>
                 <span class="spacer"></span>
@@ -441,8 +435,19 @@
               </div>
               <span class="hint" id="psiDsNote">—</span>
             </div>
+          </div>
 
-            <div id="psiStages"></div>
+          <div class="psi-pipe">
+            <div class="card card-lg card-row" style="padding:18px 20px; gap:14px;" data-acc="PSI-PIPE-01">
+              <div style="flex-grow:1; display:flex; flex-direction:column; gap:4px;">
+                <span class="card-title">一键流水线</span>
+                <span class="hint" id="psiRunNote">—</span>
+              </div>
+              <button type="button" class="btn-primary" id="psiRun" style="height:42px; padding:0 22px; font-size:15px;">一键启动</button>
+              <button type="button" class="btn" id="psiPipeReset" style="height:42px;">重置</button>
+            </div>
+
+            <div id="psiStages" data-acc="PSI-PIPE-02"></div>
 
             <div class="banner banner-ok" id="psiDone" hidden>
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1D5C42" stroke-width="2" style="flex-shrink:0;" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>

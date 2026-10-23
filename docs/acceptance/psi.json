@@ -1,0 +1,186 @@
+{
+  "PSI-DATA-01": {
+    "page": "#/psi/data",
+    "ui": "数据接入 → 已接入数据集卡 → 「＋ 接入数据」弹窗",
+    "steps": [
+      "点击「＋ 接入数据」",
+      "填写数据集名称、所属参与方，数据来源分别选数据库（JDBC）/ HDFS 路径 / 上传文件",
+      "填写求交键列与可选时间列后点击「开始接入」"
+    ],
+    "expected": "列表出现新数据集，来源、来源地址、求交键与填写一致；JDBC 地址格式错误、HDFS 路径不以 hdfs:// 开头、同参与方重名时弹窗底部给出错误且不关闭",
+    "api": [
+      "GET /psi/parties",
+      "POST /files",
+      "POST /projects/{project_id}/datasets",
+      "GET /projects/{project_id}/datasets"
+    ],
+    "tests": [
+      "tests/psi.test.mjs: [PSI-DATA-01] 数据集登记：JDBC / HDFS / 文件上传三种来源，非法来源与重名被拒"
+    ],
+    "impl": "数据集只登记元数据：source_type 取 database / hdfs / file，source 分别保存 jdbc_url + table、HDFS path、file_id + file_name，原始数据留在参与方节点。后端校验 JDBC 前缀（mysql / postgresql / oracle / hive2）、hdfs:// 前缀、列名正则 [A-Za-z_][A-Za-z0-9_]*，同项目同参与方重名返回 40902。文件来源先经 POST /files（purpose = dataset）上传到本参与方节点，再以 file_id 登记。",
+    "status": "done"
+  },
+  "PSI-DATA-02": {
+    "page": "#/psi/data",
+    "ui": "数据接入 → 数据集行「详情」→ 下方字段与脱敏样例卡",
+    "steps": [
+      "在已就绪数据集行点击「详情」",
+      "查看字段标签（求交键、时间列高亮）与脱敏样例表"
+    ],
+    "expected": "字段列表标出求交键与时间列；样例只显示前 3 行、前 6 列，求交键为 6 位哈希前缀加省略号，字符串列打码 ***，数值列为归一化值；接入中的数据集「详情」按钮不可用",
+    "api": [
+      "GET /datasets/{dataset_id}"
+    ],
+    "tests": [
+      "tests/psi.test.mjs: [PSI-DATA-02] 字段与脱敏预览：求交键 / 时间列标注，样例只给哈希前缀与打码值"
+    ],
+    "impl": "详情接口在数据集视图上追加 preview[]：取前 3 行、前 6 列，求交键列输出哈希前缀（FNV-1a 派生的 6 位十六进制 + …），字符串列一律 ***，数值列输出 0–1 归一化值，原始值不出域。status ≠ ready 时 preview 为空数组。feature_count 不计求交键、时间列、label 与证件哈希列，供特征对齐维度计算。",
+    "status": "done"
+  },
+  "PSI-DATA-03": {
+    "page": "#/psi/data",
+    "ui": "数据接入 → 数据集列表「状态」列与「删除」按钮",
+    "steps": [
+      "新接入一个数据集，观察状态由「接入中」变为「已就绪」",
+      "在平台集成页启动流水线后回到数据接入页，删除流水线所用数据集",
+      "流水线结束或重置后再次删除"
+    ],
+    "expected": "接入中时页面自动轮询，就绪后行数出现；运行中流水线引用的数据集删除时弹窗提示「数据集正被运行中的求交流水线使用」，流水线结束后可删除",
+    "api": [
+      "GET /projects/{project_id}/datasets",
+      "DELETE /datasets/{dataset_id}",
+      "POST /projects/{project_id}/psi/pipelines",
+      "POST /psi/pipelines/{pipeline_id}/cancel"
+    ],
+    "tests": [
+      "tests/psi.test.mjs: [PSI-DATA-03] 状态流转与删除保护：接入中→已就绪；被运行中流水线引用时 40901，结束后可删"
+    ],
+    "impl": "数据集状态机 importing → ready / failed，接入后后台做连通性检查与 schema 探测（mock 1.2 秒），ready 前 row_count 为 null，前端存在 importing 时每 800 ms 轮询列表。未就绪数据集不能用于求交（40901）。删除前检查所有 status = running 的流水线 parties[].dataset_id，被引用返回 40901；删除确认用 UI.modal，错误留在弹窗内。",
+    "status": "done"
+  },
+  "PSI-ALGO-01": {
+    "page": "#/psi/algo",
+    "ui": "算法配置 → 「PSI 协议」卡（三张单选卡 + 安全强度说明框）",
+    "steps": [
+      "打开算法配置页",
+      "依次点选 ECDH-PSI、KKRT（基于 OT）、非平衡 PSI",
+      "查看每个协议右侧「128 位」标签与下方安全强度说明"
+    ],
+    "expected": "三种协议可切换，参数调优区随之切换；说明框写明安全基础、128 位计算安全依据（ECDH 用 Curve25519 / P-256，KKRT 的 OT 安全参数 λ = 128）与敌手模型",
+    "api": [
+      "GET /psi/protocols"
+    ],
+    "tests": [
+      "tests/psi.test.mjs: [PSI-ALGO-01] 三种 PSI 协议：ECDH-PSI / KKRT / 非平衡 PSI，均标注 128 位安全强度"
+    ],
+    "impl": "协议目录 GET /psi/protocols 返回 ecdh / kkrt / unbalanced 三项，每项带 security { security_bits = 128, basis, detail, threat_model }。ECDH-PSI 基于 ECDDH 假设，曲线限定 Curve25519 / NIST P-256；KKRT 为基础 OT + OT 扩展（λ = 128，PRF 为 AES-128，统计安全 40 位）；非平衡 PSI 为 ECDH-OPRF + BFV 同态多项式求值（环维度 8192，128 位）。协议键作为稳定 ID 贯穿配置、模板与流水线。",
+    "status": "done"
+  },
+  "PSI-ALGO-02": {
+    "page": "#/psi/algo",
+    "ui": "算法配置 → 「参数调优」卡（下拉 / 数字框 / 开关 +「恢复默认」「保存为当前配置」）",
+    "steps": [
+      "选择协议后修改参数，例如 KKRT 布谷鸟哈希桶数输入 3",
+      "观察该行红字「范围 1.1 – 2」且保存按钮不可用",
+      "改为 1.4 后点击「保存为当前配置」"
+    ],
+    "expected": "每个协议显示自己的参数项：枚举为下拉、数值为带范围与单位的数字框、布尔为开关；非法值就地提示并禁止保存；保存后底部显示「当前配置：KKRT（基于 OT）· 来源：手动调整 · 保存于 …」",
+    "api": [
+      "GET /psi/protocols",
+      "GET /projects/{project_id}/psi/config",
+      "PUT /projects/{project_id}/psi/config"
+    ],
+    "tests": [
+      "tests/psi.test.mjs: [PSI-ALGO-02] 参数调优：按协议给出参数类型与范围；类型 / 越界 / 未知参数被拒，合法参数保存为当前配置"
+    ],
+    "impl": "参数规格随协议下发：type ∈ enum / int / float / bool，并带 options 或 min / max / step / unit，前端据此渲染控件并做同规则校验。后端 PUT /psi/config 再校验一次：未知键 40000、类型不符或 int 非整数 40002、越界或不在选项内 40003，缺省键补协议默认值。当前配置按项目存储（k.db.psia.config），记录 source 与 updated_at，是平台集成页启动流水线的唯一参数来源。",
+    "status": "done"
+  },
+  "PSI-ALGO-03": {
+    "page": "#/psi/algo",
+    "ui": "算法配置 → 「配置模板」卡（模板名称 +「保存为模板」、模板列表「加载」「删除」）",
+    "steps": [
+      "调好参数后输入模板名称，点击「保存为模板」",
+      "在列表点击某模板「加载」",
+      "删除自建模板；平台集成页「配置来源」下拉中可直接选模板"
+    ],
+    "expected": "新模板出现在列表首行并显示参数摘要；加载后协议与参数切换为模板值，并成为当前配置（来源：模板「…」），该行按钮变为「使用中」；重名在卡片内红字提示；内置模板删除按钮不可用",
+    "api": [
+      "GET /projects/{project_id}/psi/templates",
+      "POST /projects/{project_id}/psi/templates",
+      "GET /psi/templates/{template_id}",
+      "DELETE /psi/templates/{template_id}",
+      "PUT /projects/{project_id}/psi/config"
+    ],
+    "tests": [
+      "tests/psi.test.mjs: [PSI-ALGO-03] 配置模板：内置模板 + 保存 / 加载 / 删除；重名、非法参数、删内置被拒"
+    ],
+    "impl": "模板 { template_id, name, protocol, params, builtin } 按项目存储，首次访问播种两个内置模板（广域网 ECDH 大分块、同机房 KKRT 默认）。保存时按协议参数规格校验并补全默认值，名称必填且不超过 40 字，同项目重名 40902。加载 = 读取模板后 PUT /psi/config 带 template_id（协议须一致）；删除内置模板 40901，删除被当前配置引用的模板时配置参数保留、来源改为手动。",
+    "status": "done"
+  },
+  "PSI-ALGO-04": {
+    "page": "#/psi/algo",
+    "ui": "算法配置 → 「求交协议自适应路由」卡 +「典型场景性能参考」表",
+    "steps": [
+      "输入参与方 A / B 数据量（行）、网络带宽（Mbps）、单向延迟（ms），默认取本项目两方截面数据集行数",
+      "点击「计算推荐」，查看推荐协议、理由、推荐参数与三协议对比表",
+      "点击「采用推荐」",
+      "查看下方典型场景表"
+    ],
+    "expected": "给出推荐协议与参数及理由，对比表列出三种协议在线预估耗时（秒）、计算 / 网络耗时、通信量（MB）、离线预处理与 128 位安全强度；1 亿 × 1 万推荐非平衡 PSI；「采用推荐」后参数调优区切换为推荐配置，来源显示「自适应路由推荐」；非法输入在卡片内红字提示",
+    "api": [
+      "POST /psi/route-advice",
+      "GET /psi/benchmarks",
+      "PUT /projects/{project_id}/psi/config",
+      "GET /projects/{project_id}/datasets"
+    ],
+    "tests": [
+      "tests/psi.test.mjs: [PSI-ALGO-04] 自适应路由：按规模与网络推荐协议，给出三协议耗时 / 通信量对比、理由与典型场景；非法输入被拒"
+    ],
+    "impl": "路由按解析式代价模型估算：在线耗时 = 计算 + 通信字节 × 8 ÷ 带宽 + 往返 × 2 × 延迟。ECDH 通信 (n_A + n_B) × 32 字节、计算 2 (n_A + n_B) 次标量乘；KKRT 通信 1.27 n_s × 64 + 3 n_l × (40 + log₂ n_A n_B) ÷ 8 字节，计算按对称运算 1.5 µs / 条；非平衡 PSI 在线开销随小集合线性增长，大集合离线预处理可缓存。取在线耗时最短者（10% 内取通信更小者），并按延迟调 ECDH 分块、按行数定小集合方。典型场景表用同一模型计算 3 种规模 × 局域网 / 广域网，页面标明为估算值非实测。",
+    "status": "done"
+  },
+  "PSI-PIPE-01": {
+    "page": "#/psi/pipe",
+    "ui": "平台集成 → 「求交配置」卡（配置来源下拉 + 参数摘要 +「去算法配置修改」）、「求交数据」卡、「一键流水线」卡",
+    "steps": [
+      "在「配置来源」选择「当前算法配置」或某个模板，核对参数摘要",
+      "选择两方数据集与求交键",
+      "点击「一键启动」，完成后点击「前往训练」"
+    ],
+    "expected": "流水线按所选配置依次执行安全求交 → 特征对齐 → 联合训练，完成后绿框显示写入的联邦项目与训练任务 ID，「前往训练」跳转到联邦学习 / 过程管控并定位该任务",
+    "api": [
+      "GET /projects/{project_id}/psi/config",
+      "GET /projects/{project_id}/psi/templates",
+      "GET /projects/{project_id}/nodes",
+      "POST /projects/{project_id}/psi/pipelines",
+      "GET /fl/jobs/{job_id}"
+    ],
+    "tests": [
+      "tests/psi.test.mjs: [PSI-PIPE-01] 一键启动：用当前算法配置启动 安全求交→特征对齐→联合训练，完成后生成 FL 任务；非法两方被拒"
+    ],
+    "impl": "平台集成页不再编辑参数，只读取算法配置页保存的当前配置（或所选模板的 protocol / params / template_id）组装 POST /psi/pipelines。parties 恰好两方且参与方不同、数据集属于该方且已就绪、求交键列存在，否则 40000 / 40400 / 40901。联合训练阶段按 training.fl_job_config（XGBoost + 同态聚合，项目全部节点）新建 FL 任务，dataset_source = { type: psi_pipeline, pipeline_id }，「前往训练」调用 App.go('fed', { sub: 'proc', focusJobId })。",
+    "status": "done"
+  },
+  "PSI-PIPE-02": {
+    "page": "#/psi/pipe",
+    "ui": "平台集成 → 三张阶段卡（状态、进度条、执行时长、数据量）+ 一键流水线卡说明行",
+    "steps": [
+      "启动流水线后观察三张阶段卡",
+      "切到算法配置页再切回平台集成页",
+      "点击「重置」"
+    ],
+    "expected": "各阶段显示待执行 / 执行中 / 已完成、进度条、执行时长（秒）、数据量（求交为两方行数与交集条数，对齐为条数与特征维度）；说明行显示流水线 ID、协议与各阶段执行时长合计；切页回来进度继续推进；重置后三张卡回到待执行",
+    "api": [
+      "GET /psi/pipelines/{pipeline_id}",
+      "GET /projects/{project_id}/psi/pipelines",
+      "SSE /psi/pipelines/{pipeline_id}/events",
+      "POST /psi/pipelines/{pipeline_id}/cancel"
+    ],
+    "tests": [
+      "tests/psi.test.mjs: [PSI-PIPE-02] 进度跟踪：各阶段状态、进度、执行时长、数据量随 SSE 推进；取消后归零，不存在的流水线 40400"
+    ],
+    "impl": "进度经 SSE 事件 stage_progress（单阶段视图）与 pipeline_finished 推送，前端按 stage 键替换对应阶段并重绘。阶段统计来自所选数据集：left_rows / right_rows 为两方 row_count，交集按较小集合估算，特征维度为两方 feature_count 之和。离开页面时关闭 SSE，回到页面时先按 pipeline_id 拉详情（无记录则取项目流水线历史最后一条），running 时重新订阅；取消后状态 canceled、进度归零。",
+    "status": "done"
+  }
+}
