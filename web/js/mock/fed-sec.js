@@ -20,7 +20,7 @@
 
     // 验收场景模型：2 层 LSTM（隐藏单元 128），输入 9 维特征（3 类氧化物价格 + 6 维市场特征），预测步长 7
     //   第 1 层 4×(128×(9+128)+128) = 70,656；第 2 层 4×(128×256+128) = 131,584；输出层 128×7+7 = 903
-    const MODEL = { name: 'LSTM（2 层 × 128 隐藏单元，输入 9 维，预测步长 7）', params: 203143 };
+    const MODEL = { name: 'LSTM（2 层 × 128 隐藏单元，输入 9 维，预测步长 7）', params: k.MODEL_PARAMS.lstm };   // 内核参数量表，lstm = 203,143
     const IDX_BITS = Math.ceil(Math.log2(MODEL.params));   // 单个下标编码位数 = ⌈log₂P⌉ = 18
     const FLOAT_BITS = 32;
     const ECDH_PUB_BITS = 256;                             // 掩码种子协商：每方 X25519 公钥 256 bit
@@ -503,6 +503,7 @@
         stages: ['加载 MNIST / CIFAR-10', '集中式明文训练（MNIST）', '联邦训练（MNIST）', '集中式明文训练（CIFAR-10）', '联邦训练（CIFAR-10）', '测试集评估 Accuracy'] }
     };
     const MSE_THRESHOLD = 0.0025;
+    const EVAL_CLIENTS = 3;            // 合同场景：1 服务端 + 3 客户端
     const EVAL_TICK_MS = 400;
 
     function evalDefaults(kind, pid) {
@@ -534,7 +535,8 @@
         }
         e = checkEnum(c.quant_bits, 'config.quant_bits', '量化位数', LIMITS.sparsification.quant_bits); if (e) return e;
         if (typeof c.error_feedback !== 'boolean') return bad(40000, 'config.error_feedback', '误差反馈开关必须是布尔值');
-        e = checkInt(c.field_bits, 'config.field_bits', '有限域位数', c.quant_bits + 2, 64); if (e) return e;
+        // 与聚合配置同一约束：有限域位数 ≥ 量化位数 + ⌈log₂n⌉（评估场景 n = 3）
+        e = checkInt(c.field_bits, 'config.field_bits', '有限域位数', c.quant_bits + log2ceil(EVAL_CLIENTS), 64); if (e) return e;
         return { config: { rounds: c.rounds, topk_ratio: c.topk_ratio, quant_bits: c.quant_bits, error_feedback: c.error_feedback, field_bits: c.field_bits } };
       }
       e = checkInt(c.rounds, 'config.rounds', '联邦轮次', 10, 200); if (e) return e;
@@ -590,7 +592,7 @@
 
     /* --- FL-EVAL-02 通信压缩比 --- */
     function compressionResult(pid, c) {
-      const n = 3;
+      const n = EVAL_CLIENTS;
       const cfg = {
         strategy: 'ss',
         ss: { parties: n, threshold: 2, dropout_tolerance: 1, field_bits: c.field_bits, mask_rotation_rounds: 10 },

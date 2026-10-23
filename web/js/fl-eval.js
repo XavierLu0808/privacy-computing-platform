@@ -33,7 +33,7 @@
         { key: 'topk_ratio', label: 'Top-k 保留比例（%）', pct: true, hint: '0.1% 至 100%，默认取本项目已保存的稀疏化配置' },
         { key: 'quant_bits', label: '量化位数', options: [[4, '4 bit'], [8, '8 bit'], [16, '16 bit'], [32, '32 bit（不量化）']] },
         { key: 'error_feedback', label: '误差反馈', options: [[true, '开启'], [false, '关闭']] },
-        { key: 'field_bits', label: '有限域位数（bit）', hint: '量化位数 + 2 至 64（3 方求和不溢出）' }
+        { key: 'field_bits', label: '有限域位数（bit）', hint: '量化位数 + ⌈log₂3⌉ = 量化位数 + 2 至 64（3 方求和不溢出，与聚合配置同一约束）' }
       ],
       method: [
         '场景：与梯度重构攻击评估同一时序任务（稀土氧化物价格数据集，1 服务端 + 3 客户端，LSTM 参数量 P = 203,143），明文 FedAvg 与本算法各训练设定轮次，逐轮统计服务端与全部客户端之间上下行字节总数。',

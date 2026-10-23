@@ -364,6 +364,24 @@ test('[FL-EVAL-02] 通信压缩比：逐轮通信量 + 平均压缩比 7–9，�
   // 失败路径
   assert.equal(await env.errCode('POST', '/projects/p1/fl/evaluations', { kind: 'compression', config: { rounds: 1 } }), 40003);
   assert.equal(await env.errCode('POST', '/projects/p1/fl/evaluations', { kind: 'compression', config: { quant_bits: 16, field_bits: 16 } }), 40003);
+  // 有限域下限与聚合配置同一约束：量化位数 + ⌈log₂3⌉ = 8 + 2
+  const lo = await env.call('POST', '/projects/p1/fl/evaluations', { kind: 'compression', config: { quant_bits: 8, field_bits: 9 } });
+  assert.equal(lo.code, 40003);
+  assert.equal(lo.data.field, 'config.field_bits');
+  assert.match(lo.message, /允许 10 至 64/);
+  // 聚合配置那边对同一组（量化 16 bit、3 方）给出同一下限 18
+  const ev16 = await env.call('POST', '/projects/p1/fl/evaluations', { kind: 'compression', config: { quant_bits: 16, field_bits: 17 } });
+  assert.match(ev16.message, /允许 18 至 64/);
+  const base = await cfgOf(env.okData);
+  base.sparsification.quant_bits = 16; base.ss.field_bits = 17;
+  const agg = await env.call('POST', AGG + '/estimate', base);
+  assert.equal(agg.code, 40003);
+  assert.match(agg.message, /至少需要.*= 18 位/);
+  const edge = await finishEval(env, 'compression', { quant_bits: 8, field_bits: 10 });
+  assert.equal(edge.config.field_bits, 10);
+  // 参数量取内核 MODEL_PARAMS.lstm，与聚合配置估算同一口径
+  assert.equal(r.scenario.model_params, 203143);
+  assert.equal(r.scenario.model_params, (await env.okData('GET', AGG)).estimate.model_params);
   // CSV 报告
   const f = await env.download('/fl/evaluations/' + d.eval_id + '/export');
   assert.match(f.fileName, /_compression_report\.csv$/);

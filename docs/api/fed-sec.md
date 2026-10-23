@@ -114,7 +114,7 @@ POST /projects/{project_id}/fl/aggregation/estimate
 |---|---|---|
 | `strategy` | string | |
 | `client_count` | int | n（取 `ss.parties`） |
-| `model` / `model_params` | string / int | 估算用模型：2 层 LSTM（128 隐藏单元，输入 9 维，步长 7），P = 203,143 |
+| `model` / `model_params` | string / int | 估算用模型：2 层 LSTM（128 隐藏单元，输入 9 维，步长 7），P 取内核参数量表 `MODEL_PARAMS.lstm` = 203,143 |
 | `index_bits` | int | 单个下标编码位数 ⌈log₂P⌉ = 18 |
 | `rho` / `kept` | number / int | 保留比例 ρ、保留梯度数 k = ⌈ρ × P⌉ |
 | `upload_bytes_per_client` | number | 每客户端每轮上行字节 |
@@ -207,7 +207,7 @@ mock 用 `routeFirst` 覆盖内核路由：任务为同态聚合且所属项目�
 | `kind` | 验收编号 | 配置字段（范围，默认） |
 |---|---|---|
 | `gradient_attack` | FL-EVAL-01 | `sample_count` 攻击样本数（20–1000，200）；`max_iterations` 攻击迭代次数（50–2000，300）；`target_client` 被攻击客户端（`all` / `party-a` / `party-b` / `party-c`，`all`）；`seed`（0–99999，2026） |
-| `compression` | FL-EVAL-02 | `rounds` 训练轮次（5–100，20）；`topk_ratio`（0.001–1，取项目已保存配置）；`quant_bits`（4 / 8 / 16 / 32，取项目配置）；`error_feedback`（bool，取项目配置）；`field_bits`（`quant_bits` + 2 至 64，取项目配置） |
+| `compression` | FL-EVAL-02 | `rounds` 训练轮次（5–100，20）；`topk_ratio`（0.001–1，取项目已保存配置）；`quant_bits`（4 / 8 / 16 / 32，取项目配置）；`error_feedback`（bool，取项目配置）；`field_bits`（`quant_bits` + ⌈log₂n⌉ 至 64，n = 3 客户端即 `quant_bits` + 2，与 2.12.1 同一约束；取项目配置） |
 | `accuracy` | FL-EVAL-03 | `rounds` 联邦轮次（10–200，50）；`local_epochs` 本地训练轮数（1–5，1）；`partition`（`iid` / `dirichlet`，`iid`）；`seed`（0–99999，2026） |
 
 ```
