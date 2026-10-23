@@ -873,7 +873,7 @@
         ciphertext_kb_each: ctKb, slots_per_ciphertext: slots, topk_ratio: ratio, params: params,
         values_uploaded: values, ciphertext_count: cts, cost: cost,
         text: job.name + '：公钥 ' + (pk.key_id || '—') + '（' + keyLabel + '），单条密文 ' + ctKb + ' KB、每条打包 ' + slots + ' 个值；' +
-          (ratio < 1 ? 'Top-k ' + Number((ratio * 100).toFixed(2)) + '% 稀疏化，' + params + ' 个参数每节点上传 ' + values + ' 个值' : '未稀疏化，上传全部 ' + params + ' 个参数') +
+          (ratio < 1 ? 'Top-k ' + Number((ratio * 100).toFixed(2)) + '% 稀疏化，' + params.toLocaleString('en-US') + ' 个参数每节点上传 ' + values.toLocaleString('en-US') + ' 个值' : '未稀疏化，上传全部 ' + params.toLocaleString('en-US') + ' 个参数') +
           ' → ' + cts + ' 条密文'
       };
     }

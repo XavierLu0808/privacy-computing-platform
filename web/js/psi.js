@@ -221,7 +221,7 @@
     body.appendChild(UI.formRow('数据来源', srcSel));
 
     const dbBox = UI.el('div', 'form-2col');
-    dbBox.appendChild(UI.formRow('JDBC 地址', UI.inputOf('diJdbc', 'jdbc:mysql://10.22.6.14:3306/risk')));
+    dbBox.appendChild(UI.formRow('JDBC 地址', UI.inputOf('diJdbc', 'jdbc:mysql://10.22.6.14:3306/ree_enterprise')));
     dbBox.appendChild(UI.formRow('表名', UI.inputOf('diTable', '')));
     const hdfsRow = UI.formRow('HDFS 路径', UI.inputOf('diHdfs', 'hdfs://10.22.6.14:8020/warehouse/'));
     const fileIn = UI.el('input');
