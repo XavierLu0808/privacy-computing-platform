@@ -48,3 +48,5 @@
 .psi-side .psi-party { grid-template-columns: 56px minmax(0, 1fr) 180px; }
 .psi-side .psi-party .select { width: 100%; min-width: 0; }
 #psiGoFed, #psiRun, #psiPipeReset { white-space: nowrap; flex-shrink: 0; }
+.psi-stage.fail { border-color: #EFC9BF; }
+.psi-stage.fail .psi-stage-n { background: var(--danger); color: #FFFFFF; }

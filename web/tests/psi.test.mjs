@@ -16,8 +16,8 @@ const NODES = ['node-shanghai-01', 'node-hangzhou-02', 'node-center-agg'];
 const DB_BASE = { name: '采购台账', party_id: 'party-b', source_type: 'database',
   source: { jdbc_url: 'jdbc:postgresql://10.31.8.27:5432/ree', table: 'purchase_ledger' }, id_column: 'supplier_hash' };
 const PARTIES = [
-  { party_id: 'party-a', dataset_id: 'ds_p1_a_user', id_column: 'phone_hash' },
-  { party_id: 'party-b', dataset_id: 'ds_p1_b_user', id_column: 'phone_hash' }
+  { party_id: 'party-a', dataset_id: 'ds_p1_a_user', id_column: 'credit_code_hash' },
+  { party_id: 'party-b', dataset_id: 'ds_p1_b_user', id_column: 'credit_code_hash' }
 ];
 const pipeBody = (over) => ({ protocol: 'ecdh', parties: PARTIES, alignment: { feature_columns: [] }, ...over });
 
@@ -48,12 +48,12 @@ test('[PSI-DATA-02] 字段与脱敏预览：求交键 / 时间列标注，样例
   const { okData, call, tick } = boot(t);
   await okData('GET', '/projects/p1/datasets');   // 首次访问项目时播种
   const seed = await okData('GET', '/datasets/ds_p1_a_txn_ts');
-  assert.equal(seed.id_column, 'phone_hash');
+  assert.equal(seed.id_column, 'credit_code_hash');
   assert.equal(seed.time_column, 'txn_date');
   assert.ok(seed.columns.some((c) => c.name === 'txn_date' && c.type === 'date'));
   assert.equal(seed.preview.length, 3);
   assert.ok(Object.keys(seed.preview[0]).length <= 6, '样例最多 6 列');
-  assert.match(seed.preview[0].phone_hash, /^[0-9a-f]{6}…$/);
+  assert.match(seed.preview[0].credit_code_hash, /^[0-9a-f]{6}…$/);
 
   const ds = await okData('POST', '/projects/p1/datasets', DB_BASE);
   assert.deepEqual((await okData('GET', '/datasets/' + ds.dataset_id)).preview, [], '接入完成前无样例');
@@ -144,6 +144,85 @@ test('[PSI-DATA-03][PSI-PIPE-02] 删除数据集不改写已完成流水线（D1
   assert.deepEqual(hist.find((x) => x.pipeline_id === pipe.pipeline_id).stages[1].stats, before.stages[1].stats);
   // 被删的数据集不能再用于新流水线
   assert.equal((await call('POST', '/projects/p1/psi/pipelines', pipeBody())).code, 40400);
+});
+
+test('[PSI-DATA-02] 上传文件的脱敏样例取文件真实前几行（D36）；未解析的文件不给样例；样例行形状不对被拒', async (t) => {
+  const { okData, call, tick } = boot(t);
+  const PSI = loadPsiPage();
+  const prof = JSON.parse(JSON.stringify(PSI.csvProfile('series_id,trade_date,ceo2_price,grade\nCeO2-A,2026-10-01,7350,4N\nCeO2-B,2026-10-02,7420,5N\n')));
+  assert.deepEqual(prof.sample, [['CeO2-A', '2026-10-01', '7350', '4N'], ['CeO2-B', '2026-10-02', '7420', '5N']]);
+  const f = await okData('POST', '/files', { file: { name: 'ceo2_price.csv', size: 90 }, purpose: 'dataset', project_id: 'p1' });
+  const base = { name: '氧化铈报价', party_id: 'party-b', source_type: 'file', source: { file_id: f.file_id },
+    id_column: 'series_id', time_column: 'trade_date', row_count: prof.row_count, columns: prof.columns };
+  const ds = await okData('POST', '/projects/p1/datasets', { ...base, sample_rows: prof.sample });
+  assert.equal(ds.sample_rows, undefined, '原始样例不随响应下发');
+  tick(1200);
+  const v = await okData('GET', '/datasets/' + ds.dataset_id);
+  assert.equal(v.preview.length, 2, '文件只有 2 行时只显示 2 行');
+  assert.match(v.preview[0].series_id, /^[0-9a-f]{6}…$/);
+  assert.notEqual(v.preview[0].series_id, v.preview[1].series_id, '哈希前缀来自各行真实值');
+  assert.deepEqual(v.preview.map((r) => r.trade_date), ['2026-10-01', '2026-10-02']);
+  assert.deepEqual(v.preview.map((r) => r.ceo2_price), ['7,300 – 7,400', '7,400 – 7,500']);
+  assert.equal(v.preview[0].grade, '***');
+
+  const raw = await okData('POST', '/projects/p1/datasets', { name: '镧现货', party_id: 'party-b', source_type: 'file',
+    source: { file_id: f.file_id }, id_column: 'series_id' });
+  tick(1200);
+  const rv = await okData('GET', '/datasets/' + raw.dataset_id);
+  assert.deepEqual(rv.preview, []);
+  assert.match(rv.preview_note, /未在浏览器解析/);
+
+  for (const sr of [[['only-one-col']], [[1, 2, 3, 4], [1, 2, 3, 4], [1, 2, 3, 4]], 'x']) {
+    assert.equal((await call('POST', '/projects/p1/datasets', { ...base, name: 'bad' + JSON.stringify(sr).length, sample_rows: sr })).code, 40002);
+  }
+});
+
+test('[PSI-PIPE-01][PSI-PIPE-02] 交集不足时求交阶段失败（D37）：后两阶段跳过、不生成训练任务、给出原因', async (t) => {
+  const { okData, call, tick, M } = boot(t);
+  await okData('GET', '/projects/p1/datasets');
+  const f = await okData('POST', '/files', { file: { name: 'tiny.csv', size: 60 }, purpose: 'dataset', project_id: 'p1' });
+  const tiny = await okData('POST', '/projects/p1/datasets', { name: '两行小表', party_id: 'party-b', source_type: 'file',
+    source: { file_id: f.file_id }, id_column: 'credit_code_hash', row_count: 2,
+    columns: [{ name: 'credit_code_hash', type: 'string' }, { name: 'stock_t', type: 'float' }] });
+  tick(1200);
+  const jobsBefore = (await okData('GET', '/projects/p1/fl/jobs')).total;
+  const pipe = await okData('POST', '/projects/p1/psi/pipelines', pipeBody({
+    parties: [PARTIES[0], { party_id: 'party-b', dataset_id: tiny.dataset_id, id_column: 'credit_code_hash' }],
+    training: { fl_job_config: { task_type: 'classification', algorithm: 'xgb', aggregation: 'he', node_ids: NODES }, auto_start: false }
+  }));
+  let ev = null;
+  const seen = [];
+  M.subscribe('/psi/pipelines/' + pipe.pipeline_id + '/events', {
+    pipeline_finished: (e) => { ev = e; }, stage_progress: (s) => seen.push(s.stage + ':' + s.status)
+  });
+  tick(30 * 160);
+  assert.equal(ev.status, 'failed');
+  assert.equal(ev.fl_job_id, null);
+  assert.match(ev.error, /求交结果 0 条/);
+  assert.ok(!seen.includes('align:running'), '特征对齐不应开始');
+  const v = await okData('GET', '/psi/pipelines/' + pipe.pipeline_id);
+  assert.equal(v.status, 'failed');
+  assert.deepEqual(v.stages.map((s) => s.status), ['failed', 'skipped', 'skipped']);
+  assert.equal(v.stages[0].stats.intersection_rows, 0);
+  assert.equal(v.fl_job_id, null);
+  assert.equal((await okData('GET', '/projects/p1/fl/jobs')).total, jobsBefore, '不生成训练任务');
+  // 失败的流水线不能作为训练数据来源
+  const r = await call('POST', '/projects/p1/fl/jobs', { task_type: 'classification', algorithm: 'xgb', aggregation: 'he', node_ids: NODES,
+    dataset_source: { type: 'psi_pipeline', pipeline_id: pipe.pipeline_id } });
+  assert.equal(r.code, 40901);
+  // 演示环境刷新中断（内核把运行中记录置 failed 并写 error）：在未完成的阶段失败，之后跳过
+  const p2 = await okData('POST', '/projects/p1/psi/pipelines', pipeBody());
+  tick(30 * 70);
+  const raw = M._db.psiPipelines[p2.pipeline_id];
+  clearInterval(raw._timer);
+  raw.status = 'failed';
+  raw.error = '演示环境页面刷新，运行中的任务被中断，请重新发起';
+  const iv = await okData('GET', '/psi/pipelines/' + p2.pipeline_id);
+  assert.deepEqual(iv.stages.map((s) => s.status), ['finished', 'failed', 'skipped']);
+  assert.match(iv.error, /中断/);
+  // 模板合并与参数校验
+  assert.equal((await call('POST', '/projects/p1/psi/pipelines', pipeBody({ params: { batch_size: 7 } }))).code, 40003);
+  assert.equal((await call('POST', '/projects/p1/psi/pipelines', pipeBody({ template_id: 'tpl_nope' }))).code, 40400);
 });
 
 /* ---------- 算法配置 ---------- */
@@ -287,8 +366,11 @@ test('[PSI-PIPE-01] 一键启动：用当前算法配置启动 安全求交→�
 
   let done = null;
   M.subscribe('/psi/pipelines/' + pipe.pipeline_id + '/events', { pipeline_finished: (e) => { done = e; } });
+  const last = {};
+  M.subscribe('/psi/pipelines/' + pipe.pipeline_id + '/events', { stage_progress: (st) => { last[st.stage] = st.status; } });
   tick(30 * 160);
   assert.equal(done.status, 'finished');
+  assert.deepEqual(last, { intersect: 'finished', align: 'finished', train: 'finished' }, 'SSE 最后一帧三阶段均为已完成');
   const job = await okData('GET', '/fl/jobs/' + done.fl_job_id);
   assert.deepEqual(job.dataset_source, { type: 'psi_pipeline', pipeline_id: pipe.pipeline_id });
   assert.equal(done.target_project.project_id, 'p1');

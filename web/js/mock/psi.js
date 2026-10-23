@@ -8,6 +8,10 @@
  * - GET  /projects/{project_id}/psi/templates  升级内核同名接口：首次访问播种 2 个内置模板，最新在前
  * - POST /psi/route-advice                 求交协议自适应路由（合同 C-16）
  * - GET  /psi/benchmarks                   典型场景性能参考
+ * - POST /projects/{project_id}/datasets   升级内核：文件来源按前端解析值登记（D13），保存前 3 行样例（D36）
+ * - GET  /datasets/{dataset_id}            升级内核：文件来源样例取文件真实行脱敏，未解析时不给样例（D36）
+ * - POST /projects/{project_id}/psi/pipelines  升级内核：参数校验 + 交集不足时求交阶段失败、后续阶段跳过（D37）
+ * - GET  /psi/pipelines/{id}、GET /projects/{project_id}/psi/pipelines、DELETE /datasets/{id}  统计量快照（D14）
  *
  * 自有数据挂在 k.db.psia；模板沿用内核的 k.db.psiTemplates（同属隐私求交模块）。
  */
@@ -417,7 +421,7 @@
       if (body.time_column && !NAME_RX.test(body.time_column)) return k.err(40000, '时间列名不合法');
 
       // 文件来源：前端解析值
-      let rows = null, cols = null;
+      let rows = null, cols = null, sample = null;
       if (file && (body.row_count !== undefined || body.columns !== undefined)) {
         if (!Number.isInteger(body.row_count) || body.row_count < 0) return k.err(40002, 'row_count 必须是非负整数');
         const bad = checkColumns(body.columns);
@@ -427,6 +431,14 @@
         if (body.time_column && !cols.some(function (c) { return c.name === body.time_column; })) return k.err(40000, '文件表头中没有时间列 ' + body.time_column);
         rows = body.row_count;
         src.row_count_basis = 'parsed';
+        if (body.sample_rows !== undefined) {
+          const sr = body.sample_rows;
+          const okShape = Array.isArray(sr) && sr.length <= 3 && sr.length <= rows && sr.every(function (r) {
+            return Array.isArray(r) && r.length === cols.length;
+          });
+          if (!okShape) return k.err(40002, 'sample_rows 必须是不超过 3 行、每行列数与表头一致的数组');
+          sample = sr.map(function (r) { return r.map(function (v) { return v === null || v === undefined ? '' : String(v); }); });
+        }
       }
 
       const dup = Object.keys(k.db.datasets).some(function (id) {
@@ -457,9 +469,65 @@
         row_count: rows, columns: cols,
         id_column: body.id_column, time_column: body.time_column || null, created_at: k.NOW()
       };
+      if (sample) ds._sample = sample;   // 只用于详情脱敏预览，不随列表 / 详情原样下发
       k.db.datasets[id] = ds;
       setTimeout(function () { ds.status = 'ready'; }, 1200);  // 模拟后台导入 + schema 探测
       return k.ok(k.datasetView(ds));
+    });
+
+    /* ---------- 数据集详情与脱敏样例（D36） ---------- */
+
+    /** 数值区间化到两位有效数字：7350 → 7,300 – 7,400。 */
+    function bucket(raw) {
+      const v = Number(raw);
+      if (raw === '' || !Number.isFinite(v)) return '***';
+      if (v === 0) return '0';
+      const step = Math.pow(10, Math.floor(Math.log10(Math.abs(v))) - 1);
+      const lo = Math.floor(v / step) * step, hi = lo + step;
+      const f = function (x) { return Number(x.toPrecision(12)).toLocaleString('en-US', { maximumFractionDigits: 10 }); };
+      return f(lo) + ' – ' + f(hi);
+    }
+
+    function maskCell(ds, col, raw) {
+      if (col.name === ds.id_column) return raw === '' ? '' : k.hashHex(raw, 1).slice(0, 6) + '…';
+      if (col.type === 'date') return raw;
+      if (col.type === 'int' || col.type === 'float') return bucket(raw);
+      return raw === '' ? '' : '***';
+    }
+
+    k.routeFirst('GET', '/datasets/{dataset_id}', function (p) {
+      const ds = k.db.datasets[p.dataset_id];
+      if (!ds) return k.err(40400, '数据集不存在');
+      const v = k.datasetView(ds);
+      const cols = ds.columns.slice(0, 6);
+      v.preview = [];
+      v.preview_note = null;
+      if (ds.status !== 'ready') {
+        v.preview_note = '接入完成后显示样例';
+      } else if (ds.source_type === 'file') {
+        // 文件来源：只用上传文件的真实前 3 行脱敏；浏览器没解析过的文件不给样例，不伪造
+        if (ds._sample && ds._sample.length) {
+          v.preview = ds._sample.map(function (r) {
+            const row = {};
+            cols.forEach(function (c, j) { row[c.name] = maskCell(ds, c, r[j]); });
+            return row;
+          });
+        } else {
+          v.preview_note = ds.source.row_count_basis === 'parsed' ? '无样例（文件只有表头）' : '无样例（文件未在浏览器解析）';
+        }
+      } else {
+        // 数据库 / HDFS：mock 不连真实数据源，沿用内核的稳定模拟样例（与内核同一口径）
+        v.preview = [0, 1, 2].map(function (i) {
+          const row = {};
+          cols.forEach(function (c, j) {
+            row[c.name] = c.name === ds.id_column ? k.hashHex(ds.dataset_id + i, 1).slice(0, 6) + '…'
+              : (c.type === 'date' ? '2026-09-' + String(10 + i).padStart(2, '0')
+                : (c.type === 'string' ? '***' : Number((Math.sin(i * 7 + j) * 0.5 + 0.5).toFixed(3))));
+          });
+          return row;
+        });
+      }
+      return k.ok(v);
     });
 
     /* ---------- 流水线统计快照（D14） ---------- */
@@ -487,15 +555,118 @@
     }
 
     function snapView(pipe) {
-      if (pipe.status === 'finished') snapshot(pipe);
+      if (pipe.status === 'finished' || pipe.status === 'failed') snapshot(pipe);
       const v = k.pipelineView(pipe);
       const s = pipe._snapshot;
-      if (!s) return v;
-      v.stages.forEach(function (st) { if (st.progress_pct > 0) st.stats = s.stats[st.stage]; });
-      v.parties.forEach(function (pt, i) { if (!pt.dataset_name) pt.dataset_name = s.dataset_names[i]; });
-      v.stats_snapshot_at = s.taken_at;
+      if (s) {
+        v.stages.forEach(function (st) { if (st.progress_pct > 0) st.stats = s.stats[st.stage]; });
+        v.parties.forEach(function (pt, i) { if (!pt.dataset_name) pt.dataset_name = s.dataset_names[i]; });
+        v.stats_snapshot_at = s.taken_at;
+      }
+      if (pipe.status === 'failed') {
+        // 交集不足（_error）在求交阶段失败；演示环境刷新中断（内核写 error）在当时未完成的阶段失败；之后的阶段跳过
+        let at = pipe._error ? 0 : v.stages.findIndex(function (st) { return st.status !== 'finished'; });
+        if (at < 0) at = v.stages.length - 1;
+        v.stages.forEach(function (st, i) {
+          if (i === at) st.status = 'failed';
+          if (i > at) { st.status = 'skipped'; st.progress_pct = 0; st.duration_sec = null; st.stats = {}; }
+        });
+        v.error = pipe._error || pipe.error || '流水线执行失败';
+      }
       return v;
     }
+
+    /* ---------- 流水线启动（升级内核接口，D37） ---------- */
+
+    // 内核引擎三阶段无条件跑完；这里接管 POST，校验与内核一致，另加参数规格校验与模板合并，
+    // 求交阶段结束时交集少于 MIN_ALIGNED_ROWS 则流水线 failed，特征对齐 / 联合训练跳过，不生成训练任务。
+    const MIN_ALIGNED_ROWS = 100;
+
+    function partyLabelOf(id) { return partyLabel(id); }
+
+    function validatePipeline(pid, body) {
+      if (!protoOf(body.protocol)) return k.err(40000, '未知协议 ' + body.protocol);
+      const parties = body.parties || [];
+      if (parties.length !== 2) return k.err(40000, '求交需要恰好两方数据集');
+      if (parties[0].party_id === parties[1].party_id) return k.err(40000, '两方必须是不同参与方');
+      for (let i = 0; i < 2; i++) {
+        const pt = parties[i];
+        const ds = k.db.datasets[pt.dataset_id];
+        if (!ds || ds.project_id !== pid) return k.err(40400, '数据集不存在：' + pt.dataset_id);
+        if (ds.party_id !== pt.party_id) return k.err(40000, '数据集 ' + ds.name + ' 不属于 ' + partyLabelOf(pt.party_id));
+        if (ds.status !== 'ready') return k.err(40901, '数据集 ' + ds.name + ' 尚未接入完成');
+        if (!ds.columns.some(function (c) { return c.name === pt.id_column; })) return k.err(40000, '数据集 ' + ds.name + ' 中没有列 ' + pt.id_column);
+      }
+      return null;
+    }
+
+    function emitStages(pipe) {
+      const path = '/psi/pipelines/' + pipe.pipeline_id + '/events';
+      snapView(pipe).stages.forEach(function (st) { k.emit(path, 'stage_progress', st); });
+    }
+
+    function startPipeline(pipe) {
+      const path = '/psi/pipelines/' + pipe.pipeline_id + '/events';
+      pipe.status = 'running';
+      pipe._timer = setInterval(function () {
+        if (pipe.status !== 'running') { clearInterval(pipe._timer); pipe._timer = null; return; }
+        pipe.progress += 2;
+        if (pipe.progress === 100) {
+          const inter = liveStats(pipe).stats.intersect.intersection_rows;
+          if (inter < MIN_ALIGNED_ROWS) {
+            clearInterval(pipe._timer); pipe._timer = null;
+            pipe.status = 'failed';
+            pipe.finished_at = k.NOW();
+            pipe._error = '求交结果 ' + inter + ' 条，少于联合训练所需的最少 ' + MIN_ALIGNED_ROWS + ' 条对齐样本，已停止，特征对齐与联合训练未执行。请检查两方求交键是否同一口径（' +
+              pipe.parties[0].id_column + ' / ' + pipe.parties[1].id_column + '）或更换数据集。';
+            emitStages(pipe);
+            k.emit(path, 'pipeline_finished', { pipeline_id: pipe.pipeline_id, status: 'failed', fl_job_id: null,
+              target_project: null, error: pipe._error });
+            return;
+          }
+        }
+        if (pipe.progress >= 300) {
+          emitStages(pipe);   // 先推送三阶段 100% 的最后一帧
+          clearInterval(pipe._timer); pipe._timer = null;
+          pipe.status = 'finished';
+          pipe.finished_at = k.NOW();
+          const cfg = pipe.training && pipe.training.fl_job_config;
+          const job = cfg ? k.createJob(pipe.project_id, Object.assign({}, cfg, { name: cfg.name || ('PSI 对齐样本训练 · ' + pipe.pipeline_id.slice(-3)) }))
+            : k.jobOfProject(pipe.project_id);
+          job.dataset_source = { type: 'psi_pipeline', pipeline_id: pipe.pipeline_id };
+          pipe.fl_job_id = job.job_id;
+          const v = snapView(pipe);
+          k.emit(path, 'pipeline_finished', { pipeline_id: pipe.pipeline_id, status: 'finished',
+            fl_job_id: pipe.fl_job_id, target_project: v.target_project });
+          return;
+        }
+        emitStages(pipe);
+      }, 30);
+    }
+
+    k.routeFirst('POST', '/projects/{project_id}/psi/pipelines', function (p, q, body) {
+      k.seedProject(p.project_id);
+      const bad = validatePipeline(p.project_id, body);
+      if (bad) return bad;
+      let params = body.params;
+      if (body.template_id) {
+        const tpl = k.db.psiTemplates[body.template_id];
+        if (!tpl || tpl.project_id !== p.project_id) return k.err(40400, '模板不存在');
+        if (tpl.protocol !== body.protocol) return k.err(40000, '模板协议与流水线协议不一致');
+        params = Object.assign({}, tpl.params, body.params || {});
+      }
+      const chk = checkParams(body.protocol, params);
+      if (chk.error) return chk.error;
+      const id = 'psi_' + p.project_id + '_' + String(k.db.seq += 1).padStart(3, '0');
+      const pipe = {
+        pipeline_id: id, project_id: p.project_id, protocol: body.protocol, params: chk.params,
+        template_id: body.template_id || null, parties: body.parties, training: body.training || null,
+        status: 'pending', progress: 0, created_at: k.NOW(), finished_at: null, fl_job_id: null, _timer: null
+      };
+      k.db.psiPipelines[id] = pipe;
+      startPipeline(pipe);
+      return k.ok(snapView(pipe));
+    });
 
     k.routeFirst('GET', '/psi/pipelines/{pipeline_id}', function (p) {
       const pipe = k.db.psiPipelines[p.pipeline_id];

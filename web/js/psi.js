@@ -21,7 +21,7 @@
 
   /**
    * 解析 CSV 文本：首行为表头，其余非空行计为数据行；列类型按前 200 行推断（int / float / date / string）。
-   * 返回 { row_count, columns } 或 { error }。不处理引号内换行。
+   * 返回 { row_count, columns, sample }（sample 为前 3 行原始值，供节点侧脱敏预览）或 { error }。不处理引号内换行。
    */
   function csvProfile(text) {
     const lines = String(text).replace(/^\uFEFF/, '').split(/\r?\n/).filter(function (l) { return l.trim() !== ''; });
@@ -40,7 +40,7 @@
       else if (vals.length && vals.every(function (v) { return /^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(v); })) type = 'date';
       return { name: name, type: type };
     });
-    return { row_count: lines.length - 1, columns: columns };
+    return { row_count: lines.length - 1, columns: columns, sample: lines.slice(1, 4).map(split) };
   }
 
   /** 行数展示：文件来源且后端按文件大小估算时标注「估算」。 */
@@ -173,7 +173,12 @@
       });
       const tb = $('dsPreview');
       UI.clear(tb);
-      if (d.preview.length) {
+      if (!d.preview.length) {
+        const tr = UI.el('tr');
+        const td = UI.el('td', 'hint', d.preview_note || '无样例');
+        tr.appendChild(td);
+        tb.appendChild(tr);
+      } else {
         const head = UI.el('tr');
         Object.keys(d.preview[0]).forEach(function (k) { head.appendChild(UI.el('th', null, k)); });
         tb.appendChild(head);
@@ -254,7 +259,7 @@
     });
 
     const two2 = UI.el('div', 'form-2col');
-    two2.appendChild(UI.formRow('求交键列', UI.inputOf('diKey', 'phone_hash'), '已做哈希的手机号 / 证件号列'));
+    two2.appendChild(UI.formRow('求交键列', UI.inputOf('diKey', 'credit_code_hash'), '已做哈希的统一社会信用代码列'));
     two2.appendChild(UI.formRow('时间列（可选）', UI.inputOf('diTime', ''), '填写后可用于时序预测任务'));
     body.appendChild(two2);
 
@@ -284,6 +289,10 @@
           req.columns = profile.columns.map(function (c) {
             return { name: c.name, type: c.name === req.id_column ? 'string' : (c.name === t ? 'date' : c.type) };
           });
+          // 前 3 行原始值随文件留在本参与方节点，由节点按列类型脱敏后给详情预览
+          req.sample_rows = profile.sample.map(function (r) {
+            return profile.columns.map(function (c, i) { return r[i] === undefined ? '' : r[i]; });
+          });
         }
         const ds = await Api.post('/projects/' + ctx.projectId + '/datasets', req);
         UI.toast('「' + ds.name + '」接入中，schema 探测完成后可用于求交');
@@ -312,7 +321,8 @@
       }
       list.forEach(function (d) {
         const o = document.createElement('option');
-        o.value = d.dataset_id; o.textContent = d.name + '（' + rowsText(d) + ' 行）';
+        const est = d.source && d.source.row_count_basis === 'size_estimate';
+        o.value = d.dataset_id; o.textContent = d.name + '（' + (est ? '约 ' : '') + UI.rows(d.row_count) + ' 行' + (est ? '，估算' : '') + '）';
         sel.appendChild(o);
       });
       if (list.some(function (d) { return d.dataset_id === keep; })) sel.value = keep;
@@ -460,6 +470,7 @@
         pipeline.status = ev.status;
         pipeline.fl_job_id = ev.fl_job_id;
         pipeline.target_project = ev.target_project;
+        pipeline.error = ev.error || null;
         render();
       }
     });
@@ -469,7 +480,13 @@
     const running = pipeline && pipeline.status === 'running';
     const finished = pipeline && pipeline.status === 'finished';
     $('psiRun').disabled = running;
-    $('psiRun').textContent = running ? '执行中…' : (finished ? '重新执行' : '一键启动');
+    const failed = pipeline && pipeline.status === 'failed';
+    $('psiRun').textContent = running ? '执行中…' : (finished || failed ? '重新执行' : '一键启动');
+    $('psiFail').hidden = !failed;
+    if (failed) {
+      const st = pipeline.stages.filter(function (x) { return x.status === 'failed'; })[0];
+      $('psiFailText').textContent = '流水线在' + (st ? st.name : '执行') + '阶段失败：' + (pipeline.error || '未返回原因');
+    }
     $('psiPipeReset').disabled = !pipeline || pipeline.status === 'canceled';
     renderStages();
     renderRunNote();
@@ -486,7 +503,7 @@
     UI.clear(wrap);
     const stages = pipeline && pipeline.status !== 'canceled' ? pipeline.stages : placeholderStages();
     stages.forEach(function (s, i) {
-      const cls = s.status === 'finished' ? 'psi-stage done' : (s.status === 'running' ? 'psi-stage on' : 'psi-stage');
+      const cls = s.status === 'finished' ? 'psi-stage done' : (s.status === 'running' ? 'psi-stage on' : (s.status === 'failed' ? 'psi-stage fail' : 'psi-stage'));
       const card = UI.el('div', cls);
 
       const head = UI.el('div', 'psi-stage-head');
@@ -502,7 +519,7 @@
       const bar = UI.el('span', 'bar bar-8');
       const fill = UI.el('i');
       fill.style.width = s.progress_pct + '%';
-      fill.style.background = s.status === 'finished' ? '#0E6F6C' : '#1D4E89';
+      fill.style.background = s.status === 'finished' ? 'var(--teal)' : (s.status === 'failed' ? 'var(--danger)' : 'var(--primary)');
       bar.appendChild(fill);
       card.appendChild(bar);
 
@@ -535,6 +552,7 @@
 
   function statsExtra(s) {
     const st = s.stats || {};
+    if (s.status === 'skipped') return '上一阶段失败，未执行';
     if (s.progress_pct === 0) return '等待上一步完成';
     if (s.stage === 'intersect') return '交集 ' + UI.rows(st.intersection_rows) + '条 · ' + protoDef(pipeline.protocol).name;
     if (s.stage === 'align') return '原始数据不出域';

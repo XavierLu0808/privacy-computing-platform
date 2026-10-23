@@ -18,6 +18,22 @@ v1.2 起隐私求交拆为三个二级页面：数据接入 `#/psi/data`、算�
 - 未传（Parquet、超大 CSV）：行数 = round(文件字节数 ÷ 64)，`source.row_count_basis = "size_estimate"`，界面行数显示「约 N（估算）」，详情注明「按文件大小 ÷ 64 字节 / 行估算」。
 - 文件来源的 `source` 另带 `file_name`、`size_bytes`。真实后端应以服务端解析结果为准，可用前端值做一致性复核。
 
+- `sample_rows`（可选，与 `row_count` 同传，缺陷 D36）：文件前 3 行原始值，二维数组，每行列数与 `columns` 一致、行数 ≤ 3 且 ≤ `row_count`，否则 `40002`。样例只保存在本参与方节点用于详情预览，不在任何响应中原样返回。
+
+### 5.0.4 数据集详情（v1.2 差异，缺陷 D36）
+
+验收编号：PSI-DATA-02。`GET /datasets/{dataset_id}` 的 `preview[]` 规则：
+
+| 来源 | `preview[]` | `preview_note` |
+|---|---|---|
+| 文件，登记时带了 `sample_rows` | 文件真实前 3 行（不足 3 行按实际行数）脱敏后的值 | `null` |
+| 文件，只有表头 | `[]` | `无样例（文件只有表头）` |
+| 文件，浏览器未解析（Parquet / 超大 CSV） | `[]` | `无样例（文件未在浏览器解析）` |
+| 数据库 / HDFS | mock 不连真实数据源，为稳定模拟样例；真实后端取源表前 3 行脱敏 | `null` |
+| 尚未就绪 | `[]` | `接入完成后显示样例` |
+
+脱敏按列类型：求交键 → 真实值哈希的 6 位十六进制前缀加「…」；`string` → `***`；`int` / `float` → 按两位有效数字区间化（如 7350 → `7,300 – 7,400`）；`date` → 原值。只取前 6 列。
+
 ### 5.4 流水线详情（v1.2 差异，缺陷 D14）
 
 验收编号：PSI-DATA-03、PSI-PIPE-02。流水线 `finished` 后，`stages[].stats`（两方行数、交集条数、对齐条数与特征维度）与 `parties[].dataset_name` 固化为快照，不再随数据集变化；`GET /psi/pipelines/{pipeline_id}` 与 `GET /projects/{project_id}/psi/pipelines` 多返回 `stats_snapshot_at`（快照时间，未完成时无此字段）。`DELETE /datasets/{dataset_id}` 删除前先为引用它的已完成流水线生成快照；被运行中流水线引用时仍返回 `40901`。
@@ -206,4 +222,13 @@ GET /psi/benchmarks
 
 页面离开再回到平台集成页时，先 `GET /psi/pipelines/{pipeline_id}`（或项目无记录时取 `GET /projects/{project_id}/psi/pipelines` 最后一项）恢复展示，状态为 `running` 时重新订阅 `/psi/pipelines/{pipeline_id}/events`。
 
-说明：mock 内核的流水线接口当前不对 `params` 做 5.1 的规格校验（已由 5.7 保存时校验）；真实后端应在 5.3 同样执行参数校验规则。
+参数规格校验与交集不足失败规则见文末「5.3 启动一键流水线（v1.2 差异，缺陷 D37）」。
+
+### 5.3 启动一键流水线（v1.2 差异，缺陷 D37）
+
+验收编号：PSI-PIPE-01、PSI-PIPE-02。
+
+- 请求校验与 API.md 5.3 一致，另外：`params` 按「参数校验规则」校验（`40000` / `40002` / `40003`）；传 `template_id` 时模板须属于本项目（否则 `40400`）、协议一致（否则 `40000`），模板参数与 `params` 合并（`params` 覆盖同名键）。
+- 安全求交阶段结束时，交集条数少于 **100 条**（联合训练最少对齐样本数）时流水线 `status = failed`，`error` 写明交集条数、阈值和两方求交键，`stages[0].status = failed`，特征对齐与联合训练 `status = skipped`（`progress_pct = 0`，`duration_sec = null`，`stats = {}`），`fl_job_id = null`，不生成训练任务；该流水线不能作为 FL 任务的 `dataset_source`（`40901`）。
+- SSE `pipeline_finished` 在失败时也会推送：`{ "pipeline_id", "status": "failed", "fl_job_id": null, "target_project": null, "error": "求交结果 0 条，少于联合训练所需的最少 100 条对齐样本…" }`。页面显示红色失败说明，「一键启动」变为「重新执行」。
+- 演示环境刷新中断（内核把运行中流水线置 `failed` 并写 `error`）时，当时未完成的阶段标 `failed`，之后的阶段标 `skipped`。

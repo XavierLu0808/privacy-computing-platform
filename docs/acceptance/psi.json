@@ -29,14 +29,16 @@
       "在已就绪数据集行点击「详情」",
       "查看字段标签（求交键、时间列高亮）与脱敏样例表"
     ],
-    "expected": "字段列表标出求交键与时间列；样例只显示前 3 行、前 6 列，求交键为 6 位哈希前缀加省略号，字符串列打码 ***，数值列为归一化值；接入中的数据集「详情」按钮不可用",
+    "expected": "字段列表标出求交键与时间列；样例只显示前 3 行、前 6 列，求交键为 6 位哈希前缀加省略号，字符串列打码 ***，数值列为归一化值；接入中的数据集「详情」按钮不可用；上传文件的样例取文件真实前 3 行（不足按实际行数）脱敏，未在浏览器解析的文件显示「无样例（文件未在浏览器解析）」",
     "api": [
-      "GET /datasets/{dataset_id}"
+      "GET /datasets/{dataset_id}",
+      "POST /projects/{project_id}/datasets（sample_rows）"
     ],
     "tests": [
-      "tests/psi.test.mjs: [PSI-DATA-02] 字段与脱敏预览：求交键 / 时间列标注，样例只给哈希前缀与打码值"
+      "tests/psi.test.mjs: [PSI-DATA-02] 字段与脱敏预览：求交键 / 时间列标注，样例只给哈希前缀与打码值",
+      "tests/psi.test.mjs: [PSI-DATA-02] 上传文件的脱敏样例取文件真实前几行（D36）；未解析的文件不给样例；样例行形状不对被拒"
     ],
-    "impl": "详情接口在数据集视图上追加 preview[]：取前 3 行、前 6 列，求交键列输出哈希前缀（FNV-1a 派生的 6 位十六进制 + …），字符串列一律 ***，数值列输出 0–1 归一化值，原始值不出域。status ≠ ready 时 preview 为空数组。feature_count 不计求交键、时间列、label 与证件哈希列，供特征对齐维度计算。",
+    "impl": "详情接口在数据集视图上追加 preview[]：取前 3 行、前 6 列，求交键列输出哈希前缀（FNV-1a 派生的 6 位十六进制 + …），字符串列一律 ***，数值列输出 0–1 归一化值，原始值不出域。status ≠ ready 时 preview 为空数组。feature_count 不计求交键、时间列、label 与证件哈希列，供特征对齐维度计算。 文件来源时前端把 CSV 前 3 行原始值随登记请求提交（sample_rows，只存节点侧，不在响应中返回），详情按列类型脱敏：求交键取真实值哈希前缀、字符串打码、数值按两位有效数字区间化、日期原样；未解析文件不生成样例。",
     "status": "done"
   },
   "PSI-DATA-03": {
@@ -151,7 +153,7 @@
       "选择两方数据集与求交键",
       "点击「一键启动」，完成后点击「前往训练」"
     ],
-    "expected": "流水线按所选配置依次执行安全求交 → 特征对齐 → 联合训练，完成后绿框显示写入的联邦项目与训练任务 ID，「前往训练」跳转到联邦学习 / 过程管控并定位该任务",
+    "expected": "流水线按所选配置依次执行安全求交 → 特征对齐 → 联合训练，完成后绿框显示写入的联邦项目与训练任务 ID，「前往训练」跳转到联邦学习 / 过程管控并定位该任务；交集少于 100 条时流水线在安全求交阶段失败，特征对齐与联合训练显示「已跳过」，不生成训练任务，页面红框写明原因",
     "api": [
       "GET /projects/{project_id}/psi/config",
       "GET /projects/{project_id}/psi/templates",
@@ -160,9 +162,10 @@
       "GET /fl/jobs/{job_id}"
     ],
     "tests": [
-      "tests/psi.test.mjs: [PSI-PIPE-01] 一键启动：用当前算法配置启动 安全求交→特征对齐→联合训练，完成后生成 FL 任务；非法两方被拒"
+      "tests/psi.test.mjs: [PSI-PIPE-01] 一键启动：用当前算法配置启动 安全求交→特征对齐→联合训练，完成后生成 FL 任务；非法两方被拒",
+      "tests/psi.test.mjs: [PSI-PIPE-01][PSI-PIPE-02] 交集不足时求交阶段失败（D37）：后两阶段跳过、不生成训练任务、给出原因"
     ],
-    "impl": "平台集成页不再编辑参数，只读取算法配置页保存的当前配置（或所选模板的 protocol / params / template_id）组装 POST /psi/pipelines。parties 恰好两方且参与方不同、数据集属于该方且已就绪、求交键列存在，否则 40000 / 40400 / 40901。联合训练阶段按 training.fl_job_config（XGBoost + 同态聚合，项目全部节点）新建 FL 任务，dataset_source = { type: psi_pipeline, pipeline_id }，「前往训练」调用 App.go('fed', { sub: 'proc', focusJobId })。",
+    "impl": "平台集成页不再编辑参数，只读取算法配置页保存的当前配置（或所选模板的 protocol / params / template_id）组装 POST /psi/pipelines。parties 恰好两方且参与方不同、数据集属于该方且已就绪、求交键列存在，否则 40000 / 40400 / 40901。联合训练阶段按 training.fl_job_config（XGBoost + 同态聚合，项目全部节点）新建 FL 任务，dataset_source = { type: psi_pipeline, pipeline_id }，「前往训练」调用 App.go('fed', { sub: 'proc', focusJobId })。 流水线引擎在求交阶段结束时检查交集条数，少于 100 条（联合训练最少对齐样本）即置 failed 并停止，后两阶段 skipped，不创建 FL 任务；启动时同时按协议参数规格校验 params，并合并 template_id 指向的模板参数。",
     "status": "done"
   },
   "PSI-PIPE-02": {
@@ -173,7 +176,7 @@
       "切到算法配置页再切回平台集成页",
       "点击「重置」"
     ],
-    "expected": "各阶段显示待执行 / 执行中 / 已完成、进度条、执行时长（秒）、数据量（求交为两方行数与交集条数，对齐为条数与特征维度）；说明行显示流水线 ID、协议与各阶段执行时长合计；切页回来进度继续推进；重置后三张卡回到待执行",
+    "expected": "各阶段显示待执行 / 执行中 / 已完成、进度条、执行时长（秒）、数据量（求交为两方行数与交集条数，对齐为条数与特征维度）；说明行显示流水线 ID、协议与各阶段执行时长合计；切页回来进度继续推进；重置后三张卡回到待执行；失败时失败阶段标红「失败」，后续阶段「已跳过」",
     "api": [
       "GET /psi/pipelines/{pipeline_id}",
       "GET /projects/{project_id}/psi/pipelines",
@@ -182,7 +185,8 @@
     ],
     "tests": [
       "tests/psi.test.mjs: [PSI-PIPE-02] 进度跟踪：各阶段状态、进度、执行时长、数据量随 SSE 推进；取消后归零，不存在的流水线 40400",
-      "tests/psi.test.mjs: [PSI-DATA-03][PSI-PIPE-02] 删除数据集不改写已完成流水线（D14）：统计量与数据集名在完成后固化"
+      "tests/psi.test.mjs: [PSI-DATA-03][PSI-PIPE-02] 删除数据集不改写已完成流水线（D14）：统计量与数据集名在完成后固化",
+      "tests/psi.test.mjs: [PSI-PIPE-01][PSI-PIPE-02] 交集不足时求交阶段失败（D37）：后两阶段跳过、不生成训练任务、给出原因"
     ],
     "impl": "进度经 SSE 事件 stage_progress（单阶段视图）与 pipeline_finished 推送，前端按 stage 键替换对应阶段并重绘。阶段统计来自所选数据集：left_rows / right_rows 为两方 row_count，交集按较小集合估算，特征维度为两方 feature_count 之和。离开页面时关闭 SSE，回到页面时先按 pipeline_id 拉详情（无记录则取项目流水线历史最后一条），running 时重新订阅；取消后状态 canceled、进度归零。",
     "status": "done"
