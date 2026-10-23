@@ -2,3 +2,5 @@ temp/
 node_modules/
 .DS_Store
 *.log
+dist/
+docs/acceptance/unit-results.json
