@@ -144,20 +144,20 @@
     {
       key: 'a_user', party_id: 'party-a', name: '稀土企业经营画像表', source_type: 'database',
       source: { jdbc_url: 'jdbc:mysql://10.22.6.14:3306/ree_enterprise', table: 'enterprise_profile' },
-      row_count: 1200000, id_column: 'phone_hash', time_column: null,
-      columns: [{ name: 'phone_hash', type: 'string' }, { name: 'id_card_hash', type: 'string' }].concat(featureCols('a_feat', 32))
+      row_count: 1200000, id_column: 'credit_code_hash', time_column: null,
+      columns: [{ name: 'credit_code_hash', type: 'string' }, { name: 'legal_person_hash', type: 'string' }].concat(featureCols('a_feat', 32))
     },
     {
       key: 'b_user', party_id: 'party-b', name: '稀土贸易履约记录表', source_type: 'database',
       source: { jdbc_url: 'jdbc:postgresql://10.31.8.27:5432/ree_trade', table: 'trade_fulfillment' },
-      row_count: 864000, id_column: 'phone_hash', time_column: null,
-      columns: [{ name: 'phone_hash', type: 'string' }, { name: 'label', type: 'int' }].concat(featureCols('b_feat', 36))
+      row_count: 864000, id_column: 'credit_code_hash', time_column: null,
+      columns: [{ name: 'credit_code_hash', type: 'string' }, { name: 'label', type: 'int' }].concat(featureCols('b_feat', 36))
     },
     {
       key: 'a_txn_ts', party_id: 'party-a', name: '稀土产品日出货流水（时序）', source_type: 'hdfs',
       source: { path: 'hdfs://10.22.6.14:8020/warehouse/ree_shipment_daily' },
-      row_count: 3650000, id_column: 'phone_hash', time_column: 'txn_date',
-      columns: [{ name: 'phone_hash', type: 'string' }, { name: 'txn_date', type: 'date' }, { name: 'txn_amount', type: 'float' }].concat(featureCols('ts_feat', 8))
+      row_count: 3650000, id_column: 'credit_code_hash', time_column: 'txn_date',
+      columns: [{ name: 'credit_code_hash', type: 'string' }, { name: 'txn_date', type: 'date' }, { name: 'txn_amount', type: 'float' }].concat(featureCols('ts_feat', 8))
     },
     {
       // 合同技术指标用数据：三类稀土氧化物日度价格（元/吨），按参与方纵向切分后联邦训练
@@ -177,7 +177,7 @@
       source_type: ds.source_type, source: ds.source,
       status: ds.status, row_count: ds.status === 'ready' ? ds.row_count : null,
       columns: ds.columns, feature_count: ds.columns.filter(function (c) {
-        return c.name !== ds.id_column && c.name !== ds.time_column && c.name !== 'label' && c.name !== 'id_card_hash';
+        return c.name !== ds.id_column && c.name !== ds.time_column && c.name !== 'label' && c.name !== 'legal_person_hash';
       }).length,
       id_column: ds.id_column, time_column: ds.time_column,
       error: ds.error || null, created_at: ds.created_at
@@ -389,7 +389,8 @@
 
   function roundEntry(job, r) {
     const base = jobProfile(job);
-    const nodeMetrics = jobNodes(job).map(function (nd, i) {
+    // 聚合节点不持有训练数据，不产生本地指标（D19）
+    const nodeMetrics = jobNodes(job).filter(function (nd) { return nd.role !== 'aggregator'; }).map(function (nd, i) {
       // 各节点：本地数据分布不同 → 收敛速度、误差水平各异，偏差随轮次衰减（不是全局曲线的常数平移）
       const np = curveProfile(job.job_id + '|' + nd.node_id);
       const pf = { speed: base.speed * (0.85 + 0.3 * (np.speed - 0.8) / 0.45), floor: base.floor * (0.9 + 0.2 * (np.floor - 0.85) / 0.35), phase: np.phase };

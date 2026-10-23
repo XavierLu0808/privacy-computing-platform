@@ -576,9 +576,51 @@
     const PAYLOAD_FORBIDDEN = [
       { field: 'raw_rows', label: '原始样本行（任何特征明细）' },
       { field: 'labels', label: '标签列 / 预测目标原值' },
-      { field: 'id_columns', label: '求交键与个人标识（phone_hash、id_card_hash 等）' },
+      { field: 'id_columns', label: '求交键与企业标识（credit_code_hash 统一社会信用代码哈希、legal_person_hash 法人标识哈希等）' },
       { field: 'file_paths', label: '本地数据目录与文件路径' }
     ];
+
+    /**
+     * 每轮链路传输量，与聚合与安全页（js/mock/fed-sec.js commRound）同一套公式，读该项目已保存的聚合配置 k.db.fla（未保存时取其默认值）：
+     *   k = ⌈ρ × P⌉，P = k.MODEL_PARAMS[算法]，ρ = Top-k 保留比例（未开启稀疏化为 1）
+     *   秘密分享上行 = k × 有限域位数；同态上行 = ⌈k / 批打包⌉ × 单条密文位数（Paillier 2 × 密钥长度，CKKS 2 × N × 系数模数位数）
+     *   下行（每个训练节点）= k × 32 + 下标（稀疏化时 min(k × ⌈log₂P⌉, P) 位，列表或位图取小）
+     */
+    const FLA_DEFAULT = {
+      ss: { field_bits: 16 },
+      he: { scheme: 'paillier', key_size_bits: 2048, batch_size: 16, poly_modulus_degree: 8192, coeff_modulus_bits: 218 },
+      sparsification: { enabled: true, topk_ratio: 0.15 }
+    };
+    function wireOf(job) {
+      const saved = db.fla && db.fla[job.project_id];
+      const cfg = saved || FLA_DEFAULT;
+      const P = k.MODEL_PARAMS[job.algorithm] || k.MODEL_PARAMS.custom;
+      const sp = cfg.sparsification || { enabled: false };
+      const rho = sp.enabled ? Math.min(1, sp.topk_ratio) : 1;
+      const kept = Math.ceil(rho * P);
+      const scheme = job.aggregation === 'he' ? 'he' : 'ss';
+      let upBits, encoding;
+      if (scheme === 'he') {
+        const he = cfg.he;
+        const ctBits = he.scheme === 'ckks' ? 2 * he.poly_modulus_degree * he.coeff_modulus_bits : 2 * he.key_size_bits;
+        const count = Math.ceil(kept / he.batch_size);
+        upBits = count * ctBits;
+        encoding = (he.scheme === 'ckks' ? 'CKKS' : 'Paillier') + ' 同态加密：每 ' + he.batch_size + ' 个参数打包为 1 条密文，共 ' + count.toLocaleString('en-US') +
+          ' 条，单条 ' + ctBits.toLocaleString('en-US') + ' bit';
+      } else {
+        upBits = kept * cfg.ss.field_bits;
+        encoding = '秘密分享：float32 定点量化为 ' + cfg.ss.field_bits + ' bit 有限域元素后加成对掩码，每个参数 ' + cfg.ss.field_bits + ' bit';
+      }
+      const idxBits = sp.enabled ? Math.min(kept * Math.ceil(Math.log2(P)), P) : 0;
+      const trainers = k.jobNodes(job).filter(function (n) { return n.role === 'trainer'; }).length;
+      return {
+        params: P, kept: kept, rho: rho, scheme: scheme, encoding: encoding, source: saved ? 'saved' : 'default', trainers: trainers,
+        up_bytes_per_client: Math.ceil(upBits / 8),
+        down_bytes_per_client: Math.ceil((kept * 32 + idxBits) / 8),
+        index_bytes: Math.ceil(idxBits / 8),
+        downlink: '聚合结果以明文 float32 下发' + (idxBits ? '，附下一轮 Top-k 下标（位图与列表取小）' : '')
+      };
+    }
 
     function isoLogs(pid) { return flo.isoLogs[pid] || (flo.isoLogs[pid] = []); }
 
@@ -640,35 +682,38 @@
           if (d.project_id === pid) d.columns.forEach(function (c) { cols[c.name] = true; });
         });
         const metricKeys = k.taskTypeOf(job.task_type).metrics.map(function (m) { return m.key; });
-        const roleOf = {};
-        nodes.forEach(function (n) { roleOf[n.node_id] = n.role; });
-        // 同一模型各节点的梯度 / 全局参数维度相同，取内核参数量表 k.MODEL_PARAMS（未做稀疏化，保留比例 100%）
-        const dim = k.MODEL_PARAMS[job.algorithm] || k.MODEL_PARAMS.custom;
-        const perNode = last.nodes.map(function (nm) {
-          const agg = roleOf[nm.node_id] === 'aggregator';
+        const w = wireOf(job);
+        const perNode = k.jobNodes(job).map(function (nd) {
+          const agg = nd.role === 'aggregator';
           const fields = agg ? [
-            { field: 'global_weights', kind: 'model_param', dtype: 'float32', elements: dim, bytes: dim * 4 },
+            { field: 'global_weights', kind: 'model_param', dtype: 'float32', elements: w.kept, bytes: w.kept * 4 },
             { field: 'round', kind: 'metadata', dtype: 'int64', elements: 1, bytes: 8 }
           ] : [
-            { field: 'weights_delta', kind: 'gradient', dtype: 'float32', elements: dim, bytes: dim * 4 },
+            { field: 'weights_delta', kind: 'gradient', dtype: 'float32', elements: w.kept, bytes: w.kept * 4 },
             { field: 'num_samples', kind: 'metadata', dtype: 'int64', elements: 1, bytes: 8 },
             { field: 'local_metrics', kind: 'metric', dtype: 'float32', elements: metricKeys.length, bytes: metricKeys.length * 4 }
           ];
+          if (agg && w.index_bytes) fields.push({ field: 'topk_indices', kind: 'metadata', dtype: 'bitmap', elements: w.kept, bytes: w.index_bytes });
           const leaked = fields.filter(function (f) { return cols[f.field]; }).length;
+          const meta = fields.slice(1).reduce(function (sum, f) { return sum + f.bytes; }, 0);
           return {
-            node_id: nm.node_id, role: agg ? 'aggregator' : 'trainer', direction: agg ? 'downlink' : 'uplink', round: last.round,
-            total_bytes: fields.reduce(function (sum, f) { return sum + f.bytes; }, 0),   // 消息明文大小
-            wire_bytes: Math.round(nm.upload_kb * 1024),                                 // 链路实际传输量（含同态密文 / 秘密分享份额开销）
+            node_id: nd.node_id, role: agg ? 'aggregator' : 'trainer', direction: agg ? 'downlink' : 'uplink', round: last.round,
+            total_bytes: fields.reduce(function (sum, f) { return sum + f.bytes; }, 0),   // 消息明文大小（float32）
+            // 链路传输量：训练节点 = 编码后的参数（秘密分享份额 / 同态密文）+ 元数据；聚合节点 = 下发给每个训练节点的消息 × 接收方数
+            wire_bytes: agg ? (w.down_bytes_per_client + 8) * w.trainers : w.up_bytes_per_client + meta,
+            recipients: agg ? w.trainers : 1,
             fields: fields, raw_fields_found: leaked
           };
         });
         const leakedTotal = perNode.reduce(function (s, n) { return s + n.raw_fields_found; }, 0);
         rec = {
           check_id: fid('iso'), type: 'payload', at: k.NOW(), operator: operator(),
-          job_id: job.job_id, job_name: job.name, round: last.round, model_params: dim, sparsity_keep_ratio: 1,
+          job_id: job.job_id, job_name: job.name, round: last.round,
+          model_params: w.params, kept_params: w.kept, sparsity_keep_ratio: w.rho, aggregation: w.scheme, encoding: w.encoding,
+          downlink_encoding: w.downlink, config_source: w.source,
           scanned_columns: Object.keys(cols).length, nodes: perNode,
           result: leakedTotal ? 'denied' : 'passed',
-          detail: '第 ' + last.round + ' 轮 ' + perNode.length + ' 个节点的消息只含白名单字段（训练节点上传 weights_delta / num_samples / local_metrics，聚合节点下发 global_weights / round）；' +
+          detail: '第 ' + last.round + ' 轮 ' + perNode.length + ' 个节点的消息只含白名单字段（训练节点上传 weights_delta / num_samples / local_metrics，聚合节点下发 global_weights / round' + (w.index_bytes ? ' / topk_indices' : '') + '）；' +
             '与本项目数据集 ' + Object.keys(cols).length + ' 个列名比对，命中原始数据字段 ' + leakedTotal + ' 个',
           rule: ISO_POLICY.audit_rule
         };
@@ -1333,7 +1378,8 @@
       };
       const series = [{ key: 'global', label: '全局', points: rows.map(function (m) { return point(m.global, m); }) }];
       if (scope === 'nodes') {
-        k.jobNodes(job).forEach(function (nd) {
+        // 聚合节点不持有本地数据，没有本地指标（内核 roundEntry 只为训练节点生成）
+        k.jobNodes(job).filter(function (nd) { return nd.role !== 'aggregator'; }).forEach(function (nd) {
           series.push({
             key: nd.node_id, label: nd.node_id,
             points: rows.map(function (m) { return point(m.nodes.filter(function (x) { return x.node_id === nd.node_id; })[0] || {}, m); })

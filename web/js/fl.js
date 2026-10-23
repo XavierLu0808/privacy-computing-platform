@@ -50,7 +50,7 @@
 
     $('flAlgo').addEventListener('change', function () { patch({ algorithm: $('flAlgo').value }); });
     $('flAgg').addEventListener('change', function () { patch({ aggregation: $('flAgg').value }); });
-    $('flView').addEventListener('change', function () { loadMetrics(); });
+    $('flView').addEventListener('change', function () { charts.forEach(hideTips); loadMetrics(); });
     $('flExport').addEventListener('click', exportCsv);
     $('flViewKey').addEventListener('click', viewKey);
     $('flAddNode').addEventListener('click', addNode);
@@ -754,6 +754,11 @@
     return true;
   }
 
+  function hideTips(c) {
+    c.dispatchAction({ type: 'hideTip' });
+    c.dispatchAction({ type: 'updateAxisPointer', currTrigger: 'leave' });
+  }
+
   function disposeCharts() {
     if (chartObs) { chartObs.disconnect(); chartObs = null; }
     charts.forEach(function (c) { c.dispose(); });
@@ -812,7 +817,18 @@
       return { label: series[key].label, points: series[key].points, color: color, global: isGlobal };
     });
     if (ensureCharts()) {
-      charts.forEach(function (c, i) { c.setOption(chartOption(sp[i], lines), { replaceMerge: ['series'] }); });
+      const sig = keys.join('|') + '#' + job.job_id;
+      charts.forEach(function (c, i) {
+        if (c.__flSig !== sig) {
+          // 曲线集合变化（切换「显示」或换任务）：先收起 tooltip / 坐标指示器，再整体替换，避免 tooltip 引用已删除的序列（D32）
+          hideTips(c);
+          c.clear();
+          c.setOption(chartOption(sp[i], lines), true);
+          c.__flSig = sig;
+        } else {
+          c.setOption(chartOption(sp[i], lines), { replaceMerge: ['series'] });
+        }
+      });
     }
 
     lines.forEach(function (l) {

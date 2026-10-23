@@ -89,10 +89,10 @@ test('时序任务全流程：创建 → 启动 → 每轮推送 RMSE/MAE → �
   assert.equal(rounds.length, 3);
   assert.ok('rmse' in rounds[0].global_metrics && !('loss' in rounds[0].global_metrics));
   assert.ok(rounds[2].global_metrics.rmse < rounds[0].global_metrics.rmse, 'RMSE 应随轮次下降');
-  assert.equal(rounds[0].node_metrics.length, 4);
+  assert.equal(rounds[0].node_metrics.length, 3);
 
   const met = await okData('GET', '/fl/jobs/' + job.job_id + '/metrics?scope=nodes');
-  assert.equal(met.series.length, 5);
+  assert.equal(met.series.length, 4);
   assert.deepEqual(Object.keys(met.series[0].points[0]).sort(), ['mae', 'recorded_at', 'rmse', 'round']);
 
   tick(650 * 8);
@@ -126,7 +126,7 @@ test('数据接入：校验、接入中→就绪、重名、文件来源、详�
   assert.equal((await okData('GET', '/projects/p1/datasets?has_time_column=true')).total, 2);
   assert.equal((await okData('GET', '/projects/p1/datasets?party_id=party-b')).total, 1);
 
-  const base = { name: '新表', party_id: 'party-b', source_type: 'database', source: { jdbc_url: 'jdbc:mysql://1.2.3.4:3306/x', table: 't' }, id_column: 'phone_hash' };
+  const base = { name: '新表', party_id: 'party-b', source_type: 'database', source: { jdbc_url: 'jdbc:mysql://1.2.3.4:3306/x', table: 't' }, id_column: 'credit_code_hash' };
   const bads = [
     [{ ...base, source: { jdbc_url: 'mysql://x', table: 't' } }, 40000, /JDBC/],
     [{ ...base, source: { jdbc_url: base.source.jdbc_url } }, 40000, /表名/],
@@ -152,7 +152,7 @@ test('数据接入：校验、接入中→就绪、重名、文件来源、详�
   assert.ok(ready.row_count > 0);
   assert.ok(ready.columns.some((c) => c.name === 'biz_date' && c.type === 'date'));
   assert.equal(ready.preview.length, 3);
-  assert.match(ready.preview[0].phone_hash, /…$/, '求交键预览应脱敏');
+  assert.match(ready.preview[0].credit_code_hash, /…$/, '求交键预览应脱敏');
 
   const f = await okData('POST', '/files', { file: { name: 'a.csv', size: 1000 }, purpose: 'dataset', project_id: 'p1' });
   const fromFile = await okData('POST', '/projects/p1/datasets', { ...base, name: '文件表', source_type: 'file', source: { file_id: f.file_id } });
@@ -166,8 +166,8 @@ test('求交流水线：校验 parties，统计量来自所选数据集，完成
   const { call, okData, tick, M } = boot(t);
   await okData('GET', '/projects/p1/datasets');
   const parties = [
-    { party_id: 'party-a', dataset_id: 'ds_p1_a_user', id_column: 'phone_hash' },
-    { party_id: 'party-b', dataset_id: 'ds_p1_b_user', id_column: 'phone_hash' }
+    { party_id: 'party-a', dataset_id: 'ds_p1_a_user', id_column: 'credit_code_hash' },
+    { party_id: 'party-b', dataset_id: 'ds_p1_b_user', id_column: 'credit_code_hash' }
   ];
   const body = (over) => ({ protocol: 'ecdh', parties, alignment: {}, ...over });
   const bads = [

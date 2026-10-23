@@ -139,7 +139,7 @@ test('[FL-PROC-05] 数据存储：每轮聚合后存储全局与各节点的 Los
   await act(okData, job.job_id, 'start');
   tick(TICK * 3);
   const met = await okData('GET', '/fl/jobs/' + job.job_id + '/metrics?scope=nodes');
-  assert.deepEqual(met.series.map((s) => s.key), ['global'].concat(NODES));
+  assert.deepEqual(met.series.map((s) => s.key), ['global'].concat(NODES.slice(0, 3)), '聚合节点不持有本地数据，没有本地指标（D19）');
   for (const s of met.series) {
     assert.equal(s.points.length, 3);
     for (const pt of s.points) {
@@ -164,7 +164,7 @@ test('[FL-PROC-06] 动态曲线：全局 / 各节点切换，横轴轮次可按�
   assert.equal(g.total_rounds, 10);
   assert.deepEqual(g.metrics_spec.map((m) => m.key), ['loss', 'accuracy']);
   const n = await okData('GET', '/fl/jobs/' + job.job_id + '/metrics?scope=nodes');
-  assert.equal(n.series.length, 5);
+  assert.equal(n.series.length, 4);
   const part = await okData('GET', '/fl/jobs/' + job.job_id + '/metrics?scope=nodes&from_round=2&to_round=4');
   assert.deepEqual(part.series[2].points.map((x) => x.round), [2, 3, 4]);
   // 每条曲线的同一轮次取自同一次聚合
@@ -212,7 +212,7 @@ test('[FL-PROC-08] 历史指标查询：按项目 ID / 任务 ID / 时间范围�
   assert.equal(all.total, 20 + 3, '历史时序任务 20 轮 + 新任务 3 轮');
   assert.equal(all.job_count, 3);
   const one = await okData('GET', '/fl/metrics?job_id=' + job.job_id + '&scope=nodes');
-  assert.equal(one.total, 3 * 5, '每轮 1 条全局 + 4 个节点');
+  assert.equal(one.total, 3 * 4, '每轮 1 条全局 + 3 个训练节点');
   assert.deepEqual(Object.keys(one.items[0]).sort(), ['accuracy', 'job_id', 'job_name', 'loss', 'mae', 'project_id', 'recorded_at', 'rmse', 'round', 'series', 'task_type']);
   // 时间边界取实际写入时间（历史任务写在过去、新任务写在当前），不依赖播种时刻
   const ts = (await okData('GET', '/fl/metrics?project_id=p1&page_size=500')).items.map((r) => Date.parse(r.recorded_at));
@@ -252,7 +252,7 @@ test('[FL-PROC-08] 历史指标查询：按项目 ID / 任务 ID / 时间范围�
   assert.equal(cls[2], 'classification');
   assert.equal(cls[7], '', '分类任务不含 RMSE');
   const j = await download('/fl/metrics/export?job_id=' + job.job_id + '&scope=nodes');
-  assert.equal(j.content.trim().split('\n').length, 1 + 15);
+  assert.equal(j.content.trim().split('\n').length, 1 + 12);
   await assert.rejects(download('/projects/p9/fl/metrics/export'));
 });
 
@@ -288,7 +288,7 @@ test('[FL-PROC-08] 单任务 CSV 导出按 start_time / end_time 过滤，列与
   const lines = all.content.replace('\ufeff', '').trim().split('\n');
   assert.equal(lines[0], 'job_id,round,series,loss,accuracy,recorded_at(UTC+8)');
   assert.match(lines[1], / \+08:00$/);
-  assert.equal(lines.length, 1 + 4 * 5, '默认 scope = nodes：每轮全局 + 4 个节点');
+  assert.equal(lines.length, 1 + 4 * 4, '默认 scope = nodes：每轮全局 + 3 个训练节点');
   const g = await download('/fl/jobs/' + job.job_id + '/metrics/export?scope=global&start_time=' + past + '&end_time=' + future);
   assert.equal(g.content.trim().split('\n').length, 1 + 4);
   const none = await download('/fl/jobs/' + job.job_id + '/metrics/export?start_time=' + future);

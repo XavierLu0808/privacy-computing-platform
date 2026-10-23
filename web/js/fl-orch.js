@@ -579,13 +579,22 @@
       const d = el('span', 'hint', c.detail);
       if (c.type === 'payload') {
         d.textContent = c.detail + '。' + c.nodes.map(function (n) {
-          return n.node_id + (n.direction === 'downlink' ? ' 下发全局参数 ' : ' 上传梯度 ') + n.fields[0].elements.toLocaleString('en-US') +
-            ' 个 float32（明文 ' + UI.bytes(n.total_bytes) + '，链路实际传输 ' + UI.bytes(n.wire_bytes) + '）';
-        }).join('；') + '。各节点维度一致，等于模型参数量 ' + c.model_params.toLocaleString('en-US') + '，未做稀疏化（保留比例 100%），链路传输量包含同态加密密文或秘密分享份额的开销';
+          return n.direction === 'downlink'
+            ? n.node_id + ' 向 ' + n.recipients + ' 个训练节点下发全局参数 ' + n.fields[0].elements.toLocaleString('en-US') + ' 个（单条明文 ' + UI.bytes(n.total_bytes) + '，链路合计 ' + UI.bytes(n.wire_bytes) + '）'
+            : n.node_id + ' 上传梯度 ' + n.fields[0].elements.toLocaleString('en-US') + ' 个（明文 float32 ' + UI.bytes(n.total_bytes) + '，链路 ' + UI.bytes(n.wire_bytes) + '）';
+        }).join('；') + '。' + sparseText(c) + '上行编码：' + c.encoding + '；下行：' + c.downlink_encoding + '。参数来自' +
+          (c.config_source === 'saved' ? '「聚合与安全」页保存的项目配置' : '「聚合与安全」页的默认配置（项目尚未保存）');
       }
       row.appendChild(d);
       wrap.appendChild(row);
     });
+  }
+
+  function sparseText(c) {
+    const P = c.model_params.toLocaleString('en-US'), K = c.kept_params.toLocaleString('en-US');
+    return c.sparsity_keep_ratio < 1
+      ? '启用 Top-k 稀疏化：每轮只传绝对值最大的 ' + Number((c.sparsity_keep_ratio * 100).toFixed(2)) + '% 参数（' + K + ' / ' + P + '），各训练节点个数一致。'
+      : '未做稀疏化：各训练节点均上传全部 ' + P + ' 个参数。';
   }
 
   async function runCheck(body) {

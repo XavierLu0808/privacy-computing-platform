@@ -90,7 +90,7 @@ test('[FL-ORCH-02] 节点管理：添加校验 IP / 端口 / 重复 ID / 连通�
 });
 
 test('[FL-ORCH-03] 数据隔离：访问矩阵只放行本节点，越权读取被拒并记日志，传输内容只含梯度与参数', async (t) => {
-  const { okData, errCode, tick } = boot(t);
+  const { M, okData, errCode, tick } = boot(t);
   const iso = await okData('GET', '/projects/p1/isolation');
   assert.equal(iso.data_dirs.length, 3);
   for (const row of iso.matrix) {
@@ -114,21 +114,44 @@ test('[FL-ORCH-03] 数据隔离：访问矩阵只放行本节点，越权读取�
   assert.equal(audit.round, 20);
   assert.ok(audit.scanned_columns > 40);
   for (const n of audit.nodes) {
-    assert.deepEqual(n.fields.map((f) => f.field), n.role === 'aggregator' ? ['global_weights', 'round'] : ['weights_delta', 'num_samples', 'local_metrics']);
+    assert.deepEqual(n.fields.map((f) => f.field), n.role === 'aggregator' ? ['global_weights', 'round', 'topk_indices'] : ['weights_delta', 'num_samples', 'local_metrics']);
     assert.equal(n.raw_fields_found, 0);
   }
   assert.equal(audit.nodes.filter((n) => n.direction === 'downlink').length, 1);
-  // D17：同一模型各节点梯度维度相同，等于内核参数量表（LSTM 203,143），未稀疏化
+  // D17 / D31：各节点参数个数一致；链路量按聚合方式与稀疏化配置计算（默认配置：秘密分享 16 bit 有限域、Top-k 保留 15%）
   assert.equal(audit.model_params, 203143);
-  assert.equal(audit.sparsity_keep_ratio, 1);
-  assert.deepEqual([...new Set(audit.nodes.map((n) => n.fields[0].elements))], [203143]);
-  assert.ok(audit.nodes.every((n) => n.wire_bytes > 0 && n.total_bytes >= 203143 * 4));
+  assert.equal(audit.aggregation, 'ss', '历史时序任务用秘密共享聚合');
+  assert.equal(audit.config_source, 'default');
+  assert.equal(audit.sparsity_keep_ratio, 0.15);
+  assert.equal(audit.kept_params, Math.ceil(0.15 * 203143));
+  assert.deepEqual([...new Set(audit.nodes.map((n) => n.fields[0].elements))], [audit.kept_params]);
+  const tr = audit.nodes.filter((n) => n.role === 'trainer');
+  assert.equal(tr.length, 3);
+  for (const n of tr) assert.equal(n.wire_bytes, audit.kept_params * 2 + 8 + 8, '16 bit 份额 + 样本数 8 B + 2 个指标 8 B');
+  const agg = audit.nodes.find((n) => n.role === 'aggregator');
+  const idx = Math.ceil(Math.min(audit.kept_params * 18, 203143) / 8);
+  assert.equal(agg.wire_bytes, (Math.ceil((audit.kept_params * 32 + Math.min(audit.kept_params * 18, 203143)) / 8) + 8) * 3);
+  assert.equal(agg.fields.find((f) => f.field === 'topk_indices').bytes, idx);
+  assert.match(audit.encoding, /16 bit 有限域/);
+  // 保存的项目配置：同态聚合、关闭稀疏化 → 每个参数都传，链路量远大于明文
+  M._db.fla = { p1: { strategy: 'he', ss: { field_bits: 32 }, he: { scheme: 'paillier', key_size_bits: 2048, batch_size: 16 }, sparsification: { enabled: false, topk_ratio: 1 } } };
+  const he = await okData('POST', '/projects/p1/fl/jobs', { ...CLS_JOB, aggregation: 'he', algorithm: 'lr' });
+  await okData('POST', '/fl/jobs/' + he.job_id + '/actions', { action: 'start' });
+  tick(650);
+  const ha = await okData('POST', '/projects/p1/isolation/checks', { type: 'payload', job_id: he.job_id });
+  assert.equal(ha.config_source, 'saved');
+  assert.equal(ha.sparsity_keep_ratio, 1);
+  const t0 = ha.nodes.find((n) => n.role === 'trainer');
+  assert.equal(t0.fields[0].elements, 69);
+  assert.equal(t0.wire_bytes, Math.ceil(69 / 16) * 4096 / 8 + 16);
+  assert.ok(t0.wire_bytes > t0.total_bytes, '未稀疏化的同态密文大于明文');
+  assert.ok(!ha.nodes.some((n) => n.fields.some((f) => f.field === 'topk_indices')));
   // 未开始训练的任务没有传输内容可审计
   const fresh = await okData('POST', '/projects/p1/fl/jobs', CLS_JOB);
   assert.equal(await errCode('POST', '/projects/p1/isolation/checks', { type: 'payload', job_id: fresh.job_id }), 40901);
   tick(1);
   const logs = (await okData('GET', '/projects/p1/isolation')).checks;
-  assert.deepEqual(logs.map((x) => x.result), ['passed', 'allowed', 'denied']);
+  assert.deepEqual(logs.map((x) => x.result), ['passed', 'passed', 'allowed', 'denied']);
 });
 
 test('[FL-ORCH-04] 项目配置：详情、修改持久化（revision 递增）、导出 JSON；非法修改被拒', async (t) => {

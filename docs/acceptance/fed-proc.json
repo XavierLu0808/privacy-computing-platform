@@ -84,7 +84,7 @@
       "启动训练，每完成一轮聚合，「聚合轮次」加 1，全局 Loss / Accuracy 卡显示本轮与上一轮数值",
       "时序任务显示 RMSE / MAE（归一化）"
     ],
-    "expected": "每轮聚合后存储全局与每个参与节点的指标（分类 Loss / Accuracy，时序 RMSE / MAE）和写入时间，可通过指标接口按轮次读取",
+    "expected": "每轮聚合后存储全局与每个训练节点的指标（聚合节点不持有数据，无本地指标）（分类 Loss / Accuracy，时序 RMSE / MAE）和写入时间，可通过指标接口按轮次读取",
     "api": [
       "GET /fl/jobs/{job_id}/metrics",
       "GET /fl/jobs/{job_id}"
@@ -112,7 +112,7 @@
     "tests": [
       "tests/fed-proc.test.mjs: [FL-PROC-06] 动态曲线：全局 / 各节点切换，横轴轮次可按区间截取"
     ],
-    "impl": "曲线基于 ECharts 5.5.1（本地 web/vendor/echarts.min.js）：两张 line 图分别对应 metrics_spec[0] / [1]，xAxis 为 value 轴 1 – total_rounds，yAxis 取 y_min / y_max，tooltip 按 trigger = axis 显示轮次与 digits 位小数。切换视图时按 scope = global / nodes 拉取历史曲线，之后每收到一次 round_completed 推送就追加一个点并以 replaceMerge 更新 series；ResizeObserver 监听容器尺寸做 resize，项目切换时 dispose 实例。配色取 styles.css 的 :root token（全局 --primary，节点依次 --primary-lt / --teal / --amber / --success / --muted-3）。聚合节点不持有训练数据，页面不画它的本地曲线，接口与 CSV 保留记录。",
+    "impl": "曲线基于 ECharts 5.5.1（本地 web/vendor/echarts.min.js）：两张 line 图分别对应 metrics_spec[0] / [1]，xAxis 为 value 轴 1 – total_rounds，yAxis 取 y_min / y_max，tooltip 按 trigger = axis 显示轮次与 digits 位小数。切换视图时按 scope = global / nodes 拉取历史曲线，之后每收到一次 round_completed 推送就追加一个点并以 replaceMerge 更新 series；ResizeObserver 监听容器尺寸做 resize，项目切换时 dispose 实例。配色取 styles.css 的 :root token（全局 --primary，节点依次 --primary-lt / --teal / --amber / --success / --muted-3）。曲线集合变化（切换「显示」或换任务）时先 hideTip 并收起坐标指示器，再 clear + notMerge 整体替换；同一集合内的逐轮追加用 replaceMerge。聚合节点不持有训练数据，没有本地指标曲线。",
     "status": "done"
   },
   "FL-PROC-07": {

@@ -192,7 +192,7 @@ GET /projects/{project_id}/isolation
   "data_dirs": [{ "node_id": "node-shanghai-01", "data_partition": "part-A", "data_dir": "/data/fl/p1/part-a" }],
   "matrix": [{ "node_id": "node-shanghai-01", "role": "trainer", "cells": [{ "owner_node_id": "node-shanghai-01", "data_dir": "/data/fl/p1/part-a", "allowed": true }] }],
   "payload_allowed": [{ "field": "weights_delta", "kind": "gradient", "label": "模型参数增量 / 梯度…" }],
-  "payload_forbidden": [{ "field": "raw_rows", "label": "原始样本行（任何特征明细）" }],
+  "payload_forbidden": [{ "field": "raw_rows", "label": "原始样本行（任何特征明细）" }, { "field": "id_columns", "label": "求交键与企业标识（credit_code_hash、legal_person_hash 等）" }],
   "checks": []
 }
 ```
@@ -234,7 +234,7 @@ POST /projects/{project_id}/isolation/checks
 }
 ```
 
-梯度 / 全局参数的元素数 `elements` 对同一任务的所有节点相同，等于内核参数量表 `k.MODEL_PARAMS[algorithm]`（例 LSTM 203,143、XGBoost 2,176），记在 `model_params`；未做稀疏化，`sparsity_keep_ratio = 1`。`total_bytes` 是消息明文大小（float32 每个 4 字节 + 元数据），`wire_bytes` 取内核每轮记录的 `upload_kb × 1024`，是链路实际传输量（含同态密文或秘密分享份额开销）。
+梯度 / 全局参数的元素数 `elements` 对同一任务的所有节点相同，等于 `kept_params = ⌈ρ × P⌉`：`P = k.MODEL_PARAMS[algorithm]`（例 LSTM 203,143、XGBoost 2,176，记在 `model_params`），`ρ` 为「聚合与安全」页项目配置 `k.db.fla[project_id].sparsification` 的 Top-k 保留比例（未开启为 1，记在 `sparsity_keep_ratio`；未保存配置时取该页默认值，`config_source = default`）。`total_bytes` 是消息明文（float32）大小；`wire_bytes` 与聚合与安全页同一套公式计算：秘密共享上行 = k × 有限域位数，同态上行 = ⌈k / 批打包⌉ × 单条密文位数（Paillier 2 × 密钥长度，CKKS 2 × N × 系数模数位数），再加样本数与本地指标；聚合节点下行 =（k × 32 + 稀疏化时的下标 min(k × ⌈log₂P⌉, P) 位）× 训练节点数（`recipients`）。`encoding` / `downlink_encoding` 给出编码说明。聚合节点开启稀疏化时多一个 `topk_indices` 字段。秘密共享把 float32 定点量化到有限域，因此 16 bit 有限域时链路量约为明文的一半，属于编码压缩而非丢弃数据；同态且不稀疏化时链路量大于明文。
 
 | 情形 | code |
 |---|---|
@@ -496,7 +496,7 @@ GET /fl/jobs/{job_id}/eta
 | `from_round > to_round`；`start_time` 晚于 `end_time` | 40003 |
 | 任务不存在 | 40400 |
 
-页面曲线用 ECharts 5.5.1（`web/vendor/echarts.min.js`）绘制：两张折线图分别对应 `metrics_spec[0]` / `[1]`，横轴轮次 1 – `total_rounds`，纵轴 `y_min` – `y_max`，tooltip 显示「第 N 轮」与各曲线数值，每轮推送实时追加，容器尺寸变化时 resize，切换项目时 dispose。页面曲线不画聚合节点：它不持有训练数据。接口与 CSV 仍包含聚合节点的记录，与内核一致。
+页面曲线用 ECharts 5.5.1（`web/vendor/echarts.min.js`）绘制：两张折线图分别对应 `metrics_spec[0]` / `[1]`，横轴轮次 1 – `total_rounds`，纵轴 `y_min` – `y_max`，tooltip 显示「第 N 轮」与各曲线数值，每轮推送实时追加，容器尺寸变化时 resize，切换项目时 dispose。聚合节点不持有训练数据，内核每轮只为训练节点生成本地指标；`scope = nodes` 返回全局 + 各训练节点，历史查询与 CSV 同样只含训练节点。切换「显示」时页面先收起 tooltip 再整体替换曲线，避免 tooltip 引用已删除的序列。
 
 ### 6.6 历史指标查询与导出
 
