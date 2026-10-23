@@ -168,6 +168,14 @@
 
   function nextId(prefix) { db.seq += 1; return prefix + '_' + String(db.seq).padStart(4, '0'); }
 
+  /**
+   * 各算法单次上传的参数（或梯度）维度，聚合通信估算、同态日志、DP 指标统一用这一张表。
+   * lstm：2 层 × 128 隐藏单元、输入 9 维、预测步长 7 → 4·(128·137+128) + 4·(128·256+128) + (128·7+7) = 203 143
+   * cnn：LeNet-5（MNIST 28×28）= 61 706；lr：参与方 A 32 维 + 参与方 B 36 维 + 偏置 = 69
+   * xgb：每轮上传梯度 / Hessian 直方图，32+36 个特征 × 32 个分桶 = 2 176；tcn：3 层膨胀卷积 × 64 通道 ≈ 37 959
+   */
+  const MODEL_PARAMS = { lr: 69, xgb: 2176, cnn: 61706, lstm: 203143, tcn: 37959, custom: 20000 };
+
   const ALGO_CN = { lr: '逻辑回归', xgb: 'XGBoost', cnn: 'CNN', lstm: 'LSTM', tcn: 'TCN', custom: '自定义上传模型' };
 
   /** 任务类型目录（GET /fl/task-types）。指标卡、曲线量纲、CSV 列都按 metrics 走。 */
@@ -1471,7 +1479,7 @@
       downloadFirst: function (rx, build) { downloads.unshift({ rx: rx, build: build }); },
       ok: ok, err: err, db: db, nextId: nextId, NOW: NOW, hashHex: hashHex,
       emit: emit, subscribe: subscribe, sleep: sleep,
-      TOTAL_ROUNDS: TOTAL_ROUNDS, ALGO_CN: ALGO_CN, TASK_TYPES: TASK_TYPES, taskTypeOf: taskTypeOf,
+      TOTAL_ROUNDS: TOTAL_ROUNDS, ALGO_CN: ALGO_CN, MODEL_PARAMS: MODEL_PARAMS, TASK_TYPES: TASK_TYPES, taskTypeOf: taskTypeOf,
       HE_SCHEMES: HE_SCHEMES, MPC_OPERATORS: MPC_OPERATORS, MPC_EST: MPC_EST, MPC_PARTY_DEFS: MPC_PARTY_DEFS,
       MPC_HISTORY: MPC_HISTORY, PSI_PROTOCOLS: PSI_PROTOCOLS, PSI_PARTIES: PSI_PARTIES, DATASET_SEED: DATASET_SEED,
       seedProject: seedProject, jobsOfProject: jobsOfProject, jobOfProject: jobOfProject, jobView: jobView,
