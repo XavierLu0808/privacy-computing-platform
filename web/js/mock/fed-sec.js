@@ -777,7 +777,9 @@
     function pct(x) { return (x * 100).toFixed(1) + '%'; }
     function csvOf(run) {
       const c = run.config, r = run.result;
-      const head = '评估 ID,' + run.eval_id + '\n评估项,' + KINDS[run.kind].label + '（' + KINDS[run.kind].acc + '）\n项目,' + run.project_id +
+      // D33：与页面横幅一致的数据来源说明
+      const head = '数据来源说明,数值来自原型内置评估引擎的仿真结果（用于演示评估流程、判定口径与报告格式，正式验收需接入真实评估引擎或提供离线实验记录）\n' +
+        '评估 ID,' + run.eval_id + '\n评估项,' + KINDS[run.kind].label + '（' + KINDS[run.kind].acc + '）\n项目,' + run.project_id +
         '\n开始时间（UTC+8）,' + k.fmtLocal(run.started_at) + '\n完成时间（UTC+8）,' + k.fmtLocal(run.finished_at) + '\n配置,"' + JSON.stringify(c).replace(/"/g, '""') + '"\n';
       let body = '';
       if (run.kind === 'gradient_attack') {

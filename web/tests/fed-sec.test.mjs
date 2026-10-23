@@ -403,6 +403,8 @@ test('[FL-EVAL-02] 通信压缩比：逐轮通信量 + 平均压缩比 7–9，�
   assert.match(f.fileName, /_compression_report\.csv$/);
   assert.match(f.content, /单轮平均通信压缩比,\d+\.\d{2}/);
   assert.match(f.content, /明文 FedAvg,0\.\d{4},0\.\d{4}/);
+  // D33：报告首行写明数据来源
+  assert.match(f.content.replace('\uFEFF', '').split('\n')[0], /^数据来源说明,数值来自原型内置评估引擎的仿真结果/);
   // D07：报告时间按 UTC+8 书写，列名注明
   assert.match(f.content, /开始时间（UTC\+8）,\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00\n/);
   assert.match(f.content, /完成时间（UTC\+8）,\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00\n/);
