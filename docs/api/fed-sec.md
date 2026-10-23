@@ -182,7 +182,11 @@ GET /projects/{project_id}/fl/aggregation/public-key
 
 返回当前有效密钥的公钥详情。错误码：`40402` 尚未生成密钥对；`40400` 项目不存在。
 
-与同态加密模块共用一套密钥：生成时同一 `key_id` 同时写入内核 `k.db.heKeys`（`key_params` 为 Paillier `{ key_size_bits }` 或 CKKS `{ poly_modulus_degree, coeff_modulus_bits, scale_bits }`，可直接用于 §3 四步流程）与 he.js 生命周期表 `k.db.he.keys`（`purpose = "fl_aggregation"`、`status = "active"`、`distributed_to` 为项目全部节点、`rotated_from` 指向被替换的旧聚合密钥）。生成前先触发同态模块对该项目的密钥播种，再把该项目其余在用的 `fl_aggregation` 密钥置为 `rotated`（`rotate_reason = "manual"`），保证项目同时只有一把在用的聚合密钥。同态加密页对该密钥轮换后，接替的新密钥自动纳入本列表；销毁后状态同步为 `destroyed`，`GET …/public-key` 返回 `40402`。
+与同态加密模块共用一套密钥（约定见 docs/api/he.md H.7.7）：
+
+- 生成时只写内核 `k.db.heKeys[key_id]`：`project_id`、`scheme`、`purpose = "fl_aggregation"`、`status = "active"`、`created_at`、`distributed_to`（项目全部节点）、`key_params`（Paillier `{ key_size_bits }`；CKKS `{ poly_modulus_degree, coeff_modulus_bits, scale_bits }`）、`rotated_from`，另带兼容字段 `key_size_bits`（CKKS 取 log₂Q）。同态模块列出时自行补建生命周期元数据，这把密钥也可直接用于 §3 四步流程。
+- 生成前先触发同态模块对该项目的密钥播种，再把项目其余在用的聚合密钥的 `k.db.heKeys[id].status` 改为 `rotated`（`rotated_to` 指向新密钥），保证项目同时只有一把在用的聚合密钥。
+- 项目有效聚合密钥 = 同态模块生命周期表中 `status = active` 的 `fl_aggregation` 密钥（包括同态页播种或轮换出的 `hek_` 密钥）；表中没有的按 `k.db.heKeys[id].status` 判断。`k.db.flaKeys[project_id]` 是它的镜像，每次读取时同步，内核 `aggregationInfo` 读它，因此任务详情 `aggregation_info.he_public_key_id`、`GET /fl/jobs/{job_id}/he-public-key`、本页公钥三者一致。同态页销毁后状态为 `destroyed`，`GET …/public-key` 返回 `40402`。
 
 #### 2.12.7 任务聚合公钥（覆盖 API.md §2.8）
 
