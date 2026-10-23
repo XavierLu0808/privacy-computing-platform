@@ -363,7 +363,7 @@
         clip_norm: body.clip_norm,
         delta: body.delta,
         total_rounds: body.total_rounds,
-        accountant: cfg.accountant || 'basic',
+        accountant: cfg.accountant || 'rdp',
         baseline_job_id: jobId,
         histogram_bins: 13
       });
@@ -373,7 +373,7 @@
 
   function renderEstimate(res, body) {
     const isG = body.mechanism === 'gaussian';
-    const acc = res.accountant || 'basic';
+    const acc = res.accountant || 'rdp';
     $('dpNoiseText').textContent = (isG ? 'σ = ' : 'b = ') + res.noise_scale.toFixed(3) +
       '（噪声倍数 z = ' + res.noise_multiplier.toFixed(3) + '，单轮机制 ε = ' + res.epsilon_per_round.toFixed(4) +
       (isG ? '，δ = ' + body.delta : '') + '，C = ' + body.clip_norm.toFixed(1) + '）';
@@ -420,7 +420,7 @@
       const body = currentConfig();
       const res = await Api.post('/dp/tradeoff', {
         mechanism: body.mechanism, clip_norm: body.clip_norm, delta: body.delta,
-        total_rounds: body.total_rounds, accountant: cfg.accountant || 'basic'
+        total_rounds: body.total_rounds, accountant: cfg.accountant || 'rdp'
       });
       if (my === seq) renderTradeoff(res, body);
     } catch (e) { UI.fail(e); }
@@ -457,7 +457,7 @@
   }
 
   function renderAccLine() {
-    const acc = cfg.accountant || 'basic';
+    const acc = cfg.accountant || 'rdp';
     dom.accLine.textContent = '会计方式：' + ACC_CN[acc] + '；裁剪方式：' + (cfg.clip_mode === 'adaptive' ? '自适应' : '固定') +
       (cfg.policy_id ? '；参数来自策略 ' + cfg.policy_id : '') + '（在「隐私机制」页配置）';
   }
@@ -487,7 +487,7 @@
     const sp = UI.el('span', null, String(budget.used_pct));
     sp.id = 'dpUsedPct';
     dom.usedSub.appendChild(sp);
-    dom.usedSub.appendChild(document.createTextNode('%（' + ACC_CN[budget.accountant || 'basic'] + '累计' +
+    dom.usedSub.appendChild(document.createTextNode('%（' + ACC_CN[budget.accountant || 'rdp'] + '累计' +
       (budget.delta_total ? '，累计 δ = ' + fmtDelta(budget.delta_total) : '') + (budget.dp_active ? '' : '，本次运行未启用 DP') + '）'));
 
     const T = Math.max(2, budget.total_rounds);
@@ -526,7 +526,7 @@
       const body = UI.el('div', 'dp-modal-body');
       const job = jobs.filter(function (j) { return j.job_id === jobId; })[0];
       body.appendChild(UI.el('span', 'hint', (job ? job.name : jobId) + ' · 共 ' + res.total + ' 轮记录（按轮次倒序），ε 按' +
-        ACC_CN[(res.items[0] || {}).accountant || 'basic'] + '计算'));
+        ACC_CN[(res.items[0] || {}).accountant || 'rdp'] + '计算'));
       const th = UI.el('div', 'table-head dp-audit-grid');
       ['轮次', '本轮 ε 增量', '累计 ε', '噪声添加详情', '裁剪阈值 C'].forEach(function (t) { th.appendChild(UI.el('span', null, t)); });
       body.appendChild(th);

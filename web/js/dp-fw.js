@@ -303,7 +303,7 @@
       const eps = D.numInput('dpfEps', cfg.epsilon_total, 0.2, 10, 0.1);
       const delta = UI.selectOf('dpfDelta', ['1e-4', '1e-5', '1e-6'].map(function (d) { return { value: d, label: d }; }), cfg.delta);
       const clip = D.numInput('dpfClip', cfg.clip_norm, 0.2, 4, 0.1);
-      const acc = UI.selectOf('dpfAcc', [{ value: 'basic', label: '基础组合' }, { value: 'advanced', label: '高级组合' }, { value: 'rdp', label: 'RDP 会计' }], cfg.accountant || 'basic');
+      const acc = UI.selectOf('dpfAcc', [{ value: 'basic', label: '基础组合' }, { value: 'advanced', label: '高级组合' }, { value: 'rdp', label: 'RDP 会计' }], cfg.accountant || 'rdp');
       const g = el('div', 'form-3col');
       const mr = el('div', 'field-col');
       mr.appendChild(el('label', null, '机制'));

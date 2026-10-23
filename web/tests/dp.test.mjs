@@ -174,7 +174,9 @@ test('[DP-EVAL-01] 效果展示：预算按会计方式累计；basic 与内核�
   assert.equal(b.accountant, 'basic');
   assert.equal(b.epsilon_used, Number((2 * 6 / 30).toFixed(3)));
   assert.equal(b.used_pct, 20);
-  const e = await okData('POST', '/dp/estimate', { mechanism: 'gaussian', epsilon_total: 2, clip_norm: 1, delta: '1e-5', total_rounds: 30 });
+  const e = await okData('POST', '/dp/estimate', { mechanism: 'gaussian', epsilon_total: 2, clip_norm: 1, delta: '1e-5', total_rounds: 30, accountant: 'basic' });
+  // 不传 accountant 默认 RDP，与任务默认一致
+  assert.equal((await okData('POST', '/dp/estimate', { mechanism: 'gaussian', epsilon_total: 2, clip_norm: 1, delta: '1e-5', total_rounds: 30 })).accountant, 'rdp');
   assert.equal(e.noise_scale, 72.672);
   assert.equal(e.estimated_accuracy, 0.799);
   // RDP：同样总预算下噪声更小、预估效用更高
@@ -193,7 +195,8 @@ test('[DP-EVAL-02] 效用曲线 + 效用-隐私平衡：ε 增大效用单调不
   for (let i = 1; i < accs.length; i++) assert.ok(accs[i] >= accs[i - 1]);
   const hit = r.points.find((p) => p.accuracy_loss <= 0.03);
   assert.equal(r.recommended_epsilon, hit.epsilon_total);
-  const basic = await okData('POST', '/dp/tradeoff', { mechanism: 'gaussian', clip_norm: 1, delta: '1e-5', total_rounds: 30 });
+  const basic = await okData('POST', '/dp/tradeoff', { mechanism: 'gaussian', clip_norm: 1, delta: '1e-5', total_rounds: 30, accountant: 'basic' });
+  assert.equal((await okData('POST', '/dp/tradeoff', { mechanism: 'gaussian', clip_norm: 1, delta: '1e-5', total_rounds: 30 })).accountant, 'rdp');
   assert.ok(basic.recommended_epsilon > r.recommended_epsilon, 'RDP 达到同样效用所需 ε 更小');
   const e = await okData('POST', '/dp/estimate', { mechanism: 'laplace', epsilon_total: 2, clip_norm: 1, total_rounds: 30 });
   assert.equal(e.curve.length, 30);
@@ -315,6 +318,7 @@ test('[DP-FW-03] DP 指标：每轮裁剪比例、噪声 L2 范数、信噪比�
   assert.equal(m.rounds.length, 5);
   m.rounds.forEach((r) => assert.ok(r.clip_ratio >= 0 && r.clip_ratio <= 1));
   // 高斯：‖n‖₂ = σ·√d
+  assert.equal(m.summary.model_dim, 2176, 'XGBoost 维度取内核 MODEL_PARAMS');
   assert.ok(Math.abs(m.summary.noise_l2_last - m.summary.noise_scale * Math.sqrt(m.summary.model_dim)) < 0.5);
   assert.equal(m.histogram.length, 21);
   assert.equal(m.histogram.reduce((s, h) => s + h.count, 0) <= m.histogram_samples, true);

@@ -72,7 +72,7 @@ PUT /fl/jobs/{job_id}/dp
 POST /dp/estimate
 ```
 
-请求增补 `accountant`（可选，默认 `basic`）。响应增补：
+请求增补 `accountant`（可选，默认 `rdp`，与任务默认一致；显式传 `basic` 时数值与 v1.1 一致）。响应增补：
 
 | 字段 | 说明 |
 |---|---|
@@ -83,7 +83,7 @@ POST /dp/estimate
 | `delta_total` | 按会计方式的累计 δ |
 | `curve[].cumulative_epsilon` | 按会计方式累计 |
 
-`basic` 下 `noise_scale`、`estimated_accuracy`、`curve` 与 v1.1 逐位一致。错误码：`40000` mechanism 非法、高斯缺 δ、accountant 非法、ε / C / T 非正数。
+显式 `accountant = basic` 时 `noise_scale`、`estimated_accuracy`、`curve` 与 v1.1 逐位一致；注意 v1.1 调用方不传该字段时现在按 RDP 计算。错误码：`40000` mechanism 非法、高斯缺 δ、accountant 非法、ε / C / T 非正数。
 
 ### 6.4 预算消耗（增补）
 
@@ -143,7 +143,7 @@ POST /dp/tradeoff
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `mechanism` / `clip_norm` / `delta` / `total_rounds` | 是 | 同 6.3 |
-| `accountant` | 否 | 默认 `basic` |
+| `accountant` | 否 | 默认 `rdp`；显式传 `basic` 按基础组合 |
 | `epsilons` | 否 | ε 网格，默认 `[0.2, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 10]`，每个 0.05–20 |
 | `max_accuracy_loss` | 否 | 平衡点阈值，默认 0.03（3 个百分点） |
 
@@ -285,7 +285,7 @@ GET /fl/jobs/{job_id}/dp/metrics?bins=21
 | `summary` | `clip_ratio_avg`、`noise_l2_last`、`snr_last`、`snr_db_last = 10·log10(snr²)`、`model_dim`、`trainers`、`noise_scale`；无 DP 轮次时为 `null` |
 | `histogram[]` | 末轮噪声坐标抽样 4000 个（以 σ 或 b 为单位，种子 = job_id + 轮次），`{ x, count, density（峰值归一）, theory（理论密度峰值归一） }` |
 
-计算：`clip_ratio = P(‖g‖₂ > C) = 1 − Φ((ln C − ln m(r)) / 0.5)`；聚合后噪声范数高斯 `‖n‖₂ = σ·√d`、拉普拉斯 `b·√(2d)`，d 为模型参数维度（逻辑回归 64、XGBoost 2,048、CNN 61,706、LSTM 12,416、TCN 18,944、自定义 10,000）；按 DP-SGD 逐样本裁剪：每个参与方每轮对 B = 256 个样本梯度逐个裁剪后求和再加噪，信号 `‖Σ clip(g)‖₂` 取上界 `n · B · E[min(‖g‖₂, C)]`；`snr = 信号 / 噪声`。错误码：`40400`、`40003`（bins 不是 5–61 的整数）。
+计算：`clip_ratio = P(‖g‖₂ > C) = 1 − Φ((ln C − ln m(r)) / 0.5)`；聚合后噪声范数高斯 `‖n‖₂ = σ·√d`、拉普拉斯 `b·√(2d)`，d 为单次上传参数维度，取内核 `k.MODEL_PARAMS`（逻辑回归 69、XGBoost 2,176、CNN 61,706、LSTM 203,143、TCN 37,959、自定义 20,000）；按 DP-SGD 逐样本裁剪：每个参与方每轮对 B = 256 个样本梯度逐个裁剪后求和再加噪，信号 `‖Σ clip(g)‖₂` 取上界 `n · B · E[min(‖g‖₂, C)]`；`snr = 信号 / 噪声`。错误码：`40400`、`40003`（bins 不是 5–61 的整数）。
 
 #### 初始化检查
 

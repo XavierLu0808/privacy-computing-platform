@@ -108,7 +108,7 @@
     /** 按总预算 ε、总步数 T 和会计方式反解每步噪声。返回 { scale, eps0, noise_scale, delta_total }。 */
     function calibrate(cfg) {
       const mech = cfg.mechanism, delta = deltaNum(cfg.delta), T = cfg.total_rounds, E = cfg.epsilon_total;
-      const acc = cfg.accountant || 'basic';
+      const acc = cfg.accountant || 'rdp';
       let scale;
       if (acc === 'basic') scale = scaleOf(mech, E / T, delta);
       else {
@@ -209,7 +209,7 @@
     function epsEq(cal, T) { return Math.min(cal.eps0 * T, 60); }
 
     function estimate(body) {
-      const acc = body.accountant || 'basic';
+      const acc = body.accountant || 'rdp';
       const T = body.total_rounds;
       const cal = calibrate(Object.assign({}, body, { accountant: acc }));
       const eq = epsEq(cal, T);
@@ -253,14 +253,13 @@
       });
       const hit = points.filter(function (x) { return x.accuracy_loss <= maxLoss; })[0];
       return k.ok({
-        accountant: body.accountant || 'basic', baseline_accuracy: 0.921, max_accuracy_loss: maxLoss,
+        accountant: body.accountant || 'rdp', baseline_accuracy: 0.921, max_accuracy_loss: maxLoss,
         points: points, recommended_epsilon: hit ? hit.epsilon_total : null
       });
     });
 
     /* ================= 每轮记录（审计 / 框架指标共用） ================= */
 
-    const MODEL_DIM = { lr: 64, xgb: 2048, cnn: 61706, lstm: 12416, tcn: 18944, custom: 10000 };
     const BATCH = 256;    // DP-SGD：每个参与方每轮逐样本裁剪后求和加噪的样本数
     const GRAD_S = 0.5;   // 样本梯度 L2 范数的对数标准差
     function gradMedian(r) { return 0.25 + 0.9 * Math.exp(-r / 12); }
@@ -279,11 +278,11 @@
 
     function roundRow(job, dp, cal, r) {
       const delta = deltaNum(dp.delta);
-      const acc = dp.accountant || 'basic';
+      const acc = dp.accountant || 'rdp';
       const C = clipAt(dp, r);
       const m = gradMedian(r);
       const noise = cal.scale * C;
-      const d = MODEL_DIM[job.algorithm] || 10000;
+      const d = k.MODEL_PARAMS[job.algorithm] || k.MODEL_PARAMS.custom;   // 单次上传参数维度，与联邦学习模块同源
       const noiseL2 = dp.mechanism === 'gaussian' ? noise * Math.sqrt(d) : noise * Math.sqrt(2 * d);
       const signal = trainers(job) * BATCH * clipExpect(m, GRAD_S, C);
       const cum = composeAt(acc, dp.mechanism, cal.scale, delta, r);

@@ -40,7 +40,7 @@
       { value: 'basic', label: '基础组合（ε 逐轮累加）' },
       { value: 'advanced', label: '高级组合（Dwork–Rothblum–Vadhan）' },
       { value: 'rdp', label: 'RDP 会计（Moments Accountant）' }
-    ], value || 'basic');
+    ], value || 'rdp');
   }
   function mechSeg(value, onChange) {
     return D.seg([{ value: 'gaussian', label: '高斯机制' }, { value: 'laplace', label: '拉普拉斯机制' }], value, onChange, '差分隐私机制');
