@@ -1,0 +1,233 @@
+{
+  "DP-MECH-01": {
+    "page": "#/dp/mech",
+    "ui": "隐私机制 → 「机制与参数」页签 → 「差分隐私机制」卡",
+    "steps": [
+      "进入差分隐私 / 隐私机制",
+      "查看高斯机制、拉普拉斯机制两张机制卡的定义、噪声分布、敏感度、适用场景、核心参数",
+      "对照下方同方差噪声密度对比图"
+    ],
+    "expected": "至少两种机制：高斯 (ε, δ)-DP、拉普拉斯 ε-DP，各自写明定义、噪声分布与定标公式、适用场景；当前任务在用的机制有标识",
+    "api": [
+      "GET /dp/mechanisms",
+      "GET /fl/jobs/{job_id}/dp"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-MECH-01] 机制目录：高斯 (ε,δ)-DP 与拉普拉斯 ε-DP，含定义、噪声分布、适用场景"
+    ],
+    "impl": "机制目录由 GET /dp/mechanisms 下发，每项含 guarantee、definition、noise（σ = Δ₂·√(2 ln(1.25/δ))/ε 或 b = Δ₁/ε）、sensitivity、scenarios、params 取值范围。训练引擎与统计查询共用这两种机制：高斯用于梯度扰动并可配 RDP 会计，拉普拉斯用于低维统计查询、提供 δ = 0 的纯 ε-DP。",
+    "status": "done"
+  },
+  "DP-MECH-02": {
+    "page": "#/dp/mech",
+    "ui": "隐私机制 → 「机制与参数」页签 → 「参数配置」卡（作用对象：梯度 / 统计查询）",
+    "steps": [
+      "顶部选择训练任务",
+      "作用对象选「梯度（联邦训练任务）」，设置机制、总预算 ε、δ、裁剪阈值 C、裁剪方式、会计方式，观察实时预估",
+      "点击「保存到任务」；任务训练中时保存被拒并提示错误码 40901",
+      "作用对象切到「统计查询（数据集字段）」，选数据集字段、查询、单次 ε、裁剪方式，保存并「执行一次加噪查询」"
+    ],
+    "expected": "参数写入任务后，效果评估页左栏与本页显示一致；运行中任务提示「任务运行中不允许修改 DP 配置」；统计查询发布只返回加噪结果",
+    "api": [
+      "GET /fl/jobs/{job_id}/dp",
+      "PUT /fl/jobs/{job_id}/dp",
+      "POST /dp/estimate",
+      "GET /projects/{project_id}/dp/query-config",
+      "PUT /projects/{project_id}/dp/query-config",
+      "POST /projects/{project_id}/dp/query",
+      "GET /projects/{project_id}/dp/queries"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-MECH-02] 参数配置：ε / δ / C / 会计方式写入任务；越界与运行中被拒（40003 / 40002 / 40901）"
+    ],
+    "impl": "梯度对象的参数存于任务 job.dp（epsilon_total 0.2–10、clip_norm 0.2–4、delta ∈ {1e-4,1e-5,1e-6}、accountant ∈ {basic, advanced, rdp}、clip_mode），与效果评估页同一接口，旧调用不带扩展字段时保持原值；Running / Paused 返回 40901，越界 40003，δ 格式 40002。统计查询对象存为项目级 query-config，发布时按字段分布确定敏感度后加噪，结果裁回裁剪区间（后处理不耗预算）。",
+    "status": "done"
+  },
+  "DP-MECH-03": {
+    "page": "#/dp/mech",
+    "ui": "隐私机制 → 「自适应噪声注入」页签（数据集字段 / 训练梯度）",
+    "steps": [
+      "选稀土价格数据集 ds_{project}_ree_price 的 ceo2_price，查询「月度均价」，拉普拉斯，ε = 0.5",
+      "查看字段统计（中位数、均值、P5–P95、公开取值范围，单位元/吨）与分布图上的裁剪区间",
+      "对比「固定裁剪 vs 自适应裁剪」表中的敏感度、噪声标准差、裁剪偏差、RMSE",
+      "切到「训练梯度」，查看每轮更新范数、固定 C 与自适应 C、裁剪比例，点击「对任务启用自适应裁剪」"
+    ],
+    "expected": "重尾字段（CeO₂ 月度均价）推荐自适应裁剪，噪声标准差降低约 84%；样本量大的全量均值推荐固定裁剪；梯度自适应裁剪的裁剪比例稳定在 50% 附近且平均噪声 σ 下降",
+    "api": [
+      "POST /dp/adaptive-noise",
+      "GET /projects/{project_id}/datasets",
+      "PUT /projects/{project_id}/dp/query-config",
+      "PUT /fl/jobs/{job_id}/dp"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-MECH-03] 自适应噪声：按字段分布选裁剪区间，重尾字段噪声显著下降；梯度自适应裁剪；非数值字段被拒",
+      "tests/dp.test.mjs: [DP-MECH-03] 统计查询发布：只返回加噪结果，结果在裁剪区间内"
+    ],
+    "impl": "字段按对数正态拟合（中位数、对数标准差），敏感度 Δ = (U − L)/n。固定裁剪用业务公开取值范围（不看数据），自适应裁剪在 P1–P99、P2.5–P97.5、P5–P95、P10–P90 中按 RMSE = √(噪声方差 + 截断偏差²) 最小选取，截断偏差用对数正态截断期望解析计算，10% 预算用于差分隐私分位数估计。梯度侧按 Andrew 等（2021）的目标分位裁剪：每轮 C 取上一轮参与方更新 L2 范数中位数，σ = z·C 随之下降。",
+    "status": "done"
+  },
+  "DP-MECH-04": {
+    "page": "#/dp/mech",
+    "ui": "隐私机制 → 「策略动态编排」页签（组合定理对比 / 新建 DP 策略 / 已编排策略）",
+    "steps": [
+      "在「组合定理对比」输入单步 ε₀、δ、步数 T，对比基础组合、高级组合、RDP 会计的累计 ε 与曲线",
+      "在「新建 DP 策略」设定总预算、δ、机制、会计方式，添加训练任务维度与字段查询维度并设置权重",
+      "点击「生成策略」，在「已编排策略」查看每个维度分到的 ε 与三种会计方式下的每步噪声倍数",
+      "点击「下发到训练任务」；查询维度点「发布一次」按次消耗"
+    ],
+    "expected": "同样 30 轮、ε₀ = 0.0667 时累计 ε：基础 2.00、高级 1.89、RDP 0.37；策略按权重分配 ε 并写入绑定任务（任务 DP 配置显示 policy_id）；绑定任务运行中时下发被拒（40901）",
+    "api": [
+      "POST /dp/compose",
+      "POST /projects/{project_id}/dp/policies",
+      "GET /projects/{project_id}/dp/policies",
+      "POST /dp/policies/{policy_id}/apply",
+      "POST /projects/{project_id}/dp/query"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-MECH-04] 组合定理：同一单步机制 T 步，RDP ≤ 高级组合 ≤ 基础组合，公式数值可复核",
+      "tests/dp.test.mjs: [DP-MECH-04] 策略编排：按权重分配总预算并下发到训练任务；运行中任务 40901，重名 40902"
+    ],
+    "impl": "基础组合 ε = T·ε₀；高级组合（Dwork–Rothblum–Vadhan）ε = ε₀√(2T ln(1/δ′)) + Tε₀(e^ε₀ − 1)，δ = Tδ + δ′，劣于基础组合时取基础组合；RDP（Mironov 2017）高斯单步 ε(α) = α/(2z²)，拉普拉斯用闭式 RDP，T 步后 ε = min_α[T·ε(α) + ln(1/δ)/(α−1)]，α 取 22 档。策略在维度之间按顺序组合 ε_i = ε_总·w_i/Σw，维度内按所选会计方式二分反解噪声倍数；下发先整体校验（运行中 40901、ε_i 超出 0.2–10 为 40003）再写入 job.dp 的 epsilon_total、clip_norm、accountant、policy_id。",
+    "status": "done"
+  },
+  "DP-EVAL-01": {
+    "page": "#/dp/eval",
+    "ui": "效果评估 → 顶部「训练任务」下拉、左栏「DP 机制配置」、三张指标卡、噪声分布",
+    "steps": [
+      "选择训练任务（与隐私机制页共用）",
+      "查看「已消耗隐私预算（累计 ε）」「模型效用（预估 Accuracy）」「每轮 ε 消耗 / 单轮机制 ε」",
+      "在过程管控启动训练后回到本页，预算与轮次每 2 秒刷新"
+    ],
+    "expected": "训练中已消耗 ε、占比、已完成轮次实时增长；会计方式与累计 δ 写在指标卡说明里；模型效用以百分比显示并给出无噪声基线与损失百分点",
+    "api": [
+      "GET /fl/jobs/{job_id}/dp",
+      "GET /fl/jobs/{job_id}/dp/budget",
+      "POST /dp/estimate",
+      "GET /projects/{project_id}/fl/jobs"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-EVAL-01] 效果展示：预算按会计方式累计；basic 与内核数值一致"
+    ],
+    "impl": "已消耗 ε 按任务的会计方式对已完成轮次累计（basic 与 v1.1 一致：ε_总 × r / T），used_pct = ε_used / ε_总；训练运行期间的配置存快照，结束后改配置不影响该次运行的预算。模型效用沿用 v1.1 公式，但 ε 取与当前噪声等效的基础组合总 ε，因此 RDP 下同样总预算噪声更小、效用更高。",
+    "status": "done"
+  },
+  "DP-EVAL-02": {
+    "page": "#/dp/eval",
+    "ui": "效果评估 → 「趋势曲线」卡、「效用-隐私平衡分析」卡",
+    "steps": [
+      "查看累计 ε 消耗与模型效用随轮次的趋势曲线，虚线为当前已完成轮次",
+      "查看「效用-隐私平衡分析」：不同总预算 ε 下预估效用曲线、无噪声基线、当前 ε 标记",
+      "拖动左栏 ε 滑块，平衡分析与当前标记同步更新"
+    ],
+    "expected": "效用随 ε 单调不降；给出效用损失不超过 3 个百分点的最小 ε（平衡点），并说明当前 ε 在平衡点哪一侧",
+    "api": [
+      "POST /dp/estimate",
+      "POST /dp/tradeoff"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-EVAL-02] 效用曲线 + 效用-隐私平衡：ε 增大效用单调不降，给出平衡点"
+    ],
+    "impl": "趋势曲线用 /dp/estimate 的 curve（累计 ε 按会计方式计算），两条曲线各自归一化。平衡分析对 ε 网格 0.2–10 逐点按同一机制、C、δ、会计方式反解噪声并估算效用，recommended_epsilon = 效用损失 ≤ max_accuracy_loss（默认 0.03）的最小 ε；RDP 达到同样效用所需 ε 明显小于基础组合。",
+    "status": "done"
+  },
+  "DP-EVAL-03": {
+    "page": "#/dp/eval",
+    "ui": "效果评估 → 「隐私审计记录」卡（查看全部 / 导出 CSV）",
+    "steps": [
+      "查看最近 5 轮：轮次、本轮 ε 增量、累计 ε、噪声添加详情（σ 或 b、δ、被裁剪更新占比）、裁剪阈值 C",
+      "点击「查看全部」在弹窗中查看全部轮次",
+      "点击「导出 CSV」下载 {job_id}_dp_audit.csv"
+    ],
+    "expected": "每轮一条记录，逐轮增量之和等于累计 ε；已完成的历史任务也能看到全部轮次；CSV 列与页面一致",
+    "api": [
+      "GET /fl/jobs/{job_id}/dp/audit",
+      "GET /fl/jobs/{job_id}/dp/audit/export"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-EVAL-03] 历史审计：每轮 ε 增量与噪声详情、查看全部、导出 CSV；快照不随后改配置变化"
+    ],
+    "impl": "训练引擎每轮聚合后写入审计（内核 dp_audit 提供轮次与时间），读取时按该次运行的配置快照补齐会计方式下的 ε 增量 = 累计ε(r) − 累计ε(r−1)、噪声尺度、自适应 C、裁剪比例与噪声 L2 范数；播种的历史任务按其配置回放并标记 source = seed_history。limit 支持整数与 all，CSV 带 UTF-8 BOM。",
+    "status": "done"
+  },
+  "DP-FW-01": {
+    "page": "#/dp/fw",
+    "ui": "框架集成 → 「隐语集成 · DP 适配层」卡",
+    "steps": [
+      "查看当前实现、适配层版本说明、支持的机制与会计方式",
+      "查看接口映射表：平台接口 ↔ 实现类 / 函数，来源标注「框架原生」或「平台适配器」",
+      "在「实现」下拉选 Opacus 预览映射，点击「切换实现」"
+    ],
+    "expected": "平台接口固定为 DPStrategy.build、GradientDP.gaussian、GradientDP.laplace、Accountant.spent、SecureAggregator.aggregate；隐语原生类（DPStrategyFL、GaussianModelDP、SecureAggregator）与适配器补齐项分开标注；切换后非运行任务改用新实现",
+    "api": [
+      "GET /dp/providers",
+      "PUT /dp/provider"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-FW-01] 隐语集成：适配层接口映射、可替换实现、切换 provider"
+    ],
+    "impl": "平台只依赖 5 个统一接口，三种实现（secretflow-native、opacus、tf-privacy）暴露同一组接口。隐语侧映射 secretflow.security.privacy.DPStrategyFL、secretflow.security.privacy.mechanism.tensorflow.GaussianModelDP、secretflow.security.aggregation.SecureAggregator，类路径以部署环境的 secretflow 版本为准；隐语没有的联邦拉普拉斯机制与三种会计方式由适配层 dp_adapter 实现。切换实现只影响非运行任务，运行中任务沿用原实现到本次训练结束。 说明：原型阶段隐语类路径按公开文档整理，尚未在真实 secretflow 环境中导入校验。",
+    "status": "done"
+  },
+  "DP-FW-02": {
+    "page": "#/dp/fw",
+    "ui": "框架集成 → 「DP 初始化与 hook 链」卡",
+    "steps": [
+      "选择启用 DP 的任务，查看初始化状态与 hook 点 before_aggregate",
+      "启动训练后观察 数据加载 → 本地训练 → 梯度裁剪 → 加噪 → 安全聚合 → 预算记账 六步的状态与调用次数逐轮增加",
+      "对未启用 DP 的任务，裁剪、加噪、记账显示「未启用」"
+    ],
+    "expected": "启用 DP 的任务启动后显示「DP 已在训练引擎中初始化」，裁剪 / 加噪调用次数 = 轮数 × 参与方数，聚合 / 记账 = 轮数；未启用时 DP 三步跳过",
+    "api": [
+      "GET /fl/jobs/{job_id}/dp/hooks",
+      "GET /fl/jobs/{job_id}"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-FW-02] DP 初始化：启用 DP 的任务启动后 hook 链在聚合前逐轮调用；未启用时 DP 步骤跳过"
+    ],
+    "impl": "任务 start 时若 dp_enabled 且 job.dp.enabled，训练引擎按当前实现初始化 DP 策略对象，并在每轮梯度聚合前依次调用裁剪、加噪（各参与方加 N(0, σ²/n)，聚合后总噪声 N(0, σ²)）与记账。hook 状态由任务状态与已完成轮次推出，调用次数按参与方数累计，页面每 2 秒检测任务轮次变化后刷新。",
+    "status": "done"
+  },
+  "DP-FW-03": {
+    "page": "#/dp/fw",
+    "ui": "框架集成 → 「框架内部 DP 指标」卡",
+    "steps": [
+      "选择已训练过的任务（或训练中任务）",
+      "查看平均裁剪比例、末轮噪声 L2 范数、末轮信噪比（dB）、噪声抽样数",
+      "查看每轮裁剪比例曲线、每轮信噪比曲线、噪声分布直方图（实际抽样 vs 理论密度）"
+    ],
+    "expected": "指标逐轮更新；直方图抽样分布与理论密度吻合；没有 DP 轮次时显示空态说明",
+    "api": [
+      "GET /fl/jobs/{job_id}/dp/metrics"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-FW-03] DP 指标：每轮裁剪比例、噪声 L2 范数、信噪比与噪声直方图"
+    ],
+    "impl": "裁剪比例 = P(‖Δw‖₂ > C)，更新范数按对数正态（中位数随轮次衰减）建模；噪声 L2 范数高斯 σ√d、拉普拉斯 b√(2d)，d 为模型参数维度；信噪比 = n·E[min(‖Δw‖₂, C)] / ‖n‖₂（信号取上界），dB = 10·log10(snr²)。直方图对末轮噪声坐标抽样 4000 个（种子 = 任务 ID + 轮次，结果稳定），返回频数与理论密度。",
+    "status": "done"
+  },
+  "DP-FW-04": {
+    "page": "#/dp/fw",
+    "ui": "框架集成 → 「联邦差分隐私端到端工作流」向导（5 步）",
+    "steps": [
+      "① 选择训练任务（待启动 / 失败 / 已终止可直接启动）",
+      "② 手动设置机制与参数并保存，或选用已编排策略并下发",
+      "③ 初始化检查：DP 启用、参数范围、实现可用、噪声定标、安全聚合、参与方 ≥ 2、任务可启动",
+      "④ 启动训练，自动跳转到 联邦学习 / 过程管控 并定位到该任务",
+      "⑤ 回到框架集成或点「前往效果评估」查看预算消耗"
+    ],
+    "expected": "检查全部通过才能进入启动；启动后过程管控显示该任务训练中；第 5 步与效果评估页显示同一任务的已消耗 ε；已完成任务在第 3 步提示需先重置",
+    "api": [
+      "GET /projects/{project_id}/fl/jobs",
+      "PUT /fl/jobs/{job_id}/dp",
+      "POST /dp/policies/{policy_id}/apply",
+      "POST /fl/jobs/{job_id}/dp/init-check",
+      "POST /fl/jobs/{job_id}/actions",
+      "GET /fl/jobs/{job_id}/dp/budget"
+    ],
+    "tests": [
+      "tests/dp.test.mjs: [DP-FW-04] 端到端工作流：配置 → 初始化检查 → 启动 → 预算记账；不可启动任务检查不通过"
+    ],
+    "impl": "向导把 DP 配置、初始化检查、训练启动与预算记账串成固定流程：配置写入 job.dp，init-check 逐项校验 7 个前置条件，start 后训练引擎在聚合前调用 DP hook，预算按任务会计方式逐轮累计；RDP 记账下跑满 T 轮恰好用完总预算。三个 DP 页面共用当前任务，跳回效果评估页即看到该任务。",
+    "status": "done"
+  }
+}

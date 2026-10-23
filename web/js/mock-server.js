@@ -284,7 +284,7 @@
       finished_at: null,
       failure_reason: null,
       metrics: [],
-      dp: defaultDp(),
+      dp: Object.assign(defaultDp(), { total_rounds: body.total_rounds || TOTAL_ROUNDS }),
       dp_audit: [],
       _timer: null
     };
@@ -485,6 +485,8 @@
         recorded_at: NOW()
       });
       dpPayload = { epsilon_spent: Number(perRound.toFixed(4)), epsilon_used: Number((perRound * r).toFixed(4)) };
+      // 差分隐私模块（js/mock/dp.js）可挂 db.dpAccount(job, round) 按所选会计方式（基础 / 高级 / RDP）给出本轮与累计 ε
+      if (typeof db.dpAccount === 'function') dpPayload = db.dpAccount(job, r) || dpPayload;
     }
 
     emit('/fl/jobs/' + job.job_id + '/events', 'round_completed', {
