@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>隐私计算平台 · 控制台</title>
+<link rel="stylesheet" href="styles.css?v=1.1">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ===== 顶栏 ===== -->
+  <header class="topbar">
+    <div class="brand">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#7FA9DB" stroke-width="1.7" aria-hidden="true">
+        <path d="M12 2.5 20 6v6.3c0 4.6-3.2 8.2-8 9.2-4.8-1-8-4.6-8-9.2V6z"></path>
+        <path d="M9 12.2l2.1 2.1L15.4 10"></path>
+      </svg>
+      <span class="brand-name" id="brandName">控制台</span>
+    </div>
+    <div class="topbar-field">
+      <label class="topbar-label" for="projSelect">当前项目</label>
+      <select class="topbar-select" id="projSelect"></select>
+    </div>
+    <span class="spacer"></span>
+    <span class="env-chip"><span class="env-dot"></span><span id="envLabel">—</span></span>
+    <span class="avatar" id="avatar">–</span>
+  </header>
+
+  <div class="body-row">
+
+    <!-- ===== 侧边导航 ===== -->
+    <nav class="sidebar">
+      <span class="sidebar-title">能力模块</span>
+
+      <button type="button" class="nav-item active" data-screen="fed">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="5" r="2.6"></circle><circle cx="5" cy="18" r="2.6"></circle><circle cx="19" cy="18" r="2.6"></circle><path d="M10.6 7.2 6.4 15.6M13.4 7.2l4.2 8.4M7.6 18h8.8"></path></svg>
+        <span>联邦学习</span>
+      </button>
+
+      <button type="button" class="nav-item" data-screen="he">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="1.7" aria-hidden="true"><rect x="4" y="10.5" width="16" height="10.5" rx="2"></rect><path d="M8 10.5V7.4A4 4 0 0 1 16 7.4v3.1M12 14.4v2.8"></path></svg>
+        <span>同态加密</span>
+      </button>
+
+      <button type="button" class="nav-item" data-screen="mpc">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><circle cx="4.6" cy="6.4" r="2.2"></circle><circle cx="19.4" cy="6.4" r="2.2"></circle><circle cx="12" cy="21" r="2.2"></circle><path d="M6.4 7.7 9.8 10.2M17.6 7.7 14.2 10.2M12 15v3.8"></path></svg>
+        <span>多方安全计算</span>
+      </button>
+
+      <button type="button" class="nav-item" data-screen="psi">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="1.7" aria-hidden="true"><circle cx="9" cy="12" r="6"></circle><circle cx="15" cy="12" r="6"></circle></svg>
+        <span>隐私求交</span>
+      </button>
+
+      <button type="button" class="nav-item" data-screen="dp">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke-width="1.7" aria-hidden="true"><path d="M3 15c2.2 0 2.2-6 4.4-6s2.2 6 4.4 6 2.2-6 4.4-6 2.2 6 4.4 6"></path><path d="M3 19.5h18"></path></svg>
+        <span>差分隐私</span>
+      </button>
+
+      <span class="spacer"></span>
+      <div class="sidebar-note">
+        <span class="sidebar-note-title">数据来源</span>
+        <span class="sidebar-note-body" id="sourceNote">—</span>
+      </div>
+    </nav>
+
+    <!-- ===== 主区域 ===== -->
+    <main class="main">
+
+      <!-- ========== 联邦学习 ========== -->
+      <section class="screen" id="screen-fed">
+        <div class="page-head">
+          <div class="page-head-text">
+            <span class="crumb">联邦学习 / 过程管控</span>
+            <h1>训练任务监控</h1>
+          </div>
+          <span class="status-badge" id="flBadge"><i></i><span id="flBadgeText">—</span></span>
+          <button type="button" class="btn-primary" id="flNewJob">＋ 新建训练任务</button>
+        </div>
+
+        <div class="card card-lg">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <span class="card-title">训练任务</span>
+            <span class="hint">点击任一任务切换下方监控视图；时序预测任务按 RMSE / MAE 评估</span>
+            <span class="spacer"></span>
+            <div class="field">
+              <label class="field-label" for="flTypeFilter">任务类型</label>
+              <select class="select select-sm" id="flTypeFilter"><option value="">全部</option></select>
+            </div>
+          </div>
+          <div class="table-head fl-job-grid">
+            <span>任务名称 / ID</span><span>类型</span><span>算法</span><span>聚合策略</span><span>轮次</span><span>状态</span><span>创建时间</span>
+          </div>
+          <div id="flJobs"></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex; align-items:center; gap:10px;">
+            <span class="card-label">当前任务</span>
+            <span class="cell-strong" id="flJobName">—</span>
+            <span class="tag" id="flJobType">—</span>
+            <span class="hint" id="flJobMeta">—</span>
+          </div>
+          <span class="card-label">任务状态机</span>
+          <div class="chip-row" id="flStates"></div>
+        </div>
+
+        <div class="card card-row" style="gap:10px; flex-wrap: wrap;">
+          <button type="button" class="btn-primary" id="flStart">启动训练</button>
+          <button type="button" class="btn" id="flPause">暂停</button>
+          <button type="button" class="btn" id="flResume">恢复</button>
+          <button type="button" class="btn btn-kill" id="flKill">强制终止</button>
+          <button type="button" class="btn" id="flReset">重置</button>
+
+          <span class="divider-v"></span>
+
+          <div class="field">
+            <label class="field-label" for="flAlgo">算法</label>
+            <select class="select" id="flAlgo"></select>
+          </div>
+          <div class="field">
+            <label class="field-label" for="flAgg">聚合策略</label>
+            <select class="select" id="flAgg">
+              <option value="ss">秘密共享聚合</option>
+              <option value="he">同态加密聚合</option>
+            </select>
+          </div>
+          <span class="spacer"></span>
+          <span class="hint" id="flAggNote">—</span>
+          <button type="button" class="btn-sm" id="flViewKey" hidden>查看公钥</button>
+        </div>
+
+        <div class="metric-grid">
+          <div class="metric">
+            <span class="metric-name">聚合轮次</span>
+            <span class="metric-value"><span id="flRound">0</span> <small>/ <span id="flTotalRounds">30</span></small></span>
+            <span class="bar"><i id="flProgress" style="width:0%"></i></span>
+          </div>
+          <div class="metric">
+            <span class="metric-name" id="flM1Name">全局 Loss</span>
+            <span class="metric-value" id="flLoss">—</span>
+            <span class="metric-sub">上一轮 <span id="flLossPrev">—</span> · <span id="flM1Better">越低越好</span></span>
+          </div>
+          <div class="metric">
+            <span class="metric-name" id="flM2Name">全局 Accuracy</span>
+            <span class="metric-value" id="flAcc">—</span>
+            <span class="metric-sub">上一轮 <span id="flAccPrev">—</span> · <span id="flM2Better">越高越好</span></span>
+          </div>
+          <div class="metric">
+            <span class="metric-name">预估剩余时间</span>
+            <span class="metric-value" id="flEta">—</span>
+            <span class="metric-sub">已用 <span id="flElapsed">0 秒</span> · 平滑滤波预测</span>
+          </div>
+        </div>
+
+        <div class="card card-lg" style="gap:14px;">
+          <div class="card-row" style="display:flex; align-items:center; gap:14px;">
+            <span class="card-title">收敛曲线</span>
+            <div class="field">
+              <label class="field-label" for="flView">显示</label>
+              <select class="select select-sm" id="flView">
+                <option value="global">仅全局</option>
+                <option value="nodes">各参与节点</option>
+              </select>
+            </div>
+            <span class="spacer"></span>
+            <div class="legend" id="flLegend"></div>
+            <button type="button" class="btn-link" id="flExport">导出 CSV</button>
+          </div>
+
+          <div class="chart-row">
+            <div class="chart-col">
+              <span class="hint" id="flC1Label">Loss（纵轴 0 – 1，横轴 轮次 1 – 30）</span>
+              <svg viewBox="0 0 548 184" width="100%" height="184" preserveAspectRatio="none" role="img" aria-label="各轮次损失值收敛曲线">
+                <rect x="0" y="0" width="548" height="184" fill="#FCFDFE"></rect>
+                <line x1="44" y1="14" x2="538" y2="14" stroke="#EDF0F4"></line>
+                <line x1="44" y1="50" x2="538" y2="50" stroke="#EDF0F4"></line>
+                <line x1="44" y1="86" x2="538" y2="86" stroke="#EDF0F4"></line>
+                <line x1="44" y1="122" x2="538" y2="122" stroke="#EDF0F4"></line>
+                <line x1="44" y1="158" x2="538" y2="158" stroke="#D8DEE6"></line>
+                <text id="flC1Max" x="36" y="18" text-anchor="end" font-size="10" fill="#8A93A2">1.0</text>
+                <text id="flC1Mid" x="36" y="90" text-anchor="end" font-size="10" fill="#8A93A2">0.5</text>
+                <text id="flC1Min" x="36" y="162" text-anchor="end" font-size="10" fill="#8A93A2">0</text>
+                <text x="44" y="176" font-size="10" fill="#8A93A2">1</text>
+                <text class="flXMax" x="538" y="176" text-anchor="end" font-size="10" fill="#8A93A2">30</text>
+                <g id="flLossLines"></g>
+              </svg>
+            </div>
+            <div class="chart-col">
+              <span class="hint" id="flC2Label">Accuracy（纵轴 0.5 – 1.0，横轴 轮次 1 – 30）</span>
+              <svg viewBox="0 0 548 184" width="100%" height="184" preserveAspectRatio="none" role="img" aria-label="各轮次准确率收敛曲线">
+                <rect x="0" y="0" width="548" height="184" fill="#FCFDFE"></rect>
+                <line x1="44" y1="14" x2="538" y2="14" stroke="#EDF0F4"></line>
+                <line x1="44" y1="50" x2="538" y2="50" stroke="#EDF0F4"></line>
+                <line x1="44" y1="86" x2="538" y2="86" stroke="#EDF0F4"></line>
+                <line x1="44" y1="122" x2="538" y2="122" stroke="#EDF0F4"></line>
+                <line x1="44" y1="158" x2="538" y2="158" stroke="#D8DEE6"></line>
+                <text id="flC2Max" x="36" y="18" text-anchor="end" font-size="10" fill="#8A93A2">1.0</text>
+                <text id="flC2Mid" x="36" y="90" text-anchor="end" font-size="10" fill="#8A93A2">0.75</text>
+                <text id="flC2Min" x="36" y="162" text-anchor="end" font-size="10" fill="#8A93A2">0.5</text>
+                <text x="44" y="176" font-size="10" fill="#8A93A2">1</text>
+                <text class="flXMax" x="538" y="176" text-anchor="end" font-size="10" fill="#8A93A2">30</text>
+                <g id="flAccLines"></g>
+              </svg>
+            </div>
+          </div>
+          <span class="hint-2" id="flChartHint">—</span>
+        </div>
+
+        <div class="card card-lg">
+          <div class="card-row" style="display:flex; align-items:center; gap:12px;">
+            <span class="card-title">参与方节点</span>
+            <span class="hint">各节点仅访问本地数据目录，传输内容不含原始数据</span>
+            <span class="spacer"></span>
+            <button type="button" class="btn-sm" id="flAddNode">添加节点</button>
+          </div>
+          <div class="table-head fl-node-grid">
+            <span>节点 ID</span><span>IP / 端口</span><span>角色</span><span>数据分区</span><span>本轮梯度上传</span><span>状态</span>
+          </div>
+          <div id="flNodes"></div>
+        </div>
+      </section>
+
+      <!-- ========== 同态加密 ========== -->
+      <section class="screen" id="screen-he" hidden>
+        <div class="page-head-text">
+          <span class="crumb">同态加密 / 应用集成</span>
+          <h1>加密 — 计算 — 解密 全流程</h1>
+        </div>
+
+        <div class="card">
+          <div class="he-steps" id="heSteps"></div>
+        </div>
+
+        <div class="he-split">
+          <div class="card card-xl he-config">
+            <span class="card-title">参数配置</span>
+
+            <div class="field-col">
+              <label for="heAlgo">加密算法</label>
+              <select class="select select-lg" id="heAlgo"></select>
+              <span class="hint">底层库：<span id="heLib">—</span></span>
+            </div>
+
+            <div style="display:flex; gap:14px;">
+              <div class="field-col" style="flex-grow:1;">
+                <label for="heA">明文 A</label>
+                <input class="input" id="heA" type="text" value="128.75">
+              </div>
+              <div class="field-col" style="flex-grow:1;">
+                <label for="heB">明文 B</label>
+                <input class="input" id="heB" type="text" value="64.25">
+              </div>
+            </div>
+
+            <div class="field-col">
+              <label for="heOp">密态运算</label>
+              <select class="select select-lg" id="heOp">
+                <option value="add">密文加法　A ⊕ B</option>
+                <option value="mul" id="heMulOpt">密文乘法　A ⊗ B</option>
+              </select>
+            </div>
+
+            <div class="field-col">
+              <label for="hePrec">浮点数转换精度（保留小数位）</label>
+              <div class="he-prec-row">
+                <input id="hePrec" type="range" min="0" max="8" step="1" value="4" style="flex-grow:1;">
+                <span class="he-prec-val" id="hePrecVal">4</span>
+              </div>
+              <span class="hint" id="heConvNote">—</span>
+            </div>
+
+            <div class="divider-h"></div>
+
+            <div class="he-btn-row">
+              <button type="button" class="he-btn" id="heKeygen">① 生成密钥对</button>
+              <button type="button" class="he-btn" id="heEnc">② 加密</button>
+              <button type="button" class="he-btn" id="heCalc">③ 密态运算</button>
+              <button type="button" class="he-btn" id="heDec">④ 解密</button>
+              <button type="button" class="btn" id="heReset" style="height:40px;">重置</button>
+            </div>
+
+            <div class="banner-note">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6E7787" stroke-width="1.7" style="flex-shrink:0; margin-top:2px;" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 7.6v.6"></path></svg>
+              <span>密钥生命周期由平台自动管理（生成、分发、存储、销毁、轮换）。私钥不出平台密钥服务，接口只传 key_id。</span>
+            </div>
+          </div>
+
+          <div class="card card-xl he-panel">
+            <div style="display:flex; align-items:center; gap:12px;">
+              <span class="card-title">执行面板</span>
+              <span class="spacer"></span>
+              <span class="hint">累计耗时 <span id="heTotal">—</span></span>
+            </div>
+            <div id="heLogs"></div>
+            <div class="he-empty" id="heEmpty">
+              <span style="font-size:14px; color:var(--muted);">尚未执行</span>
+              <span class="hint-2">从左侧「① 生成密钥对」开始</span>
+            </div>
+            <div class="banner banner-ok" id="heVerify" hidden style="flex-direction:column; align-items:flex-start; gap:6px;">
+              <span style="font-size:13px; font-weight:700; color:#1D5C42;">校验通过</span>
+              <span id="heVerifyText"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 多方安全计算 ========== -->
+      <section class="screen" id="screen-mpc" hidden>
+        <div class="page-head">
+          <div class="page-head-text">
+            <span class="crumb">多方安全计算 / 运维监控</span>
+            <h1>协议执行监控</h1>
+          </div>
+          <div class="field">
+            <label class="field-label" for="mpcProto">协议</label>
+            <select class="select select-lg" id="mpcProto">
+              <option value="ss">秘密共享（安全求积、求均值）</option>
+              <option value="gc">混淆电路（安全比较、逻辑运算）</option>
+              <option value="ot">不经意传输扩展（向量 OT）</option>
+            </select>
+          </div>
+          <button type="button" class="btn-primary" id="mpcRun">开始执行</button>
+          <button type="button" class="btn" id="mpcReset">重置</button>
+        </div>
+
+        <div class="card card-row mpc-est">
+          <span style="font-size:13px; font-weight:700; color:var(--ink);">性能预估</span>
+          <span>参与方 <strong id="mpcPartyCount">—</strong> 方</span>
+          <span>数据规模 <strong id="mpcRows">—</strong></span>
+          <span class="divider-v"></span>
+          <span>预估计算耗时 <strong class="hl" id="mpcEstCalc">—</strong></span>
+          <span>预估通信耗时 <strong class="hl" id="mpcEstComm">—</strong></span>
+          <span class="spacer"></span>
+          <span class="hint" id="mpcOpNote">—</span>
+        </div>
+
+        <div class="banner banner-err" id="mpcAlarm" hidden>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#A33B21" stroke-width="1.8" style="flex-shrink:0;" aria-hidden="true"><path d="M12 4.5 21 20H3z"></path><path d="M12 10.5v4M12 17.2v.5"></path></svg>
+          <span class="spacer" id="mpcAlarmText" style="flex-grow:1;"></span>
+          <button type="button" class="btn-sm" id="mpcLocate" style="color:var(--danger); border-color:#E4B4A7;">定位节点</button>
+        </div>
+
+        <div class="party-grid" id="mpcParties"></div>
+
+        <div class="card card-lg">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <span class="card-title">历史 MPC 任务</span>
+            <span class="spacer"></span>
+            <button type="button" class="btn-link" id="mpcExport">导出报表</button>
+          </div>
+          <div class="table-head mpc-history-grid">
+            <span>任务 ID</span><span>协议 / 算子</span><span>参与方</span><span>总通信量</span><span>总耗时</span><span>结束时间</span>
+          </div>
+          <div id="mpcHistory"></div>
+        </div>
+      </section>
+
+      <!-- ========== 隐私求交 ========== -->
+      <section class="screen" id="screen-psi" hidden>
+        <div class="page-head-text">
+          <span class="crumb">隐私求交 / 平台集成</span>
+          <h1>数据接入 → 安全求交 → 特征对齐 → 联合训练</h1>
+        </div>
+
+        <div class="tabs" role="tablist">
+          <button type="button" class="tab on" id="psiTabData" role="tab" data-tab="data">① 数据接入</button>
+          <button type="button" class="tab" id="psiTabPipe" role="tab" data-tab="pipe">② 求交流水线</button>
+        </div>
+
+        <!-- 数据接入 -->
+        <div id="psiPanelData" style="display:flex; flex-direction:column; gap:16px;">
+          <div class="card card-lg">
+            <div style="display:flex; align-items:center; gap:12px;">
+              <span class="card-title">已接入数据集</span>
+              <span class="hint">数据保留在各参与方本地，平台只登记元数据与 schema</span>
+              <span class="spacer"></span>
+              <div class="field">
+                <label class="field-label" for="dsPartyFilter">参与方</label>
+                <select class="select select-sm" id="dsPartyFilter"><option value="">全部</option></select>
+              </div>
+              <button type="button" class="btn-primary" id="dsNew">＋ 接入数据</button>
+            </div>
+            <div class="table-head ds-grid">
+              <span>数据集 / ID</span><span>参与方</span><span>来源</span><span>来源地址</span><span>行数</span><span>求交键 / 时间列</span><span>状态</span><span>操作</span>
+            </div>
+            <div id="dsList"></div>
+          </div>
+          <div class="card card-lg" id="dsDetail" hidden>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <span class="card-title" id="dsDetailTitle">—</span>
+              <span class="hint" id="dsDetailMeta">—</span>
+              <span class="spacer"></span>
+              <button type="button" class="btn-sm" id="dsDetailClose">收起</button>
+            </div>
+            <span class="section-label">字段（<span id="dsColCount">0</span>）</span>
+            <div class="cols-wrap" id="dsCols"></div>
+            <span class="section-label">脱敏样例（前 3 行 · 前 6 列）</span>
+            <div style="overflow-x:auto;"><table class="preview-table" id="dsPreview"></table></div>
+          </div>
+        </div>
+
+        <div class="psi-split" id="psiPanelPipe" hidden>
+          <div class="card card-xl psi-config">
+            <span class="card-title">PSI 协议</span>
+            <div style="display:flex; flex-direction:column; gap:8px;" id="psiProtos"></div>
+
+            <div class="divider-h"></div>
+
+            <div style="display:flex; align-items:center; gap:10px;">
+              <span style="font-size:14px; font-weight:700; flex-grow:1;">参数调优</span>
+              <span class="hint">随协议切换</span>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:14px;" id="psiParams"></div>
+
+            <div style="display:flex; gap:10px;">
+              <button type="button" class="btn-link" id="psiSave">保存为模板</button>
+              <button type="button" class="btn-sm" id="psiLoad">加载模板</button>
+            </div>
+            <span class="hint" id="psiTplNote">尚未保存模板</span>
+          </div>
+
+          <div class="psi-pipe">
+            <div class="card card-lg card-row" style="padding:18px 20px; gap:14px;">
+              <div style="flex-grow:1; display:flex; flex-direction:column; gap:4px;">
+                <span class="card-title">一键流水线</span>
+                <span class="hint" id="psiRunNote">—</span>
+              </div>
+              <button type="button" class="btn-primary" id="psiRun" style="height:42px; padding:0 22px; font-size:15px;">一键启动</button>
+              <button type="button" class="btn" id="psiPipeReset" style="height:42px;">重置</button>
+            </div>
+
+            <div class="card card-lg" style="gap:12px;">
+              <div style="display:flex; align-items:center; gap:12px;">
+                <span class="card-title">求交数据</span>
+                <span class="spacer"></span>
+                <button type="button" class="btn-link" id="psiToData">去接入数据</button>
+              </div>
+              <div class="psi-party">
+                <span class="field-label">参与方 A</span>
+                <select class="select select-lg" id="psiDsA" aria-label="参与方 A 数据集"></select>
+                <select class="select select-lg" id="psiKeyA" aria-label="参与方 A 求交键"></select>
+              </div>
+              <div class="psi-party">
+                <span class="field-label">参与方 B</span>
+                <select class="select select-lg" id="psiDsB" aria-label="参与方 B 数据集"></select>
+                <select class="select select-lg" id="psiKeyB" aria-label="参与方 B 求交键"></select>
+              </div>
+              <span class="hint" id="psiDsNote">—</span>
+            </div>
+
+            <div id="psiStages"></div>
+
+            <div class="banner banner-ok" id="psiDone" hidden>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#1D5C42" stroke-width="2" style="flex-shrink:0;" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>
+              <span style="flex-grow:1;" id="psiDoneText"></span>
+              <button type="button" class="btn-sm" id="psiGoFed" style="color:var(--success); border-color:#A9D2BE; font-weight:600;">前往训练</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ========== 差分隐私 ========== -->
+      <section class="screen" id="screen-dp" hidden>
+        <div class="page-head-text">
+          <span class="crumb">差分隐私 / 效果评估</span>
+          <h1>隐私预算与模型效用</h1>
+        </div>
+
+        <div class="dp-split">
+          <div class="card card-xl dp-config">
+            <span class="card-title">DP 机制配置</span>
+
+            <div class="dp-mech-row">
+              <button type="button" class="dp-mech" id="dpGauss">高斯机制</button>
+              <button type="button" class="dp-mech" id="dpLap">拉普拉斯机制</button>
+            </div>
+
+            <div class="dp-slider">
+              <div class="dp-slider-head">
+                <label for="dpEps">隐私预算 ε（总）</label>
+                <b id="dpEpsVal">2.00</b>
+              </div>
+              <input id="dpEps" type="range" min="0.2" max="10" step="0.1" value="2">
+              <span class="hint">ε 越小隐私保护越强、模型效用越低</span>
+            </div>
+
+            <div class="dp-slider">
+              <div class="dp-slider-head">
+                <label for="dpClip">梯度裁剪阈值 C</label>
+                <b id="dpClipVal">1.0</b>
+              </div>
+              <input id="dpClip" type="range" min="0.2" max="4" step="0.1" value="1">
+            </div>
+
+            <div class="dp-slider">
+              <div class="dp-slider-head">
+                <label>已完成迭代轮次</label>
+                <b><span id="dpRounds">0</span> / <span id="dpTotalRounds">30</span></b>
+              </div>
+              <span class="bar bar-6"><i id="dpRoundsBar" style="width:0%"></i></span>
+              <span class="hint">取自联邦训练任务实际进度（只读）</span>
+            </div>
+
+            <div class="field-col" id="dpDeltaWrap">
+              <label for="dpDelta">松弛参数 δ</label>
+              <select class="select" id="dpDelta">
+                <option value="1e-4">1e-4</option>
+                <option value="1e-5" selected>1e-5</option>
+                <option value="1e-6">1e-6</option>
+              </select>
+            </div>
+
+            <div class="dp-noise">
+              <span class="dp-noise-title">当前噪声参数</span>
+              <span class="dp-noise-text" id="dpNoiseText">—</span>
+              <span class="dp-noise-formula" id="dpFormula">—</span>
+            </div>
+          </div>
+
+          <div class="dp-right">
+            <div class="metric-grid-3">
+              <div class="metric">
+                <span class="metric-name">已消耗隐私预算</span>
+                <span class="metric-value">ε = <span id="dpUsed">0.000</span></span>
+                <span class="bar"><i id="dpUsedBar" style="width:0%; background:#9A6516;"></i></span>
+                <span class="metric-sub">占总预算 <span id="dpUsedPct">0</span>%</span>
+              </div>
+              <div class="metric">
+                <span class="metric-name">模型效用（Accuracy）</span>
+                <span class="metric-value" id="dpUtil">—</span>
+                <span class="metric-sub">无噪声基线 <span id="dpBaseline">—</span> · 损失 <span id="dpUtilLoss">—</span></span>
+              </div>
+              <div class="metric">
+                <span class="metric-name">每轮 ε 消耗</span>
+                <span class="metric-value" id="dpPerRound">—</span>
+                <span class="metric-sub"><span id="dpMechName">—</span> · 裁剪阈值 <span id="dpClipEcho">—</span></span>
+              </div>
+            </div>
+
+            <div class="card card-lg">
+              <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+                <span class="card-title">趋势曲线</span>
+                <span class="legend-item"><i style="background:#9A6516;"></i>累计 ε 消耗</span>
+                <span class="legend-item"><i style="background:#1D4E89;"></i>模型效用</span>
+                <span class="spacer"></span>
+                <span class="hint">两条曲线按各自量纲归一化绘制</span>
+              </div>
+              <svg viewBox="0 0 820 188" width="100%" height="188" preserveAspectRatio="none" role="img" aria-label="隐私预算消耗与模型效用随迭代轮次的趋势">
+                <rect x="0" y="0" width="820" height="188" fill="#FCFDFE"></rect>
+                <line x1="44" y1="16" x2="810" y2="16" stroke="#EDF0F4"></line>
+                <line x1="44" y1="56" x2="810" y2="56" stroke="#EDF0F4"></line>
+                <line x1="44" y1="96" x2="810" y2="96" stroke="#EDF0F4"></line>
+                <line x1="44" y1="136" x2="810" y2="136" stroke="#EDF0F4"></line>
+                <line x1="44" y1="162" x2="810" y2="162" stroke="#D8DEE6"></line>
+                <text x="36" y="20" text-anchor="end" font-size="10" fill="#8A93A2">高</text>
+                <text x="36" y="166" text-anchor="end" font-size="10" fill="#8A93A2">低</text>
+                <text x="44" y="180" font-size="10" fill="#8A93A2">轮次 1</text>
+                <text x="810" y="180" text-anchor="end" font-size="10" fill="#8A93A2">30</text>
+                <polyline id="dpEpsLine" fill="none" stroke="#9A6516" stroke-width="2.2" stroke-linejoin="round"></polyline>
+                <polyline id="dpUtilLine" fill="none" stroke="#1D4E89" stroke-width="2.2" stroke-linejoin="round"></polyline>
+                <line id="dpCursor" y1="16" y2="162" stroke="#14171C" stroke-width="1" stroke-dasharray="3 3"></line>
+              </svg>
+            </div>
+
+            <div class="dp-bottom">
+              <div class="card card-lg" style="flex-grow:1; min-width:0;">
+                <div style="display:flex; align-items:center; gap:12px;">
+                  <span class="card-title">隐私审计记录</span>
+                  <span class="spacer"></span>
+                  <span class="hint">最近 5 轮</span>
+                </div>
+                <div class="table-head dp-audit-grid">
+                  <span>轮次</span><span>ε 消耗</span><span>噪声添加详情</span><span>裁剪阈值</span>
+                </div>
+                <div id="dpAudit"></div>
+              </div>
+
+              <div class="card card-lg dp-hist-card">
+                <span class="card-title">噪声分布直方图</span>
+                <div class="dp-hist" id="dpHist"></div>
+                <div class="dp-hist-axis"><span>−3σ</span><span>0</span><span>+3σ</span></div>
+                <span class="hint" id="dpHistNote">—</span>
+              </div>
+            </div>
+
+            <div class="card card-row" style="padding:14px 18px; gap:12px;">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0E6F6C" stroke-width="1.8" style="flex-shrink:0;" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>
+              <span style="flex-grow:1; font-size:13px; color:var(--muted-3);">已基于隐语原生 DP 模块封装，接口保留可替换性；任务启用 DP 后在梯度聚合前自动调用。</span>
+              <span class="dp-enabled" id="dpEnabledChip">DP 已启用</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toasts"></div>
+
+<script src="js/config.js?v=1.1"></script>
+<script src="js/mock-server.js?v=1.1"></script>
+<script src="js/api.js?v=1.1"></script>
+<script src="js/ui.js?v=1.1"></script>
+<script src="js/fl.js?v=1.1"></script>
+<script src="js/he.js?v=1.1"></script>
+<script src="js/mpc.js?v=1.1"></script>
+<script src="js/psi.js?v=1.1"></script>
+<script src="js/dp.js?v=1.1"></script>
+<script src="js/app.js?v=1.1"></script>
+</body>
+</html>
