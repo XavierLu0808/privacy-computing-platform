@@ -1,6 +1,6 @@
 # 隐私计算平台控制台 · 后端接口文档
 
-> 版本：v1.2（草案） · 日期：2026-10-23
+> 版本：v1.2（草案） · 日期：2026-10-24
 > v1.2 变更：并入各模块的接口增补：项目与节点、数据隔离、算法库与参数模板、过程管控、聚合与安全、技术指标评估、HE 算法管理与密钥生命周期、MPC 协议管理与运维监控、PSI 算法配置与自适应路由、DP 隐私机制与框架集成。接口总数由 52 个增至 129 个（v1.2 新增 77 个）；逐条变更见 [附录 A](#附录-a--v12-变更说明)，全量接口见 [10. 接口总表](#10-接口总表)
 > v1.1 变更：联邦学习新增任务类型（分类 / 时序预测）、任务列表与新建任务；隐私求交新增数据接入（数据集登记）；见各节「v1.1」标注
 > 依据：前端设计稿 `隐私计算平台控制台演示 – 控制台演示 · 五大模块（可操作）.html`
@@ -311,12 +311,12 @@ PATCH 字段同 1.5，均可选，只校验传入字段；`base_algorithm` 与 `
 GET /projects/{project_id}/config/export
 ```
 
-下载 `fl_project_{project_id}_config.json`：
+下载 `fl_project_{project_id}_config.json`。文件内时间统一写成 UTC+8（`k.fmtLocal`，形如 `2026-10-23 22:10:05 +08:00`），并带 `"timezone": "UTC+8"`：
 
 ```json
 {
   "schema_version": "fl-project-config/1",
-  "exported_at": "2026-10-23T07:02:00+08:00", "exported_by": "Rui",
+  "timezone": "UTC+8", "exported_at": "2026-10-23 22:10:05 +08:00", "exported_by": "Rui",
   "project": { "project_id": "p1", "name": "稀土氧化物价格联合预测 · 2026Q4", "type": "production", "description": "…", "created_at": "…" },
   "training": { "base_algorithm": "lstm", "model_version": "1.1.0", "total_rounds": 30, "target": { "metric": "rmse", "op": "<=", "value": 0.12 }, "aggregation_default": null },
   "nodes": [{ "node_id": "node-shanghai-01", "ip": "10.22.6.14", "port": 8471, "role": "trainer", "data_partition": "part-A", "data_dir": "/data/fl/p1/part-a" }],
@@ -766,7 +766,9 @@ Query：
 | `from_round > to_round`；`start_time` 晚于 `end_time` | 40003 |
 | 任务不存在 | 40400 |
 
-页面曲线用 ECharts 5.5.1（`web/vendor/echarts.min.js`）绘制：两张折线图分别对应 `metrics_spec[0]` / `[1]`，横轴轮次 1 – `total_rounds`，纵轴 `y_min` – `y_max`，tooltip 显示「第 N 轮」与各曲线数值，每轮推送实时追加，容器尺寸变化时 resize，切换项目时 dispose。页面曲线不画聚合节点：它不持有训练数据。接口与 CSV 仍包含聚合节点的记录，与内核一致。
+错误提示使用界面上的中文字段名（开始时间、结束时间、起始轮次、结束轮次、曲线范围），例「开始时间不能晚于结束时间」。
+
+页面曲线用 ECharts 5.5.1（`web/vendor/echarts.min.js`）绘制：两张折线图分别对应 `metrics_spec[0]` / `[1]`，横轴轮次 1 – `total_rounds`，纵轴 `y_min` – `y_max`，tooltip 显示「第 N 轮」与各曲线数值，每轮推送实时追加，容器尺寸变化时 resize，切换项目时 dispose。聚合节点不持有训练数据，内核每轮只为训练节点生成本地指标；`scope = nodes` 返回全局 + 各训练节点，历史查询与 CSV 同样只含训练节点。切换「显示」时页面先收起 tooltip 再整体替换曲线，避免 tooltip 引用已删除的序列。
 
 ### 2.8 查看聚合公钥
 
@@ -844,7 +846,7 @@ GET /projects/{project_id}/fl/metrics/export?start_time=…&end_time=…
 
 #### v1.2 扩展 · 时间范围生效（FL-PROC-08）
 
-单任务导出 `GET /fl/jobs/{job_id}/metrics/export` 的列仍为 `job_id,round,series,<指标键>,recorded_at`，默认 `scope = nodes`，`start_time` / `end_time` 按写入时间过滤，时间非法或开始晚于结束时导出失败并给出原因。
+单任务导出 `GET /fl/jobs/{job_id}/metrics/export` 的列为 `job_id,round,series,<指标键>,recorded_at(UTC+8)`，默认 `scope = nodes`，`start_time` / `end_time` 按写入时间过滤，时间非法或开始晚于结束时导出失败并给出原因。
 
 ### 2.10 获取参与方节点（任务维度）
 
@@ -936,7 +938,7 @@ DELETE /projects/{project_id}/nodes/{node_id}
 | 情形 | code |
 |---|---|
 | 节点 ID 不是小写字母 / 数字 / `-`；角色不是 `trainer` / `aggregator`；训练节点缺数据分区；缺 IP 或端口 | 40000 |
-| IP 不是合法 IPv4 / IPv6；数据分区含非法字符；`data_dir` 不是绝对路径 | 40002 |
+| IP 不是合法 IPv4 / IPv6；IP 为特殊地址（0.0.0.0、255.255.255.255、0.0.0.0/8、回环 127.0.0.0/8 与 ::1、组播 224.0.0.0/4 与 ff00::/8、保留 240.0.0.0/4、按 /24 子网的网络地址 x.x.x.0 与广播地址 x.x.x.255、::），message 说明原因；数据分区含非法字符；`data_dir` 不是绝对路径 | 40002 |
 | 端口不在 1–65535；节点 ID 超过 40 个字符 | 40003 |
 | 节点 ID 在项目内重复 | 40902 |
 | 连通性检查失败（mock：`192.0.2.0/24` 文档保留网段视为不可达） | 42201 |
@@ -1072,7 +1074,7 @@ POST /projects/{project_id}/fl/aggregation/estimate
 |---|---|---|
 | `strategy` | string | |
 | `client_count` | int | n（取 `ss.parties`） |
-| `model` / `model_params` | string / int | 估算用模型：2 层 LSTM（128 隐藏单元，输入 9 维，步长 7），P = 203,143 |
+| `model` / `model_params` | string / int | 估算用模型：2 层 LSTM（128 隐藏单元，输入 9 维，步长 7），P 取内核参数量表 `MODEL_PARAMS.lstm` = 203,143 |
 | `index_bits` | int | 单个下标编码位数 ⌈log₂P⌉ = 18 |
 | `rho` / `kept` | number / int | 保留比例 ρ、保留梯度数 k = ⌈ρ × P⌉ |
 | `upload_bytes_per_client` | number | 每客户端每轮上行字节 |
@@ -1138,7 +1140,9 @@ GET /projects/{project_id}/fl/aggregation/keys
 GET /projects/{project_id}/fl/aggregation/public-key
 ```
 
-返回当前有效密钥的公钥详情。错误码：`40402` 尚未生成密钥对；`40400` 项目不存在。
+返回当前有效密钥的公钥详情。错误码：`40402` 项目当前没有在用的聚合密钥（例如在同态加密页销毁了在用密钥）；`40400` 项目不存在。
+
+`GET …/aggregation`、`…/keys`、`…/public-key`、`PUT …/aggregation`、`POST …/reset` 在读取项目密钥前先确保同态模块已为该项目播种聚合密钥，因此首次进入即显示同态模块在用的聚合密钥，初始状态、密钥列表与过程管控口径一致。`GET /fl/jobs/{job_id}/he-public-key` 不触发播种，保证与同一时刻任务详情的 `he_public_key_id` 一致。
 
 与同态加密模块共用一套密钥（约定见 [3.13.5](#3135-外部模块写入的密钥)）：
 
@@ -1150,6 +1154,8 @@ GET /projects/{project_id}/fl/aggregation/public-key
 
 验收编号：FL-EVAL-01、FL-EVAL-02、FL-EVAL-03（合同 T-01、T-02）。对应：技术指标验证页三张评估卡、指标总览、历史评估记录。
 
+页面顶部固定显示数据来源说明：「当前数值来自原型内置评估引擎的仿真结果」。
+
 评估是异步长任务：创建后约 3–4 秒完成（mock 每 400 ms 推进一步），进度用 SSE 推送，也可轮询详情。同一项目同一类评估同时只能有一个在运行。结果确定可复现：同项目、同配置结果完全一致。
 
 #### 2.13.1 评估类型与配置
@@ -1157,7 +1163,7 @@ GET /projects/{project_id}/fl/aggregation/public-key
 | `kind` | 验收编号 | 配置字段（范围，默认） |
 |---|---|---|
 | `gradient_attack` | FL-EVAL-01 | `sample_count` 攻击样本数（20–1000，200）；`max_iterations` 攻击迭代次数（50–2000，300）；`target_client` 被攻击客户端（`all` / `party-a` / `party-b` / `party-c`，`all`）；`seed`（0–99999，2026） |
-| `compression` | FL-EVAL-02 | `rounds` 训练轮次（5–100，20）；`topk_ratio`（0.001–1，取项目已保存配置）；`quant_bits`（4 / 8 / 16 / 32，取项目配置）；`error_feedback`（bool，取项目配置）；`field_bits`（`quant_bits` + 2 至 64，取项目配置） |
+| `compression` | FL-EVAL-02 | `rounds` 训练轮次（5–100，20）；`topk_ratio`（0.001–1，取项目已保存配置）；`quant_bits`（4 / 8 / 16 / 32，取项目配置）；`error_feedback`（bool，取项目配置）；`field_bits`（max(16, `quant_bits` + ⌈log₂n⌉) 至 64，n = 3 客户端，与 2.12.1 同一约束；取项目配置） |
 | `accuracy` | FL-EVAL-03 | `rounds` 联邦轮次（10–200，50）；`local_epochs` 本地训练轮数（1–5，1）；`partition`（`iid` / `dirichlet`，`iid`）；`seed`（0–99999，2026） |
 
 ```
@@ -1251,7 +1257,7 @@ GET /fl/evaluations/{eval_id}/events
 GET /fl/evaluations/{eval_id}/export
 ```
 
-返回 CSV（UTF-8 BOM），文件名 `{eval_id}_{kind}_report.csv`。内容：评估 ID、评估项、项目、起止时间、配置 JSON，以及该类评估的结果表（攻击：组别 × 攻击方法的样本数 / 成功数 / 成功率 / 平均 MSE；压缩比：逐轮通信量 MB 与平均压缩比、RMSE / MAE 对比；精度：两数据集的集中式 / 联邦 Accuracy、下降百分点、相对下降），末尾写合同要求与判定。评估未完成或不存在时不可导出。
+返回 CSV（UTF-8 BOM），文件名 `{eval_id}_{kind}_report.csv`。内容：评估 ID、评估项、项目、起止时间（列名「开始时间（UTC+8）」「完成时间（UTC+8）」，按内核 `fmtLocal` 写成 `2026-10-23 22:10:05 +08:00`）、配置 JSON，以及该类评估的结果表（攻击：组别 × 攻击方法的样本数 / 成功数 / 成功率 / 平均 MSE；压缩比：逐轮通信量 MB 与平均压缩比、RMSE / MAE 对比；精度：两数据集的集中式 / 联邦 Accuracy、下降百分点、相对下降），末尾写合同要求与判定。评估未完成或不存在时不可导出。
 
 ### 2.14 数据隔离（v1.2）
 
@@ -1269,7 +1275,7 @@ GET /projects/{project_id}/isolation
   "data_dirs": [{ "node_id": "node-shanghai-01", "data_partition": "part-A", "data_dir": "/data/fl/p1/part-a" }],
   "matrix": [{ "node_id": "node-shanghai-01", "role": "trainer", "cells": [{ "owner_node_id": "node-shanghai-01", "data_dir": "/data/fl/p1/part-a", "allowed": true }] }],
   "payload_allowed": [{ "field": "weights_delta", "kind": "gradient", "label": "模型参数增量 / 梯度…" }],
-  "payload_forbidden": [{ "field": "raw_rows", "label": "原始样本行（任何特征明细）" }],
+  "payload_forbidden": [{ "field": "raw_rows", "label": "原始样本行（任何特征明细）" }, { "field": "id_columns", "label": "求交键与企业标识（credit_code_hash、legal_person_hash 等）" }],
   "checks": []
 }
 ```
@@ -1311,7 +1317,7 @@ POST /projects/{project_id}/isolation/checks
 }
 ```
 
-`total_bytes` 取自内核每轮记录的 `upload_kb × 1024`，梯度元素数按 float32 每个 4 字节换算。
+梯度 / 全局参数的元素数 `elements` 对同一任务的所有节点相同，等于 `kept_params = ⌈ρ × P⌉`：`P = k.MODEL_PARAMS[algorithm]`（例 LSTM 203,143、XGBoost 2,176，记在 `model_params`），`ρ` 为「聚合与安全」页项目配置 `k.db.fla[project_id].sparsification` 的 Top-k 保留比例（未开启为 1，记在 `sparsity_keep_ratio`；未保存配置时取该页默认值，`config_source = default`）。`total_bytes` 是消息明文（float32）大小；`wire_bytes` 与聚合与安全页同一套公式计算：秘密共享上行 = k × 有限域位数，同态上行 = ⌈k / 批打包⌉ × 单条密文位数（Paillier 2 × 密钥长度，CKKS 2 × N × 系数模数位数），再加样本数与本地指标；聚合节点下行 =（k × 32 + 稀疏化时的下标 min(k × ⌈log₂P⌉, P) 位）× 训练节点数（`recipients`）。`encoding` / `downlink_encoding` 给出编码说明。聚合节点开启稀疏化时多一个 `topk_indices` 字段。秘密共享把 float32 定点量化到有限域，因此 16 bit 有限域时链路量约为明文的一半，属于编码压缩而非丢弃数据；同态且不稀疏化时链路量大于明文。
 
 | 情形 | code |
 |---|---|
@@ -1379,6 +1385,8 @@ POST /fl/algorithms
 | 版本号格式错误、schema 不是合法 JSON 或不符合子集规则 | 40002 |
 | 名称超长、新版本号不大于已有最高版本 | 40003 |
 | 与内置算法同名、同名同版本已存在 | 40902 |
+
+schema 不是合法 JSON 时，message 给出中文原因与出错位置（行列号从 1 开始），不含浏览器英文原文，例「参数 schema 不是合法 JSON：第 1 行第 19 列，属性名必须用英文双引号包裹」；其他原因有「内容不完整，缺少结尾的括号或引号」「此处缺少逗号或右花括号 }」「字符串缺少结尾的双引号」等。
 
 #### 2.15.3 自定义模型上传与结构校验
 
@@ -1506,8 +1514,11 @@ GET /fl/metrics?project_id=&job_id=&start_time=&end_time=&scope=global|nodes&pag
 下载 `GET /projects/{project_id}/fl/metrics/export?…` 或 `GET /fl/metrics/export?project_id=&job_id=&…`，CSV 列固定为：
 
 ```csv
-project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at
+project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at(UTC+8)
+p1,fl_p1_002,classification,1,global,0.9265,0.6076,,,2026-10-23 22:10:05 +08:00
 ```
+
+导出文件的时间统一用 `k.fmtLocal` 写成 UTC+8，列名注明 `(UTC+8)`；接口 JSON 中的时间仍为 ISO 8601。
 
 任务类型不适用的指标留空。错误码同 2.7 的 v1.2 扩展，另有项目或任务不存在 40400。下载接口无法返回错误包（mock 抛出带原因的错误），页面导出前先用 `GET /fl/metrics` 校验条件和条数。
 
@@ -1775,6 +1786,10 @@ POST /he/decrypt
 }
 ```
 
+#### v1.2 增补 · 四步流程的耗时口径与日志（HE-APP-01 / 05）
+
+`POST /he/encrypt`、`POST /he/evaluate`、`POST /he/decrypt` 由 mock 扩展以 routeFirst 接管，请求与响应字段不变；耗时与 `size_kb` 改用 3.11 的统一模型（CKKS 加密单条 384 KB，密文乘法结果 256 KB）。会话密钥（`purpose = session`）从生成开始逐步记账，解密完成后写入性能日志（3.16，来源 `session`「全流程配置」）；`session_summary.total_elapsed_ms / total_ciphertext_kb` 为本次会话实际记账之和，`logged = true`、`log_source = 'session'`。重置销毁密钥后日志保留。
+
 ### 3.6 重置 / 销毁密钥
 
 对应：「重置」按钮。切换算法、修改明文、修改精度时，前端也会回到第 0 步，建议同时调用。
@@ -1925,7 +1940,7 @@ POST /he/verify
 
 - 整数方案（Paillier / BGV / TFHE）：加法两边同缩放 10^p；乘法各操作数独立缩放（整数操作数不放大），结果缩放为两者指数之和；整数运算用 BigInt 精确计算后解码。任一编码值或结果超出明文空间返回 `40003`。
 - CKKS：缩放因子 Δ = 2^40，解密值 = 明文结果 + 确定性仿真噪声，加法噪声幅度 (1 + |结果|) · 2^-28，乘法（含重缩放）幅度 (1 + |结果|) · 2^-22，同输入同输出。
-- 耗时与密文大小按方案基准折算：CKKS / BGV 一条密文打包整组（4096 / 8192 槽位），Paillier / TFHE 每个数一条。
+- 耗时与密文大小按统一模型（与 3.12 参数寻优、四步流程共用，1 KB = 1024 字节）：CKKS / BGV 一条密文打包整组（4096 / 8192 槽位），Paillier / TFHE 每个数一条。单条密文：CKKS 2 × N × L × 8 字节，N = 8192、L = 3 → 384 KB，乘法重缩放后 L = 2 → 256 KB；BGV N = 8192、L = 4（SEAL 默认 [43, 43, 44, 44, 44] 去掉特殊素数）→ 512 KB；Paillier 2 × 2048 bit = 0.5 KB；TFHE FheInt32 16 × (2048 + 1) × 8 字节 = 256.1 KB。CKKS / BGV 耗时用 3.12 规则 4 的同一公式（N = 8192、L = 3：密钥生成约 21.5 ms、加密 2.4 ms、加法 0.07 ms、乘法 2.9 ms、解密 0.26 ms）。响应附 `ciphertext_kb_each` 与 `ciphertext_formula`。
 
 错误：方案或 op 未知、A/B 个数不符 `40000`；Paillier + `mul` 或库不支持 `40001`；非数值 `40002`；精度越界、超过 64 个、明文空间溢出 `40003`。
 
@@ -1958,7 +1973,7 @@ POST /he/param-optimize
 1. Δ 位数 = ⌈d · log2 10⌉ + 20（d 为小数位，20 bit 为编码与重缩放噪声余量），限制在 20–60 bit。
 2. 模数链 = [q0, Δ × 深度, P]，q0 = P = min(60, Δ + 20)。
 3. N 取满足「总模数 ≤ HomomorphicEncryption.org 安全标准上限」且「N / 2 ≥ 批大小」的最小值。上限表（三元秘密、经典攻击，与 SEAL `CoeffModulus::MaxBitCount` 相同）：128 位 N = 1024/2048/4096/8192/16384/32768 → 27/54/109/218/438/881 bit；192 位 → 19/37/75/152/305/611；256 位 → 14/29/58/118/237/476。
-4. 性能估算：以 SEAL 4.1 单线程 N = 8192、L = 3 的量级（加法约 0.07 ms，乘法含重线性化与重缩放约 2.9 ms）为基准，加法按 N·L、乘法按 N·log2 N·L·(L+1) 外推；密文大小 = 2 × N × L × 8 字节（L = 深度 + 1）。
+4. 性能估算：以 SEAL 4.1 单线程 N = 8192、L = 3 的量级（加法约 0.07 ms，乘法含重线性化与重缩放约 2.9 ms）为基准，加法按 N·L、乘法按 N·log2 N·L·(L+1) 外推；密文大小 = 2 × N × L × 8 字节（L = 深度 + 1，1 KB = 1024 字节）。运算验证（3.11）与四步流程（3.5）使用同一函数，同参数下数值一致。
 
 错误：安全强度不在 128/192/256 `40000`；深度、精度、批大小越界 `40003`；N ≤ 32768 内无可行解 `40003`（`data.total_modulus_bits`）。
 
@@ -2034,6 +2049,8 @@ GET  /projects/{project_id}/he/simulations
 
 响应：`sim_id`、输入回显、`max_abs_error`、`mean_abs_error`、`passed`、`conclusion`、`steps[]`（`keygen` / `encrypt` / `aggregate` / `decrypt`，含 `elapsed_ms`、`ciphertext_kb`、`ciphertext_count`、`detail`）、`checks[]`（`name`、`passed`、`detail`）、`total_elapsed_ms`、`created_at`。
 
+耗时口径：Paillier 按节点侧 16 线程批处理、CRT 解密（单条打包密文 加密 3.4 / 16 ≈ 0.213 ms、聚合 0.8 / 16 = 0.05 ms / 方、解密 4.2 / 4 / 16 ≈ 0.066 ms），各参与方在各自节点同时加密，`total_elapsed_ms` = 密钥生成 + 一次加密 + 聚合 + 解密。
+
 规则：每个参与方生成 `dim` 维 N(0, 0.02²) 模拟梯度（种子 = 项目 + 方案 + 维度 + 参与方数）。Paillier：逐元素 round(g · 10^p) 后整数求和再除回，每 32 个定点数打包为 1 条 2048 bit 明文（64 bit 槽位）；CKKS：按 4096 槽位打包，聚合噪声 √参与方数 · 2^-28。校验项：密文条数一致、聚合维度一致、最大绝对误差 ≤ 容差、Paillier 槽位不溢出（求和后定点整数 ≤ 64 bit）。
 
 错误：方案不支持、维度不在 {1000, 10000} `40000`；参与方数、精度、容差越界 `40003`；项目不存在 `40400`。
@@ -2047,14 +2064,19 @@ GET /projects/{project_id}/he/logs?source=fl_job&ref_id=fl_p1_002
 GET /projects/{project_id}/he/logs/export?source=&ref_id=        （CSV 下载）
 ```
 
-`source`：`simulation` / `fl_job`，不传为全部。响应：`items[]`（`log_id`、`source`、`ref_id`、`ref_name`、`round`、`stage`、`stage_label`、`scheme`、`party`、`elapsed_ms`、`ciphertext_kb`、`ciphertext_count`、`recorded_at`）、`total`、`refs[]`（筛选下拉）、`summary[]`（按环节：`count`、`total_elapsed_ms`、`avg_elapsed_ms`、`total_ciphertext_kb`）。
+`source`：`session`（全流程配置）/ `simulation` / `fl_job`，不传为全部。响应：`items[]`（`log_id`、`source`、`ref_id`、`ref_name`、`round`、`stage`、`stage_label`、`scheme`、`party`、`elapsed_ms`、`ciphertext_kb`、`ciphertext_count`、`recorded_at`）、`total`、`refs[]`（筛选下拉）、`summary[]`（按环节：`count`、`total_elapsed_ms`、`avg_elapsed_ms`、`total_ciphertext_kb`）、`job_bases[]`、`timing_basis`（计算口径说明）。
 
 来源：
 
+- 全流程配置：四步流程每次解密完成后，按实际执行的 密钥生成 / 加密 / 密态运算 / 解密 各记 1 条。
 - 流程测试：每次模拟展开为 密钥生成 1 条 + 每个参与方加密 1 条 + 密态聚合 1 条 + 解密 1 条。
-- 训练任务：`aggregation = he` 且已跑的每一轮，每个训练节点加密 1 条 + 聚合方密态聚合 1 条 + 密钥服务解密 1 条；密文条数 = ⌈模型参数量 / 32⌉（参数量 lr 1200、xgb 4096、cnn 61706、lstm 52000、tcn 38000、custom 20000），单条 0.52 KB，加密 3.4 ms / 条、聚合 0.8 ms / 条 / 方、解密 4.2 ms / 条，±6% 确定性抖动。
+- 训练任务：`aggregation = he` 且已跑的每一轮，每个训练节点加密 1 条 + 聚合方密态聚合 1 条 + 密钥服务解密 1 条。计算口径与界面同源：
+  - 密钥：`GET /fl/jobs/{job_id}/he-public-key`（任务实际绑定的聚合公钥）。Paillier 单条密文 = 2 × 密钥位数 / 8 字节（2048 bit → 0.5 KB，3072 bit → 0.75 KB）；CKKS / BGV 按 3.11 的 2 × N × L × 8 字节（只给总位数 log₂Q 时按 q0 与特殊素数各 60 bit、中间素数 40 bit 估 L）。
+  - 条数：⌈⌈参数量 × Top-k 保留比例⌉ / 每条打包个数⌉。参数量读内核 `k.MODEL_PARAMS`（lr 69、xgb 2176、cnn 61706、lstm 203143、tcn 37959、custom 20000）；保留比例与打包个数读 `GET /projects/{project_id}/fl/aggregation` 的 `sparsification`（未启用按 100%）与 `he.batch_size`（方案与密钥一致时采用，否则 Paillier 取 ⌊位数 / 64⌋、CKKS 取 N / 2）。稀疏化按全局 Top-k 掩码（各方共享同一组索引）计，索引以明文随附、不计入密文。例：xgb、Top-k 15%、每条 16 个 → ⌈327 / 16⌉ = 21 条。
+  - 耗时：节点侧 16 线程批处理、CRT 解密；Paillier 2048 bit 单条 加密 0.213 ms、聚合 0.05 ms / 方、解密 0.066 ms，加解密按 (位数 / 2048)³、聚合按 (位数 / 2048)² 缩放；CKKS / BGV 按 3.12 规则 4 的模型 / 16。±6% 确定性抖动；各训练节点并行加密，每轮墙钟 = 最慢节点加密 + 聚合 + 解密，小于每轮训练时长 4.2 秒。
+  - 响应附 `job_bases[]`（`key_id`、`key_label`、`ciphertext_kb_each`、`slots_per_ciphertext`、`topk_ratio`、`values_uploaded`、`ciphertext_count`、`text`），`timing_basis` 汇总以上口径并逐任务写明。
 
-CSV 列：`来源,任务或测试 ID,名称,轮次,环节,方案,节点或参与方,耗时(ms),密文大小(KB),密文条数,记录时间`，UTF-8 BOM。错误：`source` 非法 `40000`；项目不存在 `40400`。
+CSV 列：`来源,任务或测试 ID,名称,轮次,环节,方案,节点或参与方,耗时(ms),密文大小(KB),密文条数,记录时间(UTC+8)`，时间用内核 `fmtLocal` 写成 `2026-10-23 22:58:02 +08:00`，UTF-8 BOM。错误：`source` 非法 `40000`；项目不存在 `40400`。
 
 ---
 
@@ -2254,6 +2276,7 @@ GET /mpc/tasks/{task_id}
 | `estimate` | object | `est_compute_sec`、`est_comm_sec`、`est_comm_mb`、`rounds` |
 | `anomaly_rule` | object | `threshold_pct`、`min_ticks`（5）、`metrics`（`comm_bytes`、`compute_sec`）、`description` |
 | `parties[].roles` | string[] | 全部角色；`role` 保留为第一个 |
+| `parties[].status` | string | 跟随任务：`abnormal` 优先，其次 `running` / `stopped`（任务停止后，累计指标保留）/ `pending` / `finished` |
 | `parties[].node_id` | string | 节点 ID |
 | `parties[].comm_bytes` | int | 累计发送字节 |
 | `parties[].compute_sec` | number | 累计本地计算耗时（秒） |
@@ -2356,7 +2379,7 @@ GET /projects/{project_id}/mpc/tasks?status=&protocol=&start_time=&end_time=&tas
 GET /projects/{project_id}/mpc/reports/export?format=csv&protocol=&start_time=&end_time=&task_ids=
 ```
 
-过滤参数同 4.5。响应 CSV（UTF-8 BOM），列：任务 ID、任务名称、计算流程、协议、参与方数、数据规模(行)、总通信量(MB)、单方平均通信量(MB)、总耗时(秒)、轮次交互数(轮)、异常告警数(条)、开始时间、结束时间、状态。`task_ids` 恰为 2 个时追加对比段（指标、单位、两任务值、差异 %）。§4.6 的 `/mpc/tasks/export` 在内核中只输出固定历史，前端 v1.2 改用本接口；真实后端可二者合一。
+过滤参数同 4.5。响应 CSV（UTF-8 BOM），列：任务 ID、任务名称、计算流程、协议（中文，多协议用「 + 」连接）、参与方数、数据规模(行)、总通信量(MB)、单方平均通信量(MB)、总耗时(秒)、轮次交互数(轮)、异常告警数(条)、开始时间(UTC+8)、结束时间(UTC+8)、状态（中文：待执行 / 执行中 / 已停止 / 已结束 / 失败）。时间用内核 `k.fmtLocal` 写成 `2026-10-23 22:58:02 +08:00`。带 `task_ids` 时明细行按请求顺序输出；恰为 2 个时追加对比段，表头「任务 A：… / 任务 B：… / 差异 (B − A) / A (%)」，A / B 顺序与数值与 4.12 对比接口一致。§4.6 的 `/mpc/tasks/export` 在内核中只输出固定历史，前端 v1.2 改用本接口；真实后端可二者合一。
 
 #### 旧接口（v1.1，保留兼容）
 
@@ -2473,7 +2496,8 @@ POST 请求：
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `steps[]` | array | 是 | 计算流程，同 4.11 |
-| `party_count` | int | 否 | 3–8，默认 3；给了 `parties[]` 时取其长度 |
+| `party_count` | int | 否 | 3–8，默认 3，此时按 n 方都是输入 + 计算方估算 |
+| `parties[]` | array | 否 | `[{ party_id, roles }]`，给出时取其长度为 n，并按角色计算输入分享；无输入方或无计算方 `40000` |
 | `data_rows` | int | 否 | 每个输入方的数据行数 m，1–100,000,000，默认 1,200,000 |
 | `bandwidth_mbps` | number | 否 | 单方链路带宽，1–10,000 Mbps，默认 100 |
 | `rtt_ms` | number | 否 | 往返时延，0–1,000 ms，默认 20 |
@@ -2501,7 +2525,7 @@ GET 兼容 §4.1：只传 `protocol`（+ 可选 `operator`）时按该算子的�
 
 | 步骤 | 通信字节 | 轮数 | 单方计算 |
 |---|---|---|---|
-| 输入分享（首步为 ss 且作用于各方数据） | n(n−1) · w · m | 1 | m × 0.5 µs × ℓ/64 |
+| 输入分享（首步为 ss 且作用于各方数据） | [I × (C − 1) + I₀] · w · m：只有输入方发送份额，每个输入方拆成 C 份（C = 计算方数），兼任计算方的自留 1 份；I = 输入方数，I₀ = 不兼任计算方的输入方数（原为 n(n−1) · w · m） | 1 | m × 0.5 µs × ℓ/64 |
 | ss 求和 | 0（本地） | 0 | 元素数 × n × 0.4 µs |
 | ss 求均值 | n(n−1) · w × 输出元素数（定点截断 1 次打开） | 1 | 同求和 + 截断 1.5 µs / 元素 |
 | ss 求积（各方数据） | 2 · n(n−1) · w · m · (n−1)（每次 Beaver 乘法打开 2 个值） | 2⌈log₂ n⌉ | m × (n−1) × 2 µs |
@@ -2676,6 +2700,22 @@ POST /projects/{project_id}/datasets
 
 错误：参数不合法 `40000`；`file_id` 不存在 `40400`；同名 `40902`；连通性检查失败 `42201`。
 
+#### v1.2 差异 · 文件解析与样例（PSI-DATA-01）
+
+验收编号：PSI-DATA-01。`POST /projects/{project_id}/datasets` 在 §5.0.3 基础上，`source_type = file` 时可多传两个字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `row_count` | int | 否 | 前端解析文件得到的数据行数（CSV：非空行数 − 1 行表头），≥ 0 |
+| `columns[]` | array | 与 `row_count` 同传 | `{ name, type }`，`name` 符合 `[A-Za-z_][A-Za-z0-9_]*` 且不重复，`type` 为 `string` / `int` / `float` / `date` |
+
+- 前端对 `.csv` 且 ≤ 256 MB 的文件在浏览器内读取：首行为表头，按前 200 行推断类型（全整数 `int`、全数值 `float`、`YYYY-MM-DD` 或 `YYYY/MM/DD` 开头 `date`，其余 `string`）；提交时求交键列强制 `string`、时间列强制 `date`。表头列名不合法或重复时不上传，弹窗内提示。
+- 传了 `row_count` / `columns`：求交键列、时间列须在 `columns` 内，否则 `40000`；`row_count` 非非负整数、`columns` 格式不对 `40002`。数据集按提交值登记，`source.row_count_basis = "parsed"`。
+- 未传（Parquet、超大 CSV）：行数 = round(文件字节数 ÷ 64)，`source.row_count_basis = "size_estimate"`，界面行数显示「约 N（估算）」，详情注明「按文件大小 ÷ 64 字节 / 行估算」。
+- 文件来源的 `source` 另带 `file_name`、`size_bytes`。真实后端应以服务端解析结果为准，可用前端值做一致性复核。
+
+- `sample_rows`（可选，与 `row_count` 同传）：文件前 3 行原始值，二维数组，每行列数与 `columns` 一致、行数 ≤ 3 且 ≤ `row_count`，否则 `40002`。样例只保存在本参与方节点用于详情预览，不在任何响应中原样返回。
+
 #### 5.0.4 数据集详情
 
 对应：列表「详情」按钮展开的字段与脱敏样例。
@@ -2685,6 +2725,20 @@ GET /datasets/{dataset_id}
 ```
 
 响应 `data`：同 5.0.2 单项，另加 `preview[]`：前 3 行、前 6 列样例。求交键只给哈希前缀（例 `f7f1c3…`），字符串类特征列打码 `***`，数值列给归一化值。`ready` 之前 `preview = []`。
+
+#### v1.2 差异 · 样例预览规则（PSI-DATA-02）
+
+验收编号：PSI-DATA-02。`GET /datasets/{dataset_id}` 的 `preview[]` 规则：
+
+| 来源 | `preview[]` | `preview_note` |
+|---|---|---|
+| 文件，登记时带了 `sample_rows` | 文件真实前 3 行（不足 3 行按实际行数）脱敏后的值 | `null` |
+| 文件，只有表头 | `[]` | `无样例（文件只有表头）` |
+| 文件，浏览器未解析（Parquet / 超大 CSV） | `[]` | `无样例（文件未在浏览器解析）` |
+| 数据库 / HDFS | mock 不连真实数据源，为稳定模拟样例；真实后端取源表前 3 行脱敏 | `null` |
+| 尚未就绪 | `[]` | `接入完成后显示样例` |
+
+脱敏按列类型：求交键 → 真实值哈希的 6 位十六进制前缀加「…」；`string` → `***`；`int` / `float` → 按两位有效数字区间化（如 7350 → `7,300 – 7,400`）；`date` → 原值。只取前 6 列。
 
 #### 5.0.5 删除数据集
 
@@ -2922,7 +2976,11 @@ POST /projects/{project_id}/psi/pipelines
 
 页面离开再回到平台集成页时，先 `GET /psi/pipelines/{pipeline_id}`（或项目无记录时取 `GET /projects/{project_id}/psi/pipelines` 最后一项）恢复展示，状态为 `running` 时重新订阅 `/psi/pipelines/{pipeline_id}/events`。
 
-说明：mock 内核的流水线接口当前不对 `params` 做 5.1 的规格校验（已由 5.7 保存时校验）；真实后端应在 5.3 同样执行参数校验规则。
+- 请求校验与 §5.3 一致，另外：`params` 按「参数校验规则」校验（`40000` / `40002` / `40003`）；传 `template_id` 时模板须属于本项目（否则 `40400`）、协议一致（否则 `40000`），模板参数与 `params` 合并（`params` 覆盖同名键）。
+- 交集估算（mock）：n_min = 两方较小行数，n_min < 10 000 时交集 = round(n_min × 0.4769)，否则按千取整 round(n_min × 0.4769 ÷ 1000) × 1000；真实后端为实际求交结果。
+- 安全求交阶段结束时，交集条数少于 **100 条**（联合训练最少对齐样本数）时流水线 `status = failed`，`error` 写明交集条数、阈值和两方求交键，`stages[0].status = failed`，特征对齐与联合训练 `status = skipped`（`progress_pct = 0`，`duration_sec = null`，`stats = {}`），`fl_job_id = null`，不生成训练任务；该流水线不能作为 FL 任务的 `dataset_source`（`40901`）。
+- SSE `pipeline_finished` 在失败时也会推送：`{ "pipeline_id", "status": "failed", "fl_job_id": null, "target_project": null, "error": "求交结果 0 条，少于联合训练所需的最少 100 条对齐样本…" }`。页面显示红色失败说明，「一键启动」变为「重新执行」。
+- 演示环境刷新中断（内核把运行中流水线置 `failed` 并写 `error`）时，当时未完成的阶段标 `failed`，之后的阶段标 `skipped`。
 
 ### 5.4 获取流水线详情
 
@@ -2978,6 +3036,10 @@ GET /psi/pipelines/{pipeline_id}
   "finished_at": null
 }
 ```
+
+#### v1.2 差异 · 完成后固化统计快照（PSI-DATA-03、PSI-PIPE-02）
+
+验收编号：PSI-DATA-03、PSI-PIPE-02。流水线 `finished` 后，`stages[].stats`（两方行数、交集条数、对齐条数与特征维度）与 `parties[].dataset_name` 固化为快照，不再随数据集变化；`GET /psi/pipelines/{pipeline_id}` 与 `GET /projects/{project_id}/psi/pipelines` 多返回 `stats_snapshot_at`（快照时间，未完成时无此字段）。`DELETE /datasets/{dataset_id}` 删除前先为引用它的已完成流水线生成快照；被运行中流水线引用时仍返回 `40901`。
 
 ### 5.5 取消 / 重置流水线
 
@@ -3122,6 +3184,8 @@ v1.2 起差分隐私拆为三个二级页面：「差分隐私 / 隐私机制」
 - `basic`：`ε₀ = ε_总 / T`；高斯 `z = √(2 ln(1.25/δ)) / ε₀`，拉普拉斯 `λ = 1 / ε₀`。
 - `advanced` / `rdp`：对噪声倍数 z（或 λ）二分求解，使 T 轮累计 ε 恰为 `ε_总`。
 - 每轮噪声尺度 `σ = z · C`（拉普拉斯 `b = λ · C`），C 为裁剪阈值（梯度 L2 敏感度）。「单轮机制 ε」= 把单轮单独看作 (ε, δ)-DP 时的 ε₀ = `√(2 ln(1.25/δ)) / z`。
+
+**时序任务效用**：RMSE / MAE = 无噪声基线 × (1 + 1.2 · e^(−ε_eq / 2.2))，拉普拉斯再乘 1.05；基线取内核 `metricsAt('timeseries', T, 0)`（该任务无噪声训练 T 轮后的全局指标）。e^(−ε/2.2) 与分类公式的饱和项相同。
 
 **模型效用估算**：沿用 v1.1 的 `utility(ε) = 0.62 + 0.30 · (1 − e^(−ε/2.2))`（拉普拉斯再减 0.015），但 ε 取「与当前噪声相同的基础组合等效总 ε」`ε_eq = ε₀ · T`，即效用随实际注入的噪声大小变化，而不是随账面 ε。
 
@@ -3294,7 +3358,7 @@ POST /dp/estimate
 
 对应：效果评估页噪声参数框、指标卡、趋势曲线；隐私机制页「按当前参数预估」。
 
-请求增补 `accountant`（可选，默认 `basic`）。响应增补：
+请求增补 `accountant`（可选，默认 `rdp`，与任务默认一致；显式传 `basic` 时数值与 v1.1 一致）。响应增补：
 
 | 字段 | 说明 |
 |---|---|
@@ -3304,8 +3368,11 @@ POST /dp/estimate
 | `epsilon_per_round_avg` | ε_总 / T |
 | `delta_total` | 按会计方式的累计 δ |
 | `curve[].cumulative_epsilon` | 按会计方式累计 |
+| `task_type` / `primary_metric` | 由 `baseline_job_id` 对应任务（或 body.task_type）决定：分类 `accuracy`，时序 `rmse` |
+| `metrics[]` | 按任务 `metrics_spec`：`{ key, label, better, baseline, estimated, change_pct }`；分类为 Accuracy（越高越好），时序为 RMSE / MAE（归一化，越低越好） |
+| `curve[].estimated_rmse` | 仅时序任务；此时 `estimated_accuracy`、`baseline_accuracy`、`accuracy_loss` 均为 `null` |
 
-`basic` 下 `noise_scale`、`estimated_accuracy`、`curve` 与 v1.1 逐位一致。错误码：`40000` mechanism 非法、高斯缺 δ、accountant 非法、ε / C / T 非正数。
+显式 `accountant = basic` 时 `noise_scale`、`estimated_accuracy`、`curve` 与 v1.1 逐位一致；注意 v1.1 调用方不传该字段时现在按 RDP 计算。错误码：`40000` mechanism 非法、高斯缺 δ、accountant 非法、ε / C / T 非正数。
 
 ### 6.4 预算消耗
 
@@ -3401,7 +3468,7 @@ GET /fl/jobs/{job_id}/dp/audit/export        （文件下载，CSV，UTF-8 BOM�
 | `noise_l2` / `signal_l2` / `snr` | 见 6.11 |
 | `source` | `engine` 训练引擎逐轮写入；`seed_history` 播种的历史任务按其配置回放 |
 
-CSV 列：`job_id,round,accountant,mechanism,epsilon_spent,epsilon_cumulative,noise_scale,noise_multiplier,delta,clip_norm,clip_ratio_pct,noise_l2,recorded_at`。错误码：`40400`、`40002`（limit 非法）。
+CSV 列：`job_id,round,accountant,mechanism,epsilon_spent,epsilon_cumulative,noise_scale,noise_multiplier,delta,clip_norm,clip_ratio_pct,noise_l2,recorded_at(UTC+8)`，时间用内核 `fmtLocal` 写成 `2026-10-23 22:10:05 +08:00`。错误码：`40400`、`40002`（limit 非法）。
 
 ### 6.6 机制目录（v1.2）
 
@@ -3424,9 +3491,11 @@ POST /dp/tradeoff
 | 字段 | 必填 | 说明 |
 |---|---|---|
 | `mechanism` / `clip_norm` / `delta` / `total_rounds` | 是 | 同 6.3 |
-| `accountant` | 否 | 默认 `basic` |
+| `accountant` | 否 | 默认 `rdp`；显式传 `basic` 按基础组合 |
 | `epsilons` | 否 | ε 网格，默认 `[0.2, 0.5, 1, 1.5, 2, 3, 4, 5, 6, 8, 10]`，每个 0.05–20 |
-| `max_accuracy_loss` | 否 | 平衡点阈值，默认 0.03（3 个百分点） |
+| `max_accuracy_loss` | 否 | 分类平衡点阈值，默认 0.03（3 个百分点） |
+| `max_metric_increase_pct` | 否 | 时序平衡点阈值：RMSE 相对基线增幅，默认 10（%） |
+| `baseline_job_id` / `task_type` | 否 | 决定按 Accuracy 还是 RMSE 评估 |
 
 ```json
 { "accountant": "rdp", "baseline_accuracy": 0.921, "max_accuracy_loss": 0.03,
@@ -3434,7 +3503,7 @@ POST /dp/tradeoff
   "recommended_epsilon": 1 }
 ```
 
-`recommended_epsilon` = 效用损失 ≤ 阈值的最小 ε，没有则 `null`。错误码：`40000`、`40003`（网格越界）。
+响应增补 `task_type`、`metric`（主指标 `{ key, label, better, baseline }`）、`rule`（平衡点规则文字）、`points[].metric_value`、`points[].metric_change_pct`；时序任务 `baseline_accuracy = null`。`recommended_epsilon` = 满足 `rule` 的最小 ε，没有则 `null`。错误码：`40000`、`40003`（网格越界）。
 
 ### 6.8 自适应噪声注入（v1.2）
 
@@ -3460,7 +3529,7 @@ POST /dp/adaptive-noise
 
 响应：`stats`（`median`、`mean`、`p01`、`p05`、`p95`、`p99`、`log_sd`、`public_lower`、`public_upper`）、`fixed` 与 `adaptive`（`lower`、`upper`、`sensitivity`、`epsilon_used`、`noise_scale`、`noise_std`、`bias`、`rmse`、`rel_error_pct`）、`candidates[]`、`recommended`（`adaptive` / `fixed`）、`noise_reduction_pct`、`rmse_reduction_pct`、`unit`、`group_size`。
 
-**梯度模式** `target = gradient`，`job_id` 必填：样本梯度 L2 范数中位数按 `m(r) = 0.25 + 0.9·e^(−r/12)`、对数标准差 0.5 建模；返回逐轮 `update_norm_median`、`clip_fixed`、`clip_adaptive`、`clip_ratio_fixed`、`clip_ratio_adaptive`、`noise_fixed`、`noise_adaptive`，以及 `summary` 和 `recommended_clip_norm`（第 ⌈T/2⌉ 轮中位数，取一位小数，夹在 0.2–4）。
+**梯度模式** `target = gradient`，`job_id` 必填：样本梯度 L2 范数中位数按 `m(r) = 0.25 + 0.9·e^(−r/12)`、对数标准差 0.5 建模；返回逐轮 `update_norm_median`、`clip_fixed`、`clip_adaptive`、`clip_ratio_fixed`、`clip_ratio_adaptive`、`noise_fixed`、`noise_adaptive`，以及 `fixed_clip_norm`（固定基准：已启用自适应时为切换前的固定 C，记在 `job.dp.clip_norm_fixed`）、`initial_clip_norm`、`summary`（含 `adaptive_better`；`noise_reduction_pct` 为负表示自适应噪声更多，界面显示「噪声增加」）和 `recommended_clip_norm`（第 ⌈T/2⌉ 轮中位数，取一位小数，夹在 0.2–4）。
 
 错误码：`40400` 数据集 / 任务不存在；`40901` 数据集未导入完成；`40000` 字段不存在、参数非法；`40001` 字段不是数值型；`40003` ε 越界；`40002` δ 非法。
 
@@ -3540,7 +3609,7 @@ PUT /dp/provider        { "provider": "opacus" }
 
 `GET` 返回 `current` 与 `items[]`（`provider`、`name`、`library`、`version_note`、`mechanisms`、`accountants`、`mapping[]`）。`mapping[]` = `{ iface, impl, source, note }`：`iface` 为平台统一接口（`DPStrategy.build`、`GradientDP.gaussian`、`GradientDP.laplace`、`Accountant.spent`、`SecureAggregator.aggregate`），`source = native` 表示框架自带类（类路径以部署环境的包版本为准），`adapter` 表示平台适配层补齐的实现。
 
-`PUT` 切换平台当前实现：非运行任务的 `job.dp.provider` 改为新实现，运行中任务沿用原实现直到本次训练结束。响应 `{ current, affected_jobs, kept_running[] }`。错误码 `40000` 未知实现。
+实现按项目选用。`GET /dp/providers?project_id=` 返回该项目当前实现。`PUT /dp/provider { provider, project_id }` 只改该项目内待启动 / 失败 / 已终止（Created / Failed / Terminated）任务的 `job.dp.provider`；训练中 / 已暂停任务沿用原实现直到本次训练结束；已完成任务保留训练时的实现记录（重置回待启动后才跟随项目当前实现）；其他项目不受影响。响应 `{ project_id, current, affected_jobs, affected_job_ids[], kept_running[], kept_finished[] }`（后两者为 `{ job_id, status, provider }`）。错误码 `40000` 未知实现或缺 project_id。
 
 #### DP hook 链
 
@@ -3566,7 +3635,7 @@ GET /fl/jobs/{job_id}/dp/metrics?bins=21
 | `summary` | `clip_ratio_avg`、`noise_l2_last`、`snr_last`、`snr_db_last = 10·log10(snr²)`、`model_dim`、`trainers`、`noise_scale`；无 DP 轮次时为 `null` |
 | `histogram[]` | 末轮噪声坐标抽样 4000 个（以 σ 或 b 为单位，种子 = job_id + 轮次），`{ x, count, density（峰值归一）, theory（理论密度峰值归一） }` |
 
-计算：`clip_ratio = P(‖g‖₂ > C) = 1 − Φ((ln C − ln m(r)) / 0.5)`；聚合后噪声范数高斯 `‖n‖₂ = σ·√d`、拉普拉斯 `b·√(2d)`，d 为模型参数维度（逻辑回归 64、XGBoost 2,048、CNN 61,706、LSTM 12,416、TCN 18,944、自定义 10,000）；按 DP-SGD 逐样本裁剪：每个参与方每轮对 B = 256 个样本梯度逐个裁剪后求和再加噪，信号 `‖Σ clip(g)‖₂` 取上界 `n · B · E[min(‖g‖₂, C)]`；`snr = 信号 / 噪声`。错误码：`40400`、`40003`（bins 不是 5–61 的整数）。
+计算：`clip_ratio = P(‖g‖₂ > C) = 1 − Φ((ln C − ln m(r)) / 0.5)`；聚合后噪声范数高斯 `‖n‖₂ = σ·√d`、拉普拉斯 `b·√(2d)`，d 为单次上传参数维度，取内核 `k.MODEL_PARAMS`（逻辑回归 69、XGBoost 2,176、CNN 61,706、LSTM 203,143、TCN 37,959、自定义 20,000）；按 DP-SGD 逐样本裁剪：每个参与方每轮对 B = 256 个样本梯度逐个裁剪后求和再加噪，信号 `‖Σ clip(g)‖₂` 取上界 `n · B · E[min(‖g‖₂, C)]`；`snr = 信号 / 噪声`。错误码：`40400`、`40003`（bins 不是 5–61 的整数）。
 
 #### 初始化检查
 
@@ -3628,7 +3697,7 @@ data: <JSON>
 | MPC | `alarm_raised` | 同 4.3 `alarms[]` 单条 |
 | MPC | `status_changed` | `{ "task_id", "status" }` |
 | PSI | `stage_progress` | `{ "stage", "status", "progress_pct", "duration_sec", "stats" }` |
-| PSI | `pipeline_finished` | `{ "pipeline_id", "status", "fl_job_id", "target_project" }` |
+| PSI | `pipeline_finished` | `{ "pipeline_id", "status", "fl_job_id", "target_project", "error" }`；v1.2：失败时也推送（`status = failed`，`fl_job_id = null`，`error` 写明原因，见 [5.3](#53-启动一键流水线)） |
 
 示例：
 
@@ -3682,7 +3751,7 @@ data: {"job_id":"fl_20260922_01","round":12,"global_loss":0.3171,"global_accurac
 | `HeKeyPurpose` | `session` 会话（默认，四步流程）/ `fl_aggregation` 联邦聚合（v1.2） |
 | `HeKeyStatus` | `active` / `rotated` / `destroyed`（v1.2） |
 | `HeRotateReason` | `manual` / `auto` / `superseded`（v1.2；`superseded` 见附录 A 矛盾项） |
-| `HeLogSource` | `simulation` / `fl_job`（v1.2） |
+| `HeLogSource` | `session` 四步流程 / `simulation` / `fl_job`（v1.2） |
 | `MpcProtocol` | `ss` 秘密共享 / `gc` 混淆电路 / `ot` 不经意传输扩展 |
 | `MpcOperator` | `secure_sum` / `secure_product` / `secure_mean` / `secure_compare` / `secure_max` / `logic_op` / `vector_ot`（`secure_sum`、`secure_max` v1.2 新增） |
 | `MpcValueType` | `parties` 各方私有数据 / `vector` / `scalar` / `bool_vector` / `bool`（v1.2） |
@@ -3699,6 +3768,7 @@ data: {"job_id":"fl_20260922_01","round":12,"global_loss":0.3171,"global_accurac
 | `PsiProtocol` | `ecdh` / `kkrt` / `unbalanced` |
 | `PsiParamType` | `enum` / `int` / `float` / `bool`（`params[].type`，v1.2） |
 | `PsiConfigSource` | `default`（仅 GET，未保存过）/ `manual` / `template` / `route_advice`（v1.2） |
+| `PsiRowCountBasis` | `parsed` 文件解析 / `size_estimate` 按文件大小估算，`source.row_count_basis`（v1.2） |
 | `PsiStage` | `intersect` / `align` / `train` |
 | `PsiStageStatus` | `pending` / `running` / `finished` / `failed` / `skipped` |
 | `PsiPipelineStatus` | `pending` / `running` / `finished` / `failed` / `canceled` |
@@ -3798,8 +3868,8 @@ v1.2 没有新增业务码，只扩展了上述码的适用场景；具体触发
 | 51 | HE | GET | `/he/schemes` | 加密方案列表 | — | — |
 | 52 | HE | POST | `/he/keys` | ① 生成密钥对（v1.2 补 purpose、node_ids、状态字段） | HE-APP-01 / 03 | 改 |
 | 53 | HE | POST | `/he/encrypt` | ② 加密（v1.2 先检查密钥状态） | HE-APP-01 / 03 | 改 |
-| 54 | HE | POST | `/he/evaluate` | ③ 密态运算 | — | — |
-| 55 | HE | POST | `/he/decrypt` | ④ 解密 + 校验 | — | — |
+| 54 | HE | POST | `/he/evaluate` | ③ 密态运算（v1.2 统一耗时模型） | HE-APP-01 / 05 | 改 |
+| 55 | HE | POST | `/he/decrypt` | ④ 解密 + 校验（v1.2 统一耗时模型、会话记日志） | HE-APP-01 / 05 | 改 |
 | 56 | HE | DELETE | `/he/keys/{key_id}` | 重置 / 销毁密钥（v1.2 保留销毁记录） | HE-APP-01 / 03 | 改 |
 | 57 | HE | GET | `/he/algorithms` | 算法目录 | HE-ALGO-01 / 02 | 新 |
 | 58 | HE | GET | `/he/libraries` | 底层库与支持矩阵 | HE-ALGO-03 | 新 |
@@ -3838,16 +3908,16 @@ v1.2 没有新增业务码，只扩展了上述码的适用场景；具体触发
 | 91 | PSI | GET | `/projects/{project_id}/psi/templates` | 模板列表（v1.2 含内置模板） | PSI-ALGO-03 | 改 |
 | 92 | PSI | GET | `/psi/templates/{template_id}` | 加载模板 | PSI-ALGO-03 | — |
 | 93 | PSI | DELETE | `/psi/templates/{template_id}` | 删除模板（v1.2 内置不可删） | PSI-ALGO-03 | 改 |
-| 94 | PSI | POST | `/projects/{project_id}/psi/pipelines` | 启动流水线（v1.2 配置来源） | PSI-PIPE-01 / 02 | 改 |
-| 95 | PSI | GET | `/psi/pipelines/{pipeline_id}` | 流水线详情 | — | — |
+| 94 | PSI | POST | `/projects/{project_id}/psi/pipelines` | 启动流水线（v1.2 配置来源、参数校验、交集不足失败） | PSI-PIPE-01 / 02 | 改 |
+| 95 | PSI | GET | `/psi/pipelines/{pipeline_id}` | 流水线详情（v1.2 完成后固化统计快照） | PSI-DATA-03、PSI-PIPE-02 | 改 |
 | 96 | PSI | POST | `/psi/pipelines/{pipeline_id}/cancel` | 取消 / 重置 | — | — |
-| 97 | PSI | GET | `/projects/{project_id}/psi/pipelines` | 流水线历史 | — | — |
-| 98 | PSI | GET (SSE) | `/psi/pipelines/{pipeline_id}/events` | SSE 推送 | — | — |
+| 97 | PSI | GET | `/projects/{project_id}/psi/pipelines` | 流水线历史（v1.2 含 stats_snapshot_at） | PSI-DATA-03 | 改 |
+| 98 | PSI | GET (SSE) | `/psi/pipelines/{pipeline_id}/events` | SSE 推送（v1.2 失败时也推 pipeline_finished） | PSI-PIPE-02 | 改 |
 | 99 | 数据接入 | GET | `/psi/parties` | 参与方列表（v1.1） | — | — |
 | 100 | 数据接入 | GET | `/projects/{project_id}/datasets` | 数据集列表（v1.1） | — | — |
-| 101 | 数据接入 | POST | `/projects/{project_id}/datasets` | 接入数据集（v1.1） | — | — |
-| 102 | 数据接入 | GET | `/datasets/{dataset_id}` | 数据集详情 + 脱敏样例（v1.1） | — | — |
-| 103 | 数据接入 | DELETE | `/datasets/{dataset_id}` | 删除数据集登记（v1.1） | — | — |
+| 101 | 数据接入 | POST | `/projects/{project_id}/datasets` | 接入数据集（v1.1；v1.2 文件来源可带 row_count / columns / sample_rows） | PSI-DATA-01 | 改 |
+| 102 | 数据接入 | GET | `/datasets/{dataset_id}` | 数据集详情 + 脱敏样例（v1.1；v1.2 样例按文件真实前 3 行脱敏） | PSI-DATA-02 | 改 |
+| 103 | 数据接入 | DELETE | `/datasets/{dataset_id}` | 删除数据集登记（v1.1；v1.2 删前固化已完成流水线快照） | PSI-DATA-03 | 改 |
 | 104 | PSI | GET | `/projects/{project_id}/psi/config` | 读取当前求交配置 | PSI-ALGO-02 / 03 / 04、PSI-PIPE-01 | 新 |
 | 105 | PSI | PUT | `/projects/{project_id}/psi/config` | 保存当前求交配置 | PSI-ALGO-02 / 03 / 04、PSI-PIPE-01 | 新 |
 | 106 | PSI | POST | `/psi/route-advice` | 求交协议自适应路由 | PSI-ALGO-04 | 新 |
@@ -3870,7 +3940,7 @@ v1.2 没有新增业务码，只扩展了上述码的适用场景；具体触发
 | 123 | DP | GET | `/projects/{project_id}/dp/policies` | 策略列表 | DP-MECH-04、DP-FW-04 | 新 |
 | 124 | DP | POST | `/dp/policies/{policy_id}/apply` | 下发策略到任务 | DP-MECH-04、DP-FW-04 | 新 |
 | 125 | DP | GET | `/dp/providers` | DP 实现与接口映射 | DP-FW-01 | 新 |
-| 126 | DP | PUT | `/dp/provider` | 切换 DP 实现 | DP-FW-01 | 新 |
+| 126 | DP | PUT | `/dp/provider` | 切换 DP 实现（按项目） | DP-FW-01 | 新 |
 | 127 | DP | GET | `/fl/jobs/{job_id}/dp/hooks` | DP hook 链 | DP-FW-02 | 新 |
 | 128 | DP | GET | `/fl/jobs/{job_id}/dp/metrics` | 框架内部 DP 指标 | DP-FW-03 | 新 |
 | 129 | DP | POST | `/fl/jobs/{job_id}/dp/init-check` | DP 初始化检查 | DP-FW-04 | 新 |
@@ -3909,13 +3979,13 @@ v1.2 没有新增业务码，只扩展了上述码的适用场景；具体触发
 | 4 | MPC 参与方与角色 | `parties` 至少 2 个，单值 `role` | 至少 3 个；`roles[]` 多角色，须覆盖输入方 / 计算方 / 输出方；流程含 ss / gc 时计算方至少 2 个；单值 `role` 仍兼容 | 4.2、4.8 |
 | 5 | MPC 算子与流程 | 5 个算子，单步 `protocol + operator` | 7 个算子（新增 `secure_sum`、`secure_max`），支持 1–8 步计算流程 `steps[]`，逐步校验协议兼容与上下游类型；`protocol + operator` 旧调用仍可用 | 4.1、4.2、4.7、4.11 |
 | 6 | MPC 任务控制状态校验 | `finished` 时 `start` 返回 40901 | 收紧为：`running` 时 `start`、非 `running` 时 `stop`、`finished` 时 `start`、只读历史任务 `reset` 均返回 40901；未知动作 40000 | 4.4 |
-| 7 | MPC 性能预估 | `GET …/mpc/estimate`，`protocol` 必填，返回 4 个字段 | GET 增加 `steps` / `party_count` / `data_rows` / `bandwidth_mbps` / `rtt_ms`，`protocol` 在传 `steps` 时可省；新增 POST 形式，返回逐步明细、通信量、轮数、公式与采用的协议参数 | 4.1、4.10 |
+| 7 | MPC 性能预估 | `GET …/mpc/estimate`，`protocol` 必填，返回 4 个字段 | GET 增加 `steps` / `party_count` / `data_rows` / `bandwidth_mbps` / `rtt_ms`，`protocol` 在传 `steps` 时可省；新增 POST 形式（可带 `parties[]` 按角色计算输入分享），返回逐步明细、通信量、轮数、公式与采用的协议参数；输入分享通信量修正为 [I·(C−1)+I₀]·w·m（原为 n(n−1)·w·m） | 4.1、4.10 |
 | 8 | MPC 任务详情与 SSE | `metrics` 事件只推 `parties[]` | 任务新增 `name` / `protocols` / `steps` / `estimate` / `anomaly_rule` / `summary` 等字段；`metrics` 事件改为 `{ parties, summary, progress_pct, alarms }` | 4.3、7.3 |
 | 9 | MPC 历史列表 | 过滤 `status` / `protocol` / 结束时间，8 列 | 新增 `task_ids` 过滤；日期格式 `YYYY-MM-DD`；`items[]` 增加 `name` / `flow` / `data_rows` / `mean_comm_bytes` / `alarm_count` 等 | 4.5 |
 | 10 | `PATCH /fl/jobs/{job_id}` 的适用范围 | §2.5 已限定 `Created` / `Terminated` / `Failed` | 保持不变并写明：`Running` / `Paused` 一律 40901；`algorithm` 只接受内置值与 `custom`，注册算法 / 自定义模型只能在创建任务时指定；响应不含 v1.2 新增字段 | 2.5、3.14 |
 | 11 | Paillier 底层库 | 3.1 示例写 `python-paillier (phe)`，无库目录 | 底层库为 python-paillier (phe) 1.5，纳入 `/he/libraries` 方案-库支持矩阵；同一方案可配多库，项目默认配置 `ckks / seal / 4` | 3.1、3.8、3.9 |
 | 12 | HE 方案范围 | `paillier` / `ckks` / `bgv` | 算法目录新增 `tfhe`（`/he/algorithms` 4 项，`/he/schemes` 仍为 3 项）；新增定点编码、运算验证、CKKS 参数寻优 | 3.7–3.12 |
-| 13 | DP 默认会计方式 | 只有基础组合（ε_总 / T） | 新增 `accountant`：`basic` / `advanced` / `rdp`；任务级默认 `rdp`，显式 `basic` 时数值与 v1.1 逐位一致；`/dp/estimate`、`/dp/tradeoff` 未传时默认 `basic` | 6.0、6.1–6.3、6.7 |
+| 13 | DP 默认会计方式 | 只有基础组合（ε_总 / T） | 新增 `accountant`：`basic` / `advanced` / `rdp`；任务级、`/dp/estimate`、`/dp/tradeoff` 默认均为 `rdp`；显式传 `basic` 时数值与 v1.1 逐位一致，v1.1 调用方不传该字段时现按 RDP 计算 | 6.0、6.1–6.3、6.7 |
 | 14 | DP 配置 / 预算 / 审计字段 | 7 个配置字段；预算与审计按基础组合 | 配置增加 `accountant` / `clip_mode` / `apply_to` / `policy_id` / `policy_dimension`；预算增加 `accountant` / `delta_total` / `dp_active`，`epsilon_used` 按会计方式累计；审计增加累计 ε、噪声倍数、裁剪比例、信噪比、数据来源，`limit` 支持 `all`，新增 CSV 导出 | 6.1–6.5 |
 | 15 | DP SSE 的 `dp` 字段 | `{ epsilon_spent, epsilon_used }` | 增加 `accountant`，累计值按会计方式 | 7.3 |
 | 16 | FL 预估剩余时间 | `eta_sec` 为「平滑滤波预测」，无算法说明 | EMA：s₁ = d₁，sᵣ = 0.3·dᵣ + 0.7·sᵣ₋₁，ETA = sᵣ × 剩余轮次；`round_completed` 的 `eta_sec` / `elapsed_sec` 为同一平滑结果；新增 `GET /fl/jobs/{id}/eta` | 2.4、2.16.1、7.3 |
@@ -3925,7 +3995,7 @@ v1.2 没有新增业务码，只扩展了上述码的适用场景；具体触发
 | 20 | 任务聚合公钥 | `GET /fl/jobs/{id}/he-public-key` 只返回任务自身密钥 | 同态聚合且项目有有效聚合密钥时返回项目密钥（附 `poly_modulus_degree` / `coeff_modulus_bits` / `source = project`），与聚合与安全页、同态应用集成页一致；CKKS 的 `key_size_bits` 取 log₂Q | 2.8 |
 | 21 | 创建训练任务的默认值与算法来源 | `aggregation` 必填，`total_rounds` 默认 30，`algorithm` 限内置 + `custom` | `aggregation` 未传时取项目 `aggregation_default`，`total_rounds` 取项目配置；`algorithm` 可传 `alg_*` / `mdl_*`（映射为 `custom`）；新增 `params`、`template_id`，响应增加 `algo_ref` / `params` / `algo_ref_name` | 2.3、2.4 |
 | 22 | 任务状态机与动作 | 状态迁移表 + 40901 | `start` / `resume` 前预检（项目、节点在册与在线、算法兼容）并分配容器，`pause` 保存断点、`resume` 从断点续训，`terminate` 以 SIGKILL 释放资源；任务新增 `allowed_actions` / `state_history` / `failure_reason` / `runtime` / `checkpoint` / `eta`；节点心跳丢失时 `Running` 任务转 `Failed` | 2.1、2.4、2.6 |
-| 23 | 指标曲线与导出 | `from_round` / `to_round` 只列出，时间过滤未校验；项目 CSV「格式同上」 | 轮次与 `start_time` / `end_time` 生效并校验（40000 / 40002 / 40003）；单任务 CSV 时间范围生效；项目与跨项目 CSV 使用固定列 `project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at`；新增 `GET /fl/metrics` 历史查询 | 2.7、2.9、2.16.2 |
+| 23 | 指标曲线与导出 | `from_round` / `to_round` 只列出，时间过滤未校验；项目 CSV「格式同上」 | 轮次与 `start_time` / `end_time` 生效并校验（40000 / 40002 / 40003）；单任务 CSV 时间范围生效；项目与跨项目 CSV 使用固定列 `project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at`；新增 `GET /fl/metrics` 历史查询；聚合节点不产生本地指标，`scope=nodes` 与历史查询、CSV 只含训练节点 | 2.7、2.9、2.16.2 |
 | 24 | 项目接口 | 只有 `GET /projects`（`project_id` / `name` / `type` / `created_at`） | `GET /projects` 增加描述、基准算法、聚合轮数、训练目标、节点 / 任务数、`aggregation_default`、`revision` 等并支持 `keyword`；新增项目创建、详情、修改、配置导出 | 1.3、1.5–1.7 |
 | 25 | 节点 ID 唯一范围与节点校验 | `node_id` 全局唯一 | 项目内唯一（重复 40902），≤ 40 个字符；节点增加 `data_dir`（绝对路径）、`running_job_count`；添加节点校验 IP / 端口格式与连通性（文档保留网段 `192.0.2.0/24` 视为不可达，mock）；新增编辑节点（`online` 置离线）；被运行中任务使用时改 `node_id` / `role` / `data_partition` / `data_dir` 返回 40901 | 2.11 |
 | 26 | 聚合策略归属 | 任务级 `aggregation` | 新增项目级聚合配置（秘密共享门限、同态参数、Top-k 稀疏化与量化）、通信量实时估算、聚合密钥对；保存的 `strategy` 成为任务编排页的默认聚合方式 | 2.12 |
@@ -3937,24 +4007,37 @@ v1.2 没有新增业务码，只扩展了上述码的适用场景；具体触发
 | 32 | DP 新增能力 | 无 | 新增机制目录、效用-隐私平衡、自适应噪声（字段 / 梯度两种模式）、统计查询配置与发布、组合定理对比、策略编排与下发、框架实现切换、hook 链、框架内部指标、初始化检查 | 6.6–6.11 |
 | 33 | 错误码适用范围 | 见 v1.1 第 9 节 | 不新增业务码，扩展 40000 / 40001 / 40002 / 40003 / 40400 / 40402 / 40901 / 40902 / 42201 的适用场景；校验错误在 `data.field` 给出出错字段 | 0.7、9 |
 | 34 | 接口总表与枚举 | 52 个接口；`MpcOperator` 5 项、`HeScheme` 3 项 | 129 个接口（新增 77 个）并全部重新编号；第 8 节补充 v1.2 新增枚举；第 11 节接口编号同步更新 | 8、10、11 |
+| 35 | 导出文件时间格式 | 未规定 | 项目配置 JSON、指标 CSV、评估报告、HE 性能日志、MPC 报表、DP 审计 CSV 的时间统一写成 `YYYY-MM-DD HH:mm:ss +08:00`（内核 `k.fmtLocal`），CSV 时间列名注明 `(UTC+8)`，项目配置 JSON 另带 `"timezone": "UTC+8"`；接口 JSON 中的时间仍为 ISO 8601 | 1.7、2.13.5、2.16.2、3.16、4.6、6.5 |
+| 36 | 模型参数量口径 | 各模块各自估算 | 统一取内核 `MODEL_PARAMS`：lr 69、xgb 2,176、cnn 61,706、lstm 203,143、tcn 37,959、custom 20,000；聚合估算、隔离审计、HE 日志、DP 指标共用 | 2.12.5、2.14.2、3.16、6.11 |
+| 37 | 节点 IP 校验 | 只要求合法 IPv4 / IPv6 | 特殊地址一律 40002（0.0.0.0、255.255.255.255、回环、组播、保留段、按 /24 的网络与广播地址、`::` 等），message 说明原因 | 2.11.2 |
+| 38 | 数据隔离传输审计 | 无 | 梯度 / 全局参数元素数 = ⌈ρ × P⌉（ρ 取项目 Top-k 配置），`wire_bytes` 与聚合与安全页同一套公式；`payload_forbidden` 增加求交键与企业标识（`credit_code_hash`、`legal_person_hash` 等） | 2.14 |
+| 39 | HE 四步流程耗时与日志 | 3.3–3.5 各自给出耗时 | `encrypt` / `evaluate` / `decrypt` 改用统一耗时模型；会话密钥逐步记账，解密完成后写性能日志（来源 `session`），`session_summary` 为实际记账之和；训练任务日志的条数与耗时按 Top-k 保留比例与批打包计算 | 3.5、3.16 |
+| 40 | 聚合与安全页的密钥播种 | 无 | `GET …/aggregation`、`…/keys`、`…/public-key`、`PUT …/aggregation`、`POST …/reset` 读取项目密钥前先让同态模块播种聚合密钥；`GET /fl/jobs/{id}/he-public-key` 不触发播种，保证与任务详情一致；无在用密钥时 `…/public-key` 返回 40402 | 2.12.6 |
+| 41 | 压缩比评估的 `field_bits` | 下限 `quant_bits` + 2 | 下限为 max(16, `quant_bits` + ⌈log₂n⌉)（n = 3），与聚合配置同一约束 | 2.13.1 |
+| 42 | PSI 数据接入 | 文件来源只登记名称与来源 | 文件来源可带 `row_count` / `columns[]` / `sample_rows`（浏览器解析 CSV），未带时按文件大小 ÷ 64 估算行数；`preview[]` 按来源给出真实前 3 行脱敏值或说明；求交键哈希前缀展示 | 5.0.3、5.0.4 |
+| 43 | PSI 流水线失败与快照 | 只有成功路径 | 求交结果少于 100 条时流水线 `failed`，后续阶段 `skipped`，不生成训练任务，SSE 失败时也推 `pipeline_finished`；完成后统计固化为快照并返回 `stats_snapshot_at`，删除数据集前先为已完成流水线生成快照；流水线启动按 5.1 规格校验参数 | 5.3、5.4、7.3 |
+| 44 | DP 实现按项目选用 | `provider` 为平台全局 | `GET /dp/providers?project_id=`，`PUT /dp/provider` 须带 `project_id`，只改该项目待启动 / 失败 / 已终止任务，运行中与已完成任务保留原实现 | 6.11 |
+| 45 | DP 预估与平衡的时序效用 | 只有分类 Accuracy | `/dp/estimate` 增加 `task_type` / `primary_metric` / `metrics[]` / `curve[].estimated_rmse`；`/dp/tradeoff` 增加 `baseline_job_id` / `task_type` / `max_metric_increase_pct` 与 `metric` / `rule`；时序效用 = 基线 ×（1 + 1.2·e^(−ε_eq/2.2)）；梯度模式增加 `fixed_clip_norm` 等 | 6.0、6.3、6.7、6.8 |
+| 46 | MPC 参与方状态与报表 | 报表列固定 | 参与方 `status` 跟随任务（`abnormal` 优先）；报表协议与状态用中文，时间列 `(UTC+8)`，带 `task_ids` 时明细按请求顺序，恰为 2 个时追加对比段 | 4.3、4.6 |
+| 47 | 校验提示文案 | 未规定 | 参数 schema 不是合法 JSON 时 message 给出中文原因与行列号；指标查询错误提示使用界面中文字段名 | 2.7、2.15.2 |
 
 ### A.2 增补稿之间的不一致与待确认项
 
-下列问题来自各模块增补稿彼此之间或与 v1.1 之间尚未对齐，本文按增补稿原文并入，并在这里标出，待对应模块负责人确认。
+下列问题来自各模块增补稿彼此之间或与 v1.1 之间的不一致。状态为「已解决」的在本轮增补稿中已统一，文中以统一后的口径为准。
 
-| # | 问题 | 涉及模块 | 本文处理 |
-|---|---|---|---|
-| 1 | DP 会计方式默认值不统一：任务配置默认 `rdp`，`POST /dp/estimate`、`POST /dp/tradeoff` 未传时默认 `basic`，预估页与任务实际注入的噪声可能不一致 | dp | 保留原文，见 6.0、6.3、6.7 |
-| 2 | 密钥 `rotate_reason` 响应字段只列了 `manual` / `auto`，正文却写入 `superseded` | he | 枚举 `HeRotateReason` 补入 `superseded` |
-| 3 | 同一算法在不同模块的参数量口径不同：聚合估算 LSTM 为 203,143（2 层、128 隐藏单元），HE 日志 LSTM 为 52,000，DP 指标 LSTM 为 12,416，CNN 三处一致（61,706） | fed-sec、he、dp | 各自保留，均为演示模型的估算口径 |
-| 4 | 节点 ID 唯一范围：v1.1 写「全局唯一」，任务编排增补为项目内唯一 | fed-orch | 以项目内唯一为准 |
-| 5 | 项目 CSV 导出：v1.1 写「参数与响应格式同上」，历史指标增补固定了另一套列 | fed-orch | 以固定列为准，v1.1 描述已改 |
-| 6 | MPC 报表：v1.1 支持 `xlsx` / `csv`（默认 `xlsx`），新接口只描述 CSV | mpc | 新接口只写 CSV，`xlsx` 仅旧接口保留 |
-| 7 | MPC 告警：`alarms[].ratio_to_mean` 是否保留未说明；按偏离绝对值判定后，通信量或耗时偏低的一方也会被判异常，v1.1 只判偏高 | mpc | 保留字段并标注以 `deviation_pct` 为准 |
-| 8 | 注册算法 / 自定义模型只能在创建任务时选用，`PATCH /fl/jobs/{id}` 不接受它们的 `algo_id` | fed-orch、he | 在 2.5 写明 |
-| 9 | 项目聚合配置的 `ss.threshold` / `ss.parties` 与任务详情 `aggregation_info.threshold` / `share_count` 的取值关系未说明 | fed-sec、v1.1 | 保留各自定义 |
-| 10 | 压缩比评估 `field_bits` 下限固定为 `quant_bits` + 2（对应 n = 3），聚合配置按 `quant_bits` + ⌈log₂n⌉ | fed-sec | 保留，n ≠ 3 时需另行校验 |
-| 11 | 聚合与安全页对「未生成密钥」项目返回 `he_key = null`，同态页首次访问会播种 1 把在用的 Paillier 聚合密钥，两页首次进入的先后会影响所见 | fed-sec、he | fed-sec 生成前先触发同态播种，读取路径未规定 |
+| # | 问题 | 涉及模块 | 状态 | 处理 |
+|---|---|---|---|---|
+| 1 | DP 会计方式默认值不统一：任务默认 `rdp`，`/dp/estimate`、`/dp/tradeoff` 默认 `basic` | dp | 已解决 | 三处默认均为 `rdp`，显式传 `basic` 与 v1.1 一致 |
+| 2 | 密钥 `rotate_reason` 响应字段只列了 `manual` / `auto`，正文却写入 `superseded` | he | 待确认 | 枚举 `HeRotateReason` 已补入 `superseded` |
+| 3 | 同一算法在不同模块的参数量口径不同 | fed-sec、he、dp | 已解决 | 统一为内核 `MODEL_PARAMS`，见 A.1 第 36 条 |
+| 4 | 节点 ID 唯一范围：v1.1 写「全局唯一」，任务编排为项目内唯一 | fed-orch | 已按增补稿处理 | 以项目内唯一为准 |
+| 5 | 项目 CSV 导出：v1.1 写「参数与响应格式同上」，历史指标增补另定固定列 | fed-orch | 已按增补稿处理 | 以固定列为准，v1.1 描述已改 |
+| 6 | MPC 报表：v1.1 支持 `xlsx` / `csv`（默认 `xlsx`），新接口只描述 CSV | mpc | 待确认 | 新接口只写 CSV，`xlsx` 仅旧接口保留 |
+| 7 | MPC 告警口径：`ratio_to_mean` 与 `deviation_pct` 并存，偏低一方是否判异常 | mpc | 已解决 | 判定依据为 `deviation_pct`（偏离绝对值，通信量与计算耗时分别判定），`ratio_to_mean` 保留为兼容字段 |
+| 8 | 注册算法 / 自定义模型只能在创建任务时选用，`PATCH /fl/jobs/{id}` 不接受它们的 `algo_id` | fed-orch、he | 待确认 | 在 2.5 写明 |
+| 9 | 项目聚合配置的 `ss.threshold` / `ss.parties` 与任务详情 `aggregation_info.threshold` / `share_count` 的取值关系未说明 | fed-sec、v1.1 | 待确认 | 保留各自定义 |
+| 10 | 压缩比评估 `field_bits` 下限与聚合配置不一致 | fed-sec | 已解决 | 统一为 max(16, `quant_bits` + ⌈log₂n⌉)，见 A.1 第 41 条 |
+| 11 | 聚合与安全页与同态页首次进入的先后影响所见密钥 | fed-sec、he | 已解决 | 聚合与安全页读取前先让同态模块播种，见 A.1 第 40 条 |
 
 ---
 
