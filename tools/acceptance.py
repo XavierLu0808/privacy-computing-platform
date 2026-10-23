@@ -233,7 +233,7 @@ a {{ color:var(--primary); }}
 .legend {{ font-size:12.5px; color:var(--muted); margin-top:8px; }}
 </style></head><body><div class="wrap">
 <h1>隐私计算联邦学习软件原型 · 验收进度表</h1>
-<div class="sub">2026 年 AI+稀土追溯模型关键技术及应用研究（隐私计算）联合研发项目 · 生成于 {generated} SGT · 演示环境：<a href="{console}" target="_blank" rel="noopener">控制台</a></div>
+<div class="sub">2026 年 AI+稀土追溯模型关键技术及应用研究（隐私计算）联合研发项目 · 生成于 {generated} SGT · 演示环境：<a href="{console}" target="_blank" rel="noopener">控制台</a> · <a href="验收进度表.xlsx">下载 Excel 版</a></div>
 <div class="kpis">
  <div class="kpi"><b>{done} / {total}</b><span>三级功能已完成（V5 60 项 + 合同补充项）</span></div>
  <div class="kpi"><b>{v5done} / {v5}</b><span>自研功能清单 V5 已完成</span></div>
