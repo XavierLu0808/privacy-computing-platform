@@ -185,7 +185,7 @@ test('求交流水线：校验 parties，统计量来自所选数据集，完成
 
   const cfg = { task_type: 'classification', algorithm: 'xgb', aggregation: 'he', node_ids: NODES };
   const pipe = await okData('POST', '/projects/p1/psi/pipelines', body({ training: { fl_job_config: cfg, auto_start: false } }));
-  assert.equal(pipe.parties[1].dataset_name, '信贷行为表');
+  assert.equal(pipe.parties[1].dataset_name, '稀土贸易履约记录表');
   // 数据集在用时不允许删
   assert.equal((await call('DELETE', '/datasets/ds_p1_a_user')).code, 40901);
 

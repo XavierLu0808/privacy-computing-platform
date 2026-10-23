@@ -85,6 +85,8 @@
         open[g.mod] = !open[g.mod];
         if (open[g.mod] && !isCur) go(g.mod, { sub: g.subs[0].sub });
         else renderNav();
+        const again = document.querySelector('.nav-item[data-mod="' + g.mod + '"]');
+        if (again) again.focus();
       });
       group.appendChild(head);
 
@@ -163,7 +165,10 @@
 
   /* ---------- 项目 ---------- */
 
+  const PROJECT_KEY = 'privacy-console.project';
+
   function switchProject(projectId) {
+    try { localStorage.setItem(PROJECT_KEY, projectId); } catch (e) { /* 隐私模式下忽略 */ }
     if (window.FL) window.FL.unmount();
     flMounted = false;
     if (current && current.module !== 'FL') {
@@ -185,7 +190,9 @@
       o.textContent = p.name;
       sel.appendChild(o);
     });
-    const target = selectId || ctx.projectId || projects.items[0].project_id;
+    const remembered = (function () { try { return localStorage.getItem(PROJECT_KEY); } catch (e) { return null; } })();
+    const known = function (id) { return id && projects.items.some(function (p) { return p.project_id === id; }); };
+    const target = selectId || ctx.projectId || (known(remembered) ? remembered : projects.items[0].project_id);
     sel.value = target;
     if (target !== ctx.projectId) switchProject(target);
     return projects.items;
@@ -201,8 +208,22 @@
       document.title = platform.platform_name + ' · 控制台';
       $('envLabel').textContent = platform.environment_label;
       $('sourceNote').textContent = window.APP_CONFIG.useMock
-        ? '当前为内置 mock 数据源（config.js: useMock = true），接口契约与 API.md 一致。'
+        ? '当前为内置 mock 数据源（config.js: useMock = true），接口契约与 API.md 一致。演示数据保存在本浏览器，刷新不丢失。'
         : '已连接后端 ' + window.APP_CONFIG.apiBase + '。';
+      if (window.APP_CONFIG.useMock && window.MockServer.resetDemo) {
+        const reset = UI.el('button', 'btn-link', '重置演示数据');
+        reset.type = 'button';
+        reset.style.alignSelf = 'flex-start';
+        reset.addEventListener('click', function () {
+          UI.modal({
+            title: '重置演示数据',
+            body: UI.el('p', null, '清空本浏览器里保存的全部演示数据（新建的项目、节点、任务、配置等），恢复到初始演示状态。此操作不可撤销。'),
+            submitText: '确认重置',
+            onSubmit: function () { window.MockServer.resetDemo(); }
+          });
+        });
+        $('sourceNote').parentNode.appendChild(reset);
+      }
 
       const items = await reloadProjects();
       ctx.projectId = $('projSelect').value || items[0].project_id;

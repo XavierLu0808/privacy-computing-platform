@@ -39,18 +39,28 @@
     return out;
   }
 
-  function lossAt(r, off) { return 0.94 * Math.exp(-r / 8.5) + 0.075 + off + 0.012 * Math.sin(r * 1.7); }
-  function accAt(r, off) { return 0.56 + 0.40 * (1 - Math.exp(-r / 7.5)) - off * 0.6 + 0.005 * Math.sin(r * 2.1); }
+  // 曲线形状参数 pf = { speed 收敛快慢, floor 最终误差水平, phase 抖动相位 }，默认 { 1, 1, 0 }。
+  // 训练任务按「算法 + 参数 + 节点」派生不同的 pf，所以不同算法 / 参数、不同节点的曲线各不相同。
+  const PF0 = { speed: 1, floor: 1, phase: 0 };
+  function lossAt(r, off, pf) { pf = pf || PF0; return 0.94 * Math.exp(-r / (8.5 * pf.speed)) + 0.075 * pf.floor + off + 0.012 * Math.sin(r * 1.7 + pf.phase); }
+  function accAt(r, off, pf) { pf = pf || PF0; return 0.56 + (0.40 - 0.03 * (pf.floor - 1)) * (1 - Math.exp(-r / (7.5 * pf.speed))) - off * 0.6 + 0.005 * Math.sin(r * 2.1 + pf.phase); }
   // 时序预测：归一化后的 RMSE / MAE，随轮次下降
-  function rmseAt(r, off) { return 0.62 * Math.exp(-r / 9) + 0.11 + off * 0.8 + 0.008 * Math.sin(r * 1.3); }
-  function maeAt(r, off) { return rmseAt(r, off) * 0.74 + 0.004 * Math.cos(r * 1.9); }
+  function rmseAt(r, off, pf) { pf = pf || PF0; return 0.62 * Math.exp(-r / (9 * pf.speed)) + 0.11 * pf.floor + off * 0.8 + 0.008 * Math.sin(r * 1.3 + pf.phase); }
+  function maeAt(r, off, pf) { pf = pf || PF0; return rmseAt(r, off, pf) * 0.74 + 0.004 * Math.cos(r * 1.9 + pf.phase); }
 
   /** 按任务类型算某一轮的指标，返回 { metric_key: value }。 */
-  function metricsAt(taskType, r, off) {
+  function metricsAt(taskType, r, off, pf) {
     if (taskType === 'timeseries') {
-      return { rmse: Number(rmseAt(r, off).toFixed(4)), mae: Number(maeAt(r, off).toFixed(4)) };
+      return { rmse: Number(rmseAt(r, off, pf).toFixed(4)), mae: Number(maeAt(r, off, pf).toFixed(4)) };
     }
-    return { loss: Number(lossAt(r, off).toFixed(4)), accuracy: Number(accAt(r, off).toFixed(4)) };
+    return { loss: Number(lossAt(r, off, pf).toFixed(4)), accuracy: Number(accAt(r, off, pf).toFixed(4)) };
+  }
+
+  /** 由种子串派生曲线形状：speed ∈ [0.8, 1.25]，floor ∈ [0.85, 1.2]，phase ∈ [0, 2π)。 */
+  function curveProfile(seed) {
+    const h = hashHex(seed, 1);
+    const u = function (i) { return parseInt(h.slice(i * 2, i * 2 + 2), 16) / 255; };
+    return { speed: 0.8 + 0.45 * u(0), floor: 0.85 + 0.35 * u(1), phase: 2 * Math.PI * u(2) };
   }
 
   /* ================= SSE 总线 ================= */
@@ -132,20 +142,20 @@
   }
   const DATASET_SEED = [
     {
-      key: 'a_user', party_id: 'party-a', name: '用户画像表', source_type: 'database',
-      source: { jdbc_url: 'jdbc:mysql://10.22.6.14:3306/risk', table: 'user_profile' },
+      key: 'a_user', party_id: 'party-a', name: '稀土企业经营画像表', source_type: 'database',
+      source: { jdbc_url: 'jdbc:mysql://10.22.6.14:3306/ree_enterprise', table: 'enterprise_profile' },
       row_count: 1200000, id_column: 'phone_hash', time_column: null,
       columns: [{ name: 'phone_hash', type: 'string' }, { name: 'id_card_hash', type: 'string' }].concat(featureCols('a_feat', 32))
     },
     {
-      key: 'b_user', party_id: 'party-b', name: '信贷行为表', source_type: 'database',
-      source: { jdbc_url: 'jdbc:postgresql://10.31.8.27:5432/credit', table: 'loan_behavior' },
+      key: 'b_user', party_id: 'party-b', name: '稀土贸易履约记录表', source_type: 'database',
+      source: { jdbc_url: 'jdbc:postgresql://10.31.8.27:5432/ree_trade', table: 'trade_fulfillment' },
       row_count: 864000, id_column: 'phone_hash', time_column: null,
       columns: [{ name: 'phone_hash', type: 'string' }, { name: 'label', type: 'int' }].concat(featureCols('b_feat', 36))
     },
     {
-      key: 'a_txn_ts', party_id: 'party-a', name: '日交易流水（时序）', source_type: 'hdfs',
-      source: { path: 'hdfs://10.22.6.14:8020/warehouse/txn_daily' },
+      key: 'a_txn_ts', party_id: 'party-a', name: '稀土产品日出货流水（时序）', source_type: 'hdfs',
+      source: { path: 'hdfs://10.22.6.14:8020/warehouse/ree_shipment_daily' },
       row_count: 3650000, id_column: 'phone_hash', time_column: 'txn_date',
       columns: [{ name: 'phone_hash', type: 'string' }, { name: 'txn_date', type: 'date' }, { name: 'txn_amount', type: 'float' }].concat(featureCols('ts_feat', 8))
     },
@@ -189,7 +199,7 @@
   /** 任务类型目录（GET /fl/task-types）。指标卡、曲线量纲、CSV 列都按 metrics 走。 */
   const TASK_TYPES = [
     {
-      task_type: 'classification', name: '分类', description: '二分类 / 多分类，如风控违约预测',
+      task_type: 'classification', name: '分类', description: '二分类 / 多分类，如稀土供应商违约预测',
       algorithms: ['lr', 'xgb', 'cnn', 'custom'],
       metrics: [
         { key: 'loss', label: 'Loss', y_min: 0, y_max: 1, better: 'lower', digits: 4 },
@@ -198,7 +208,7 @@
       requires_timeseries: false
     },
     {
-      task_type: 'timeseries', name: '时序预测', description: '按时间窗口预测未来值，如交易额、流量预测',
+      task_type: 'timeseries', name: '时序预测', description: '按时间窗口预测未来值，如稀土氧化物价格、出货量预测',
       algorithms: ['lstm', 'tcn', 'custom'],
       metrics: [
         { key: 'rmse', label: 'RMSE（归一化）', y_min: 0, y_max: 1, better: 'lower', digits: 4 },
@@ -308,6 +318,13 @@
     return job;
   }
 
+  /** 各演示项目的示例任务名（时序任务、分类任务），新建项目沿用 p1 的命名 */
+  const SEED_JOB_NAMES = {
+    p1: ['稀土氧化物价格预测 · LSTM', '供应商违约预测 · XGBoost'],
+    p2: ['稀土精矿到港量预测 · LSTM', '供应链风险评级 · XGBoost'],
+    p3: ['稀土产品流向量预测 · LSTM', '溯源记录一致性判别 · XGBoost']
+  };
+
   /** 首次访问项目时播种：数据集 + 一个已完成的时序任务（历史）+ 一个待启动的分类任务。 */
   function seedProject(projectId) {
     if (db.seeded[projectId]) return;
@@ -322,20 +339,26 @@
         created_at: new Date(Date.now() - (20 - i) * day).toISOString()
       };
     });
+    const names = SEED_JOB_NAMES[projectId] || SEED_JOB_NAMES.p1;
     const ts = createJob(projectId, {
-      name: '稀土氧化物价格预测 · LSTM', task_type: 'timeseries', algorithm: 'lstm', aggregation: 'ss', total_rounds: 20,
+      name: names[0], task_type: 'timeseries', algorithm: 'lstm', aggregation: 'ss', total_rounds: 20,
       dataset_source: { type: 'dataset', dataset_ids: ['ds_' + projectId + '_ree_price'] },
       timeseries: { time_column: 'trade_date', window_size: 30, horizon: 7 }
     });
     ts.created_at = new Date(Date.now() - 3 * day).toISOString();
     ts.started_at = new Date(Date.now() - 3 * day + 60000).toISOString();
-    for (let r = 1; r <= ts.total_rounds; r++) ts.metrics.push(roundEntry(ts, r));
+    const t0 = Date.parse(ts.started_at);
+    for (let r = 1; r <= ts.total_rounds; r++) {
+      const e = roundEntry(ts, r);
+      e.recorded_at = new Date(t0 + r * 4200).toISOString();   // 历史任务按每轮 4.2 秒回填写入时间
+      ts.metrics.push(e);
+    }
     ts.current_round = ts.total_rounds;
     ts.elapsed_sec = Number((ts.total_rounds * 4.2).toFixed(1));
     ts.status = 'Success';
     ts.finished_at = new Date(Date.now() - 3 * day + 150000).toISOString();
     createJob(projectId, {
-      name: '供应商违约预测 · XGBoost',
+      name: names[1],
       dataset_source: { type: 'dataset', dataset_ids: ['ds_' + projectId + '_a_user', 'ds_' + projectId + '_b_user'] }
     });
   }
@@ -358,13 +381,24 @@
 
   const NODE_OFFSETS = [0.05, -0.025, 0.09, 0.03, -0.01];
 
+  function jobProfile(job) {
+    // 默认算法、无参数的任务保持基准曲线；换算法、换参数或注册算法时曲线随之变化
+    const key = job.algorithm + '|' + JSON.stringify(job.params || {}) + '|' + (job.algo_ref ? JSON.stringify(job.algo_ref) : '');
+    return key === (job.task_type === 'timeseries' ? 'lstm' : 'xgb') + '|{}|' ? PF0 : curveProfile(key);
+  }
+
   function roundEntry(job, r) {
+    const base = jobProfile(job);
     const nodeMetrics = jobNodes(job).map(function (nd, i) {
-      return Object.assign({ node_id: nd.node_id }, metricsAt(job.task_type, r, NODE_OFFSETS[i % NODE_OFFSETS.length]), {
+      // 各节点：本地数据分布不同 → 收敛速度、误差水平各异，偏差随轮次衰减（不是全局曲线的常数平移）
+      const np = curveProfile(job.job_id + '|' + nd.node_id);
+      const pf = { speed: base.speed * (0.85 + 0.3 * (np.speed - 0.8) / 0.45), floor: base.floor * (0.9 + 0.2 * (np.floor - 0.85) / 0.35), phase: np.phase };
+      const off = NODE_OFFSETS[i % NODE_OFFSETS.length] * (0.45 + 0.55 * Math.exp(-r / 12));
+      return Object.assign({ node_id: nd.node_id }, metricsAt(job.task_type, r, off, pf), {
         upload_kb: Number((148 * (1 + (i * 0.06)) + (r % 5) * 3.4).toFixed(1))
       });
     });
-    return { round: r, recorded_at: NOW(), global: metricsAt(job.task_type, r, 0), nodes: nodeMetrics };
+    return { round: r, recorded_at: NOW(), global: metricsAt(job.task_type, r, 0, base), nodes: nodeMetrics };
   }
 
   function aggregationInfo(job) {
@@ -1429,8 +1463,74 @@
     return { path: path, query: query };
   }
 
+  /* ================= 持久化（演示环境） =================
+   * mock 数据默认只在内存里，刷新即丢。浏览器里把 db 快照存进 localStorage（APP_CONFIG.mockPersist !== false），
+   * 第一次请求时恢复，之后每次写操作（非 GET）去抖保存。node 测试环境没有 localStorage，自动跳过。
+   * 刷新会打断正在运行的定时任务：训练任务恢复为「已暂停」可继续；其他运行中的记录标为失败并写明原因。
+   */
+  const PERSIST_KEY = 'privacy-console.mockdb.v1';
+  let restored = false;
+  let saveTimer = null;
+  function storage() {
+    try { return window.APP_CONFIG.mockPersist !== false && window.localStorage ? window.localStorage : null; } catch (e) { return null; }
+  }
+  function snapshotReplacer(key, value) {
+    if (typeof value === 'function') return undefined;
+    if (key === '_timer' || key === 'timer' || key === '_sse') return undefined;
+    return value;
+  }
+  function interrupt(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 6) return;
+    if (Array.isArray(node)) { node.forEach(function (x) { interrupt(x, depth + 1); }); return; }
+    if (node.status === 'running' || node.status === 'importing') {
+      node.status = node.status === 'importing' ? 'failed' : 'failed';
+      node.error = node.error || '演示环境页面刷新，运行中的任务被中断，请重新发起';
+    }
+    Object.keys(node).forEach(function (k) { if (node[k] && typeof node[k] === 'object') interrupt(node[k], depth + 1); });
+  }
+  function restoreDb() {
+    restored = true;
+    const st = storage();
+    if (!st) return;
+    // 训练进度等由定时器推进的变化也要落盘：每 5 秒保存一次
+    setInterval(function () { scheduleSave(); }, 5000);
+    let saved = null;
+    try { saved = JSON.parse(st.getItem(PERSIST_KEY) || 'null'); } catch (e) { saved = null; }
+    if (!saved) return;
+    Object.keys(saved).forEach(function (k) {
+      if (typeof db[k] === 'function') return;
+      if (db[k] && typeof db[k] === 'object' && !Array.isArray(db[k]) && saved[k] && typeof saved[k] === 'object' && !Array.isArray(saved[k])) {
+        Object.keys(saved[k]).forEach(function (sub) { db[k][sub] = saved[k][sub]; });
+      } else {
+        db[k] = saved[k];
+      }
+    });
+    Object.keys(db.flJobs).forEach(function (id) {
+      const j = db.flJobs[id];
+      j._timer = null;
+      if (j.status === 'Running') { j.status = 'Paused'; j.failure_reason = null; }
+    });
+    Object.keys(db).forEach(function (k) { if (k !== 'flJobs') interrupt(db[k], 0); });
+  }
+  function scheduleSave() {
+    const st = storage();
+    if (!st) return;
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(function () {
+      try { st.setItem(PERSIST_KEY, JSON.stringify(db, snapshotReplacer)); } catch (e) { console.warn('[mock] 保存演示数据失败', e); }
+    }, 300);
+  }
+  /** 清空本浏览器保存的演示数据并刷新页面（侧边栏「重置演示数据」） */
+  function resetDemo() {
+    const st = storage();
+    if (st) st.removeItem(PERSIST_KEY);
+    location.reload();
+  }
+
   async function handle(method, url, body) {
     const cfg = window.APP_CONFIG;
+    if (!restored) restoreDb();
+    if (method !== 'GET') scheduleSave();
     if (cfg.mockLatencyMs) await sleep(cfg.mockLatencyMs);
     const parsed = splitUrl(url);
     for (let i = 0; i < routes.length; i++) {
@@ -1498,5 +1598,5 @@
     });
   }
 
-  window.MockServer = { handle: handle, subscribe: subscribe, download: download, extend: extend, _db: db };
+  window.MockServer = { handle: handle, subscribe: subscribe, download: download, extend: extend, resetDemo: resetDemo, _db: db };
 })();
