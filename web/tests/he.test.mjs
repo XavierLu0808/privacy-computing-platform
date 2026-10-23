@@ -265,11 +265,20 @@ test('[HE-APP-05] 日志：模拟与同态聚合训练的每环节耗时与密�
   const rounds = new Set(j.items.map((x) => x.round));
   assert.equal(rounds.size, 2);
   assert.equal(j.total, 2 * (3 + 1 + 1), '每轮 3 个训练节点加密 + 聚合 + 解密');
+  // 条数 = ⌈参数量 × Top-k 保留比例 / 每条打包个数⌉，三者分别取自内核 MODEL_PARAMS 与聚合与安全页生效配置
+  const agg = await okData('GET', '/projects/p1/fl/aggregation');
+  const pk = await okData('GET', '/fl/jobs/' + cls.job_id + '/he-public-key');
   const enc = j.items.find((x) => x.stage === 'encrypt');
-  assert.equal(enc.ciphertext_count, Math.ceil(2176 / 32), 'xgb 单次上传 2176 维 → 68 条密文');
-  assert.equal(enc.ciphertext_kb, 34, '68 条 × 0.5 KB（2 × 2048 bit = 512 字节）');
-  const per = 3.4 / 16;
-  assert.ok(enc.elapsed_ms > 68 * per * 0.94 - 0.01 && enc.elapsed_ms < 68 * per * 1.06 + 0.01, '节点 16 线程批处理：3.4 / 16 ms / 条 ±6%');
+  const ratio = agg.sparsification.enabled ? agg.sparsification.topk_ratio : 1;
+  const expectCts = Math.ceil(Math.ceil(2176 * ratio) / agg.he.batch_size);
+  assert.equal(enc.ciphertext_count, expectCts, 'xgb 2176 维 × Top-k ' + ratio + ' ÷ 每条 ' + agg.he.batch_size + ' 个');
+  assert.equal(enc.key_id, pk.key_id, '按任务绑定的公钥计算');
+  const each = 2 * pk.key_size_bits / 8 / 1024;
+  assert.equal(enc.ciphertext_kb, Number((each * expectCts).toFixed(1)));
+  const kf = pk.key_size_bits / 2048;
+  const per = 3.4 / 16 * kf * kf * kf;
+  assert.ok(enc.elapsed_ms > expectCts * per * 0.94 - 0.01 && enc.elapsed_ms < expectCts * per * 1.06 + 0.01, '节点 16 线程批处理，按密钥位数³ 缩放 ±6%');
+  assert.equal(j.job_bases[0].values_uploaded, Math.ceil(2176 * ratio));
   assert.match(j.timing_basis, /16 线程批处理/);
   assert.ok(j.summary.find((x) => x.stage === 'encrypt').avg_elapsed_ms > 0);
   assert.deepEqual(j.refs.map((r) => r.source).sort(), ['fl_job', 'simulation']);
@@ -435,4 +444,33 @@ test('[HE-APP-05] 同态训练任务每轮 加密 + 聚合 + 解密 墙钟耗时
     }
     await okData('POST', '/fl/jobs/' + j.job_id + '/actions', { action: 'terminate' }).catch(() => {});
   }
+});
+
+test('[HE-APP-05] 日志按任务实际绑定的公钥位数与 Top-k 稀疏化计算（D34）：3072 bit → 单条 0.75 KB，关闭稀疏化后条数回到全量', async (t) => {
+  const { okData, tick } = boot(t);
+  const { items } = await okData('GET', '/projects/p1/fl/jobs');
+  const job = items.find((j) => j.aggregation === 'he');
+  const k3 = await okData('POST', '/he/keys', { scheme: 'paillier', project_id: 'p1', purpose: 'fl_aggregation', key_params: { key_size_bits: 3072 } });
+  const pk = await okData('GET', '/fl/jobs/' + job.job_id + '/he-public-key');
+  assert.equal(pk.key_id, k3.key_id, '项目在用聚合密钥即任务绑定公钥');
+  assert.equal(pk.key_size_bits, 3072);
+  await okData('POST', '/fl/jobs/' + job.job_id + '/actions', { action: 'start' });
+  tick(650);
+  const agg = await okData('GET', '/projects/p1/fl/aggregation');
+  const a = await okData('GET', '/projects/p1/he/logs?source=fl_job&ref_id=' + job.job_id);
+  const e = a.items.find((x) => x.stage === 'encrypt');
+  const n = Math.ceil(Math.ceil(2176 * agg.sparsification.topk_ratio) / agg.he.batch_size);
+  assert.equal(e.key_id, k3.key_id);
+  assert.equal(e.ciphertext_count, n);
+  assert.equal(e.ciphertext_kb, Number((0.75 * n).toFixed(1)), '3072 bit：2 × 3072 / 8 = 768 字节 = 0.75 KB');
+  assert.equal(a.job_bases[0].ciphertext_kb_each, 0.75);
+  assert.match(a.timing_basis, /Paillier 3072 bit/);
+  assert.match(a.timing_basis, /Top-k 15%/);
+  const pE = await okData('PUT', '/projects/p1/fl/aggregation', Object.assign({}, { strategy: agg.strategy, ss: agg.ss, he: agg.he },
+    { sparsification: Object.assign({}, agg.sparsification, { enabled: false }) }));
+  void pE;
+  const b = await okData('GET', '/projects/p1/he/logs?source=fl_job&ref_id=' + job.job_id);
+  assert.equal(b.items.find((x) => x.stage === 'encrypt').ciphertext_count, Math.ceil(2176 / agg.he.batch_size), '关闭稀疏化：全部 2176 个参数');
+  assert.match(b.timing_basis, /未稀疏化/);
+  await okData('POST', '/fl/jobs/' + job.job_id + '/actions', { action: 'terminate' });
 });

@@ -301,13 +301,17 @@ GET /projects/{project_id}/he/logs?source=fl_job&ref_id=fl_p1_002
 GET /projects/{project_id}/he/logs/export?source=&ref_id=        （CSV 下载）
 ```
 
-`source`：`session`（全流程配置）/ `simulation` / `fl_job`，不传为全部。响应：`items[]`（`log_id`、`source`、`ref_id`、`ref_name`、`round`、`stage`、`stage_label`、`scheme`、`party`、`elapsed_ms`、`ciphertext_kb`、`ciphertext_count`、`recorded_at`）、`total`、`refs[]`（筛选下拉）、`summary[]`（按环节：`count`、`total_elapsed_ms`、`avg_elapsed_ms`、`total_ciphertext_kb`）、`timing_basis`（耗时口径说明）。
+`source`：`session`（全流程配置）/ `simulation` / `fl_job`，不传为全部。响应：`items[]`（`log_id`、`source`、`ref_id`、`ref_name`、`round`、`stage`、`stage_label`、`scheme`、`party`、`elapsed_ms`、`ciphertext_kb`、`ciphertext_count`、`recorded_at`）、`total`、`refs[]`（筛选下拉）、`summary[]`（按环节：`count`、`total_elapsed_ms`、`avg_elapsed_ms`、`total_ciphertext_kb`）、`job_bases[]`、`timing_basis`（计算口径说明）。
 
 来源：
 
 - 全流程配置：四步流程每次解密完成后，按实际执行的 密钥生成 / 加密 / 密态运算 / 解密 各记 1 条。
 - 流程测试：每次模拟展开为 密钥生成 1 条 + 每个参与方加密 1 条 + 密态聚合 1 条 + 解密 1 条。
-- 训练任务：`aggregation = he` 且已跑的每一轮，每个训练节点加密 1 条 + 聚合方密态聚合 1 条 + 密钥服务解密 1 条；密文条数 = ⌈模型参数量 / 32⌉（参数量读内核 `k.MODEL_PARAMS`：lr 69、xgb 2176、cnn 61706、lstm 203143、tcn 37959、custom 20000，例如 xgb → 68 条、34 KB / 节点 / 轮），单条 0.5 KB（2 × 2048 bit），按节点侧 16 线程批处理 + CRT 解密计（加密 0.213 ms / 条、聚合 0.05 ms / 条 / 方、解密 0.066 ms / 条），±6% 确定性抖动。各训练节点并行加密，每轮墙钟 = 最慢节点加密 + 聚合 + 解密，小于每轮训练时长 4.2 秒（参数量最大的 LSTM 203143 维 → 6349 条，约 1.35 + 0.63 + 0.42 ≈ 2.4 秒）。
+- 训练任务：`aggregation = he` 且已跑的每一轮，每个训练节点加密 1 条 + 聚合方密态聚合 1 条 + 密钥服务解密 1 条。计算口径与界面同源：
+  - 密钥：`GET /fl/jobs/{job_id}/he-public-key`（任务实际绑定的聚合公钥）。Paillier 单条密文 = 2 × 密钥位数 / 8 字节（2048 bit → 0.5 KB，3072 bit → 0.75 KB）；CKKS / BGV 按 H.5 的 2 × N × L × 8 字节（只给总位数 log₂Q 时按 q0 与特殊素数各 60 bit、中间素数 40 bit 估 L）。
+  - 条数：⌈⌈参数量 × Top-k 保留比例⌉ / 每条打包个数⌉。参数量读内核 `k.MODEL_PARAMS`（lr 69、xgb 2176、cnn 61706、lstm 203143、tcn 37959、custom 20000）；保留比例与打包个数读 `GET /projects/{project_id}/fl/aggregation` 的 `sparsification`（未启用按 100%）与 `he.batch_size`（方案与密钥一致时采用，否则 Paillier 取 ⌊位数 / 64⌋、CKKS 取 N / 2）。稀疏化按全局 Top-k 掩码（各方共享同一组索引）计，索引以明文随附、不计入密文。例：xgb、Top-k 15%、每条 16 个 → ⌈327 / 16⌉ = 21 条。
+  - 耗时：节点侧 16 线程批处理、CRT 解密；Paillier 2048 bit 单条 加密 0.213 ms、聚合 0.05 ms / 方、解密 0.066 ms，加解密按 (位数 / 2048)³、聚合按 (位数 / 2048)² 缩放；CKKS / BGV 按 H.6 规则 4 的模型 / 16。±6% 确定性抖动；各训练节点并行加密，每轮墙钟 = 最慢节点加密 + 聚合 + 解密，小于每轮训练时长 4.2 秒。
+  - 响应附 `job_bases[]`（`key_id`、`key_label`、`ciphertext_kb_each`、`slots_per_ciphertext`、`topk_ratio`、`values_uploaded`、`ciphertext_count`、`text`），`timing_basis` 汇总以上口径并逐任务写明。
 
 CSV 列：`来源,任务或测试 ID,名称,轮次,环节,方案,节点或参与方,耗时(ms),密文大小(KB),密文条数,记录时间(UTC+8)`，时间用内核 `fmtLocal` 写成 `2026-10-23 22:58:02 +08:00`，UTF-8 BOM。错误：`source` 非法 `40000`；项目不存在 `40400`。
 

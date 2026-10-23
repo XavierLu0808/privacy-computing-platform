@@ -719,7 +719,7 @@
     });
     box.appendChild(wrap);
     box.appendChild(UI.el('span', 'hint', '共 ' + res.total + ' 条' + (res.total > LIMIT ? '，页面显示最近 ' + LIMIT + ' 条，完整数据请导出 CSV' : '') +
-      '。训练任务的梯度按 Paillier 2048 bit 明文空间 32 个 64 bit 槽位打包加密，单条密文 0.5 KB（2 × 2048 bit）。耗时口径：' + res.timing_basis + '。'));
+      '。计算口径：' + res.timing_basis + '。'));
   }
   async function exportLogs() {
     try {
