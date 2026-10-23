@@ -180,7 +180,9 @@ GET /projects/{project_id}/fl/aggregation/keys
 GET /projects/{project_id}/fl/aggregation/public-key
 ```
 
-返回当前有效密钥的公钥详情。错误码：`40402` 尚未生成密钥对；`40400` 项目不存在。
+返回当前有效密钥的公钥详情。错误码：`40402` 项目当前没有在用的聚合密钥（例如在同态加密页销毁了在用密钥）；`40400` 项目不存在。
+
+`GET …/aggregation`、`…/keys`、`…/public-key`、`PUT …/aggregation`、`POST …/reset` 在读取项目密钥前先确保同态模块已为该项目播种聚合密钥，因此首次进入即显示同态模块在用的聚合密钥，初始状态、密钥列表与过程管控口径一致（D24）。`GET /fl/jobs/{job_id}/he-public-key` 不触发播种，保证与同一时刻任务详情的 `he_public_key_id` 一致。
 
 与同态加密模块共用一套密钥（约定见 docs/api/he.md H.7.7）：
 
@@ -200,6 +202,8 @@ mock 用 `routeFirst` 覆盖内核路由：任务为同态聚合且所属项目�
 
 验收编号：FL-EVAL-01、FL-EVAL-02、FL-EVAL-03（合同 T-01、T-02）。对应：技术指标验证页三张评估卡、指标总览、历史评估记录。
 
+页面顶部固定显示数据来源说明：「当前数值来自原型内置评估引擎的仿真结果」（D02）。
+
 评估是异步长任务：创建后约 3–4 秒完成（mock 每 400 ms 推进一步），进度用 SSE 推送，也可轮询详情。同一项目同一类评估同时只能有一个在运行。结果确定可复现：同项目、同配置结果完全一致。
 
 #### 2.13.1 评估类型与配置
@@ -207,7 +211,7 @@ mock 用 `routeFirst` 覆盖内核路由：任务为同态聚合且所属项目�
 | `kind` | 验收编号 | 配置字段（范围，默认） |
 |---|---|---|
 | `gradient_attack` | FL-EVAL-01 | `sample_count` 攻击样本数（20–1000，200）；`max_iterations` 攻击迭代次数（50–2000，300）；`target_client` 被攻击客户端（`all` / `party-a` / `party-b` / `party-c`，`all`）；`seed`（0–99999，2026） |
-| `compression` | FL-EVAL-02 | `rounds` 训练轮次（5–100，20）；`topk_ratio`（0.001–1，取项目已保存配置）；`quant_bits`（4 / 8 / 16 / 32，取项目配置）；`error_feedback`（bool，取项目配置）；`field_bits`（`quant_bits` + ⌈log₂n⌉ 至 64，n = 3 客户端即 `quant_bits` + 2，与 2.12.1 同一约束；取项目配置） |
+| `compression` | FL-EVAL-02 | `rounds` 训练轮次（5–100，20）；`topk_ratio`（0.001–1，取项目已保存配置）；`quant_bits`（4 / 8 / 16 / 32，取项目配置）；`error_feedback`（bool，取项目配置）；`field_bits`（max(16, `quant_bits` + ⌈log₂n⌉) 至 64，n = 3 客户端，与 2.12.1 同一约束；取项目配置） |
 | `accuracy` | FL-EVAL-03 | `rounds` 联邦轮次（10–200，50）；`local_epochs` 本地训练轮数（1–5，1）；`partition`（`iid` / `dirichlet`，`iid`）；`seed`（0–99999，2026） |
 
 ```
@@ -301,7 +305,7 @@ GET /fl/evaluations/{eval_id}/events
 GET /fl/evaluations/{eval_id}/export
 ```
 
-返回 CSV（UTF-8 BOM），文件名 `{eval_id}_{kind}_report.csv`。内容：评估 ID、评估项、项目、起止时间、配置 JSON，以及该类评估的结果表（攻击：组别 × 攻击方法的样本数 / 成功数 / 成功率 / 平均 MSE；压缩比：逐轮通信量 MB 与平均压缩比、RMSE / MAE 对比；精度：两数据集的集中式 / 联邦 Accuracy、下降百分点、相对下降），末尾写合同要求与判定。评估未完成或不存在时不可导出。
+返回 CSV（UTF-8 BOM），文件名 `{eval_id}_{kind}_report.csv`。内容：评估 ID、评估项、项目、起止时间（列名「开始时间（UTC+8）」「完成时间（UTC+8）」，按内核 `fmtLocal` 写成 `2026-10-23 22:10:05 +08:00`）、配置 JSON，以及该类评估的结果表（攻击：组别 × 攻击方法的样本数 / 成功数 / 成功率 / 平均 MSE；压缩比：逐轮通信量 MB 与平均压缩比、RMSE / MAE 对比；精度：两数据集的集中式 / 联邦 Accuracy、下降百分点、相对下降），末尾写合同要求与判定。评估未完成或不存在时不可导出。
 
 ### 接口总表增补
 

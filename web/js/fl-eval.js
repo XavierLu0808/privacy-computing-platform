@@ -33,7 +33,7 @@
         { key: 'topk_ratio', label: 'Top-k 保留比例（%）', pct: true, hint: '0.1% 至 100%，默认取本项目已保存的稀疏化配置' },
         { key: 'quant_bits', label: '量化位数', options: [[4, '4 bit'], [8, '8 bit'], [16, '16 bit'], [32, '32 bit（不量化）']] },
         { key: 'error_feedback', label: '误差反馈', options: [[true, '开启'], [false, '关闭']] },
-        { key: 'field_bits', label: '有限域位数（bit）', hint: '量化位数 + ⌈log₂3⌉ = 量化位数 + 2 至 64（3 方求和不溢出，与聚合配置同一约束）' }
+        { key: 'field_bits', label: '有限域位数（bit）', hint: '16 至 64，且 ≥ 量化位数 + ⌈log₂3⌉（3 方求和不溢出），与聚合配置同一约束' }
       ],
       method: [
         '场景：与梯度重构攻击评估同一时序任务（稀土氧化物价格数据集，1 服务端 + 3 客户端，LSTM 参数量 P = 203,143），明文 FedAvg 与本算法各训练设定轮次，逐轮统计服务端与全部客户端之间上下行字节总数。',
@@ -84,6 +84,10 @@
     root.innerHTML =
       '<div class="page-head"><div class="page-head-text"><span class="crumb">联邦学习 / 技术指标验证</span><h1>合同技术参数指标验证</h1></div>' +
         '<span class="hint">每项评估可调配置后单独运行；结果确定可复现（同项目、同配置结果一致），可导出 CSV 评估报告</span></div>' +
+      '<div class="banner banner-warn fle-source" data-acc="FL-EVAL-01 FL-EVAL-02 FL-EVAL-03" role="note">' +
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 7.6v.6"></path></svg>' +
+        '<span><strong>数据来源说明：</strong>当前数值来自原型内置评估引擎的仿真结果，用于演示评估流程、判定口径与报告格式；正式验收需接入真实评估引擎运行或提供离线实验记录。</span>' +
+      '</div>' +
       '<div class="card card-lg" data-acc="FL-EVAL-01 FL-EVAL-02 FL-EVAL-03">' +
         '<div class="fla-row"><span class="card-title">指标总览</span><span class="hint">取每项最近一次完成的评估</span></div>' +
         '<div class="table-head fle-sum-grid"><span>指标</span><span>合同要求</span><span>最近一次结果</span><span>判定</span><span>评估时间</span></div>' +

@@ -92,11 +92,22 @@ test('[FL-AGG-03] 同态加密参数：Paillier / CKKS 可编辑；打包超明�
   assert.equal(bad.code, 40000);
 });
 
-test('[FL-AGG-04] 密钥对生成：未生成时查看公钥 40402；生成后公钥可查看、私钥只给 key_id；再生成则旧钥轮换', async (t) => {
+test('[FL-AGG-04] 密钥对生成：无在用密钥时查看公钥 40402；生成后公钥可查看、私钥只给 key_id；再生成则旧钥轮换', async (t) => {
   const { okData, errCode } = boot(t);
+  // D24：首次进入即与同态模块播种的密钥一致，初始状态、密钥列表、任务详情同一口径
+  const v0 = await okData('GET', AGG);
+  const seeded = (await okData('GET', '/he/keys?project_id=p1&purpose=fl_aggregation')).items.filter((x) => x.status === 'active');
+  assert.equal(seeded.length, 1);
+  assert.equal(v0.he_key.key_id, seeded[0].key_id);
+  assert.equal((await okData('GET', AGG + '/keys')).items.filter((x) => x.status === 'active')[0].key_id, seeded[0].key_id);
+  const { items } = await okData('GET', '/projects/p1/fl/jobs');
+  const job = items.find((j) => j.task_type === 'classification');
+  const on = await okData('PATCH', '/fl/jobs/' + job.job_id, { aggregation: 'he' });
+  assert.equal(on.aggregation_info.he_public_key_id, seeded[0].key_id);
+  // 销毁在用密钥后：查看公钥 40402，同态策略不能保存
+  await okData('DELETE', '/he/keys/' + seeded[0].key_id);
   assert.equal(await errCode('GET', AGG + '/public-key'), 40402);
   const c = await cfgOf(okData);
-  // 同态策略在没有密钥时不能保存
   assert.equal(await errCode('PUT', AGG, Object.assign({}, c, { strategy: 'he' })), 40901);
 
   const k1 = await okData('POST', AGG + '/keys', { he: c.he });
@@ -364,11 +375,16 @@ test('[FL-EVAL-02] 通信压缩比：逐轮通信量 + 平均压缩比 7–9，�
   // 失败路径
   assert.equal(await env.errCode('POST', '/projects/p1/fl/evaluations', { kind: 'compression', config: { rounds: 1 } }), 40003);
   assert.equal(await env.errCode('POST', '/projects/p1/fl/evaluations', { kind: 'compression', config: { quant_bits: 16, field_bits: 16 } }), 40003);
-  // 有限域下限与聚合配置同一约束：量化位数 + ⌈log₂3⌉ = 8 + 2
-  const lo = await env.call('POST', '/projects/p1/fl/evaluations', { kind: 'compression', config: { quant_bits: 8, field_bits: 9 } });
+  // D25：有限域下限与聚合配置同一约束 max(16, 量化位数 + ⌈log₂3⌉)；8 bit 量化时两边都拒绝 10
+  const lo = await env.call('POST', '/projects/p1/fl/evaluations', { kind: 'compression', config: { quant_bits: 8, field_bits: 10 } });
   assert.equal(lo.code, 40003);
   assert.equal(lo.data.field, 'config.field_bits');
-  assert.match(lo.message, /允许 10 至 64/);
+  assert.match(lo.message, /允许 16 至 64/);
+  const agg10 = await cfgOf(env.okData);
+  agg10.ss.field_bits = 10;
+  const a10 = await env.call('POST', AGG + '/estimate', agg10);
+  assert.equal(a10.code, 40003);
+  assert.match(a10.message, /允许 16 至 64/);
   // 聚合配置那边对同一组（量化 16 bit、3 方）给出同一下限 18
   const ev16 = await env.call('POST', '/projects/p1/fl/evaluations', { kind: 'compression', config: { quant_bits: 16, field_bits: 17 } });
   assert.match(ev16.message, /允许 18 至 64/);
@@ -377,8 +393,8 @@ test('[FL-EVAL-02] 通信压缩比：逐轮通信量 + 平均压缩比 7–9，�
   const agg = await env.call('POST', AGG + '/estimate', base);
   assert.equal(agg.code, 40003);
   assert.match(agg.message, /至少需要.*= 18 位/);
-  const edge = await finishEval(env, 'compression', { quant_bits: 8, field_bits: 10 });
-  assert.equal(edge.config.field_bits, 10);
+  const edge = await finishEval(env, 'compression', { quant_bits: 8, field_bits: 16 });
+  assert.equal(edge.config.field_bits, 16);
   // 参数量取内核 MODEL_PARAMS.lstm，与聚合配置估算同一口径
   assert.equal(r.scenario.model_params, 203143);
   assert.equal(r.scenario.model_params, (await env.okData('GET', AGG)).estimate.model_params);
@@ -387,6 +403,10 @@ test('[FL-EVAL-02] 通信压缩比：逐轮通信量 + 平均压缩比 7–9，�
   assert.match(f.fileName, /_compression_report\.csv$/);
   assert.match(f.content, /单轮平均通信压缩比,\d+\.\d{2}/);
   assert.match(f.content, /明文 FedAvg,0\.\d{4},0\.\d{4}/);
+  // D07：报告时间按 UTC+8 书写，列名注明
+  assert.match(f.content, /开始时间（UTC\+8）,\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00\n/);
+  assert.match(f.content, /完成时间（UTC\+8）,\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \+08:00\n/);
+  assert.doesNotMatch(f.content, /\d{2}:\d{2}:\d{2}\.\d{3}Z/);
 });
 
 test('[FL-EVAL-03] 精度衰减：MNIST 0.5–1.0、CIFAR-10 1.5–2.5 个百分点；轮次过少时未达标', async (t) => {

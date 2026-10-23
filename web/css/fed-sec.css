@@ -26,6 +26,7 @@
 .metric-value .fs-verdict { margin-left: 10px; vertical-align: middle; }
 
 /* 技术指标验证 */
+.banner-warn { background: #FCF2E3; border: 1px solid #EBD3A8; color: #6B4510; font-size: 13px; line-height: 22px; }
 .fle-cards { display: flex; flex-direction: column; gap: 16px; }
 .fle-progress { display: flex; flex-direction: column; gap: 6px; }
 .fle-result { display: flex; flex-direction: column; gap: 10px; }

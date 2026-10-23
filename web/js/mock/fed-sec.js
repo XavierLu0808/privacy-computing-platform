@@ -293,7 +293,20 @@
       return 'destroyed';
     }
 
+    /**
+     * 同态模块首次访问项目时播种聚合密钥。所有读项目密钥的入口先确保播种过，否则本页显示「尚未生成」、
+     * 过程管控却显示「密钥对已生成」（D24）。he.js 暴露 db.he.seed 时同步调用；否则在异步路由里经 GET /he/keys 触发。
+     */
+    function seedHe(pid) {
+      if (db.he && typeof db.he.seed === 'function' && db.he.seeded && !db.he.seeded[pid]) db.he.seed(pid);
+    }
+    async function ensureHeSeeded(pid) {
+      seedHe(pid);
+      if (heLife() && db.he.seeded && !db.he.seeded[pid]) await window.MockServer.handle('GET', '/he/keys?project_id=' + encodeURIComponent(pid));
+    }
+
     function syncKeys(pid) {
+      seedHe(pid);
       const list = flaStore[pid] || (flaStore[pid] = []);
       const life = heLife();
       if (life) {
@@ -353,12 +366,15 @@
 
     /* ================= 聚合配置路由 ================= */
 
-    k.route('GET', '/projects/{project_id}/fl/aggregation', function (p) {
-      return needProject(p) || k.ok(aggView(p.project_id));
+    k.route('GET', '/projects/{project_id}/fl/aggregation', async function (p) {
+      const nf = needProject(p); if (nf) return nf;
+      await ensureHeSeeded(p.project_id);
+      return k.ok(aggView(p.project_id));
     });
 
-    k.route('PUT', '/projects/{project_id}/fl/aggregation', function (p, q, body) {
+    k.route('PUT', '/projects/{project_id}/fl/aggregation', async function (p, q, body) {
       const nf = needProject(p); if (nf) return nf;
+      await ensureHeSeeded(p.project_id);
       const v = validateConfig(body, p.project_id);
       if (v.error) return v.error;
       const cfg = v.config;
@@ -374,8 +390,9 @@
       return k.ok(aggView(p.project_id));
     });
 
-    k.route('POST', '/projects/{project_id}/fl/aggregation/reset', function (p) {
+    k.route('POST', '/projects/{project_id}/fl/aggregation/reset', async function (p) {
       const nf = needProject(p); if (nf) return nf;
+      await ensureHeSeeded(p.project_id);
       const cfg = defaults(p.project_id);
       cfg.updated_at = k.NOW();
       db.fla[p.project_id] = cfg;
@@ -392,8 +409,9 @@
 
     /* --- 密钥对 --- */
 
-    k.route('GET', '/projects/{project_id}/fl/aggregation/keys', function (p) {
+    k.route('GET', '/projects/{project_id}/fl/aggregation/keys', async function (p) {
       const nf = needProject(p); if (nf) return nf;
+      await ensureHeSeeded(p.project_id);
       const items = syncKeys(p.project_id).map(keySummary);
       return k.ok({ items: items, page: 1, page_size: 20, total: items.length });
     });
@@ -405,7 +423,7 @@
       const v = validateConfig({ strategy: 'he', ss: cur.ss, he: (body && body.he) || {}, sparsification: cur.sparsification }, pid);
       if (v.error) return v.error;
       // 同态加密模块首次访问项目时会播种聚合密钥；先触发它的播种，再轮换并登记新密钥，保证项目只有一把在用的聚合密钥
-      if (heLife() && !db.he.seeded[pid]) await window.MockServer.handle('GET', '/he/keys?project_id=' + encodeURIComponent(pid));
+      await ensureHeSeeded(pid);
       const he = v.config.he;
       const now = k.NOW();
       const id = k.nextId('flk');
@@ -450,10 +468,11 @@
       };
     }
 
-    k.route('GET', '/projects/{project_id}/fl/aggregation/public-key', function (p) {
+    k.route('GET', '/projects/{project_id}/fl/aggregation/public-key', async function (p) {
       const nf = needProject(p); if (nf) return nf;
+      await ensureHeSeeded(p.project_id);
       const key = activeKey(p.project_id);
-      if (!key) return k.err(40402, '尚未生成同态加密密钥对，请先在同态加密聚合下点击「生成密钥对」');
+      if (!key) return k.err(40402, '本项目当前没有在用的同态加密聚合密钥，请在同态加密聚合下点击「生成密钥对」');
       return k.ok(publicKeyView(key));
     });
 
@@ -462,10 +481,11 @@
      * 返回该项目当前有效密钥，过程管控页与同态应用集成页看到的公钥与本页一致；否则按内核原逻辑生成。
      * 响应字段与 §2.8 兼容；CKKS 无「模数位数」，key_size_bits 取系数模数总位数 log₂Q，另附 N 与 log₂Q。
      */
-    k.routeFirst('GET', '/fl/jobs/{job_id}/he-public-key', function (p) {
+    k.routeFirst('GET', '/fl/jobs/{job_id}/he-public-key', async function (p) {
       const job = db.flJobs[p.job_id];
       if (!job) return k.err(40400, '任务不存在');
       if (job.aggregation !== 'he') return k.err(40400, '当前聚合策略不是同态加密聚合');
+      // 不在这里触发播种：任务详情的 he_public_key_id（内核同步读 flaKeys）与本接口须在同一时刻给出同一把密钥
       const key = activeKey(job.project_id);
       if (key) {
         return k.ok({
@@ -535,8 +555,9 @@
         }
         e = checkEnum(c.quant_bits, 'config.quant_bits', '量化位数', LIMITS.sparsification.quant_bits); if (e) return e;
         if (typeof c.error_feedback !== 'boolean') return bad(40000, 'config.error_feedback', '误差反馈开关必须是布尔值');
-        // 与聚合配置同一约束：有限域位数 ≥ 量化位数 + ⌈log₂n⌉（评估场景 n = 3）
-        e = checkInt(c.field_bits, 'config.field_bits', '有限域位数', c.quant_bits + log2ceil(EVAL_CLIENTS), 64); if (e) return e;
+        // 与聚合配置同一约束（D25）：16 ≤ 有限域位数 ≤ 64，且 ≥ 量化位数 + ⌈log₂n⌉（评估场景 n = 3）
+        e = checkInt(c.field_bits, 'config.field_bits', '有限域位数',
+          Math.max(LIMITS.ss.field_bits.min, c.quant_bits + log2ceil(EVAL_CLIENTS)), LIMITS.ss.field_bits.max); if (e) return e;
         return { config: { rounds: c.rounds, topk_ratio: c.topk_ratio, quant_bits: c.quant_bits, error_feedback: c.error_feedback, field_bits: c.field_bits } };
       }
       e = checkInt(c.rounds, 'config.rounds', '联邦轮次', 10, 200); if (e) return e;
@@ -757,7 +778,7 @@
     function csvOf(run) {
       const c = run.config, r = run.result;
       const head = '评估 ID,' + run.eval_id + '\n评估项,' + KINDS[run.kind].label + '（' + KINDS[run.kind].acc + '）\n项目,' + run.project_id +
-        '\n开始时间,' + run.started_at + '\n完成时间,' + run.finished_at + '\n配置,"' + JSON.stringify(c).replace(/"/g, '""') + '"\n';
+        '\n开始时间（UTC+8）,' + k.fmtLocal(run.started_at) + '\n完成时间（UTC+8）,' + k.fmtLocal(run.finished_at) + '\n配置,"' + JSON.stringify(c).replace(/"/g, '""') + '"\n';
       let body = '';
       if (run.kind === 'gradient_attack') {
         body += '数据集,' + r.scenario.dataset_name + '（' + r.scenario.dataset_id + '）\n联邦架构,1 服务端 + 3 客户端\n还原成功判定,还原样本与原始样本 MSE ≤ ' + MSE_THRESHOLD + '（Min-Max 归一化后逐元素均方误差）\n\n';
