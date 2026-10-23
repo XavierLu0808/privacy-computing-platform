@@ -497,7 +497,8 @@
       global_accuracy: entry.global.accuracy !== undefined ? entry.global.accuracy : null,
       node_metrics: nodeMetrics,
       elapsed_sec: job.elapsed_sec,
-      eta_sec: Math.max(0, job.total_rounds - r) * 4.2,
+      // 任务编排模块（js/mock/fed-orch.js）可挂 db.etaOf(job) 给出平滑后的剩余时间
+      eta_sec: typeof db.etaOf === 'function' ? db.etaOf(job) : Math.max(0, job.total_rounds - r) * 4.2,
       dp: dpPayload
     });
   }
@@ -1455,6 +1456,7 @@
    *   k.route(method, pattern, handler)       追加路由（内核路由优先）
    *   k.routeFirst(method, pattern, handler)  前置路由（覆盖同路径的内核路由，用于升级旧接口）
    *   k.download(rx, build)                    追加文件下载（build(m, query) → { fileName, contentType, content }）
+   *   k.downloadFirst(rx, build)               前置文件下载（覆盖内核同路径导出）
    *   k.ok / k.err / k.db / k.nextId / k.NOW / k.hashHex / k.emit / k.subscribe / k.sleep
    *   以及内核常量与函数（见下方对象），只读使用；需要改内核行为请用 routeFirst 包一层。
    */
@@ -1466,6 +1468,7 @@
         routes.unshift(routes.pop());
       },
       download: function (rx, build) { downloads.push({ rx: rx, build: build }); },
+      downloadFirst: function (rx, build) { downloads.unshift({ rx: rx, build: build }); },
       ok: ok, err: err, db: db, nextId: nextId, NOW: NOW, hashHex: hashHex,
       emit: emit, subscribe: subscribe, sleep: sleep,
       TOTAL_ROUNDS: TOTAL_ROUNDS, ALGO_CN: ALGO_CN, TASK_TYPES: TASK_TYPES, taskTypeOf: taskTypeOf,
