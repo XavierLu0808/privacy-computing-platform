@@ -34,6 +34,15 @@ def load(p, default=None):
     return json.loads(p.read_text(encoding='utf-8')) if p.exists() else default
 
 
+def clean_case(name):
+    """测试用例名去掉编号前缀、内部缺陷编号（D14 等）和内部变量名，作为对外文档里的用例说明。"""
+    s = re.sub(r'^(\[[A-Z]+-[A-Z]+-\d{2}\])+\s*', '', name)
+    s = re.sub(r'\s*[（(\[]\s*D\d+\s*[)）\]]', '', s)
+    s = re.sub(r'\s*[（(][^（）()]*k\.db[^（）()]*[)）]', '', s)
+    s = re.sub(r'k\.db\.\w+(\[\w+\])?\s*', '项目聚合配置', s)
+    return s.strip()
+
+
 def cell(s):
     return str(s or '').replace('|', '\\|').replace('\n', ' ')
 
@@ -128,7 +137,7 @@ def report_md(master, rows, unit, e2e, defects):
           '| 编号 | 测试用例 | 结果 |', '|---|---|---|']
     for r in rows:
         for t in r['unit']:
-            L.append('| %s | %s | %s |' % (r['id'], cell(re.sub(r'^(\[[A-Z]+-[A-Z]+-\d{2}\])+\s*', '', t['name'])),
+            L.append('| %s | %s | %s |' % (r['id'], cell(clean_case(t['name'])),
                                          '通过' if t['pass'] else '未通过'))
     L += ['', '## 5.4 技术参数指标的评估口径', '',
           '1. 梯度重构攻击成功率（T-01）：在稀土氧化物（Nd₂O₃、CeO₂、La₂O₃）日度价格时序数据集、1 个服务端 + 3 个客户端架构下，截获客户端上传的梯度后运行 DLG、iDLG 攻击；还原样本与原始样本的均方误差（MSE）不超过 0.0025 记为还原成功，成功率 = 还原成功样本数 / 攻击样本数。合同要求不超过 5%。',

@@ -77,7 +77,8 @@ def build(unit):
         ut = unit['by_id'].get(it['id'], [])
         ut_pass = bool(ut) and all(x['pass'] for x in ut)
         ev = e2e.get(it['id'])
-        if im.get('status') == 'done' and ut_pass and ev and ev.get('pass'):
+        # partial = 功能已实现、数值为原型内置评估引擎仿真结果（项目决定接受）：测试与浏览器验收都通过即算完成，并打「仿真数值」标签
+        if im.get('status') in ('done', 'partial') and ut_pass and ev and ev.get('pass'):
             state = 'done'
         elif ut and not ut_pass or (ev and not ev.get('pass')):
             state = 'fail'
@@ -162,7 +163,8 @@ def render_html(rows, contract, unit, generated):
             '<tr class="drow"><td colspan="8">%s</td></tr></tbody>' % (
                 e(r['id']), r['id'].split('-')[0], r['state'], check(r['state']), e(r['id']),
                 e(r['l1']), e(r['l2']), e(r['l3']),
-                '' if r['source'] == 'V5' else ' <span class="tag">合同补充</span>',
+                ('' if r['source'] == 'V5' else ' <span class="tag">合同补充</span>') +
+                (' <span class="tag">仿真数值</span>' if im.get('status') == 'partial' else ''),
                 r['state'], STATE_CN[r['state']], sum(t['pass'] for t in r['unit']), len(r['unit']),
                 CONSOLE_URL, e(r['route']), detail))
 
@@ -241,7 +243,7 @@ a {{ color:var(--primary); }}
  <div class="kpi"><b>{utotal} 个 · 失败 {ufail} 个</b><span>自动化测试用例（最近一次运行 {uran} SGT）</span></div>
 </div>
 <div class="mods">{mods}</div>
-<div class="legend">「已完成」= 功能实现 + 该项全部自动化测试通过 + 浏览器操作验收通过；「待验收」= 已实现且自动化测试通过，等待浏览器操作验收。</div>
+<div class="legend">「已完成」= 功能实现 + 该项全部自动化测试通过 + 浏览器操作验收通过；「待验收」= 已实现且自动化测试通过，等待浏览器操作验收。标「仿真数值」的项：流程、判定口径与报告已实现，指标数值来自原型内置评估引擎的仿真结果。</div>
 
 <h2>一、合同条目对照（附件 1 功能清单 + 技术参数指标）</h2>
 <div class="card"><table><thead><tr><th>编号</th><th>一级模块</th><th>二级模块 / 合同说明</th><th>对应三级功能</th><th>完成度</th></tr></thead><tbody>{crows}</tbody></table></div>
