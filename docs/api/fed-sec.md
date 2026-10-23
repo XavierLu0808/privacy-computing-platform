@@ -182,6 +182,14 @@ GET /projects/{project_id}/fl/aggregation/public-key
 
 返回当前有效密钥的公钥详情。错误码：`40402` 尚未生成密钥对；`40400` 项目不存在。
 
+#### 2.12.7 任务聚合公钥（覆盖 API.md §2.8）
+
+```
+GET /fl/jobs/{job_id}/he-public-key
+```
+
+mock 用 `routeFirst` 覆盖内核路由：任务为同态聚合且所属项目有有效项目密钥（2.12.6）时，返回该密钥，过程管控页「查看公钥」与同态应用集成页看到的公钥与聚合与安全页一致；否则按内核原逻辑返回。响应字段保持 §2.8 结构（`key_id`、`scheme`、`key_size_bits`、`public_key`、`fingerprint`、`created_at`），项目密钥另附 `poly_modulus_degree`、`coeff_modulus_bits`、`source = "project"`；CKKS 没有模数位数，`key_size_bits` 取系数模数总位数 log₂Q。错误码：`40400` 任务不存在或任务不是同态聚合。
+
 ### 2.13 技术指标评估
 
 验收编号：FL-EVAL-01、FL-EVAL-02、FL-EVAL-03（合同 T-01、T-02）。对应：技术指标验证页三张评估卡、指标总览、历史评估记录。
@@ -300,6 +308,7 @@ GET /fl/evaluations/{eval_id}/export
 | 5 | POST | `/projects/{project_id}/fl/aggregation/keys` | FL-AGG-04 |
 | 6 | GET | `/projects/{project_id}/fl/aggregation/keys` | FL-AGG-04 |
 | 7 | GET | `/projects/{project_id}/fl/aggregation/public-key` | FL-AGG-04 |
+| 7a | GET | `/fl/jobs/{job_id}/he-public-key`（覆盖 §2.8） | FL-AGG-04 |
 | 8 | GET | `/projects/{project_id}/fl/evaluations/defaults` | FL-EVAL-01 / 02 / 03 |
 | 9 | POST | `/projects/{project_id}/fl/evaluations` | FL-EVAL-01 / 02 / 03 |
 | 10 | GET | `/projects/{project_id}/fl/evaluations` | FL-EVAL-01 / 02 / 03 |

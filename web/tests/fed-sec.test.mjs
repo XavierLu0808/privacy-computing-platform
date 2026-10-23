@@ -126,6 +126,36 @@ test('[FL-AGG-04] 密钥对生成：未生成时查看公钥 40402；生成后�
   assert.equal(await errCode('POST', AGG + '/keys', { he: Object.assign({}, c.he, { key_size_bits: 1024 }) }), 40000);
 });
 
+test('[FL-AGG-04] 项目生成密钥后，过程管控页任务公钥（/fl/jobs/{id}/he-public-key）与项目密钥一致；未生成时回落内核逻辑', async (t) => {
+  const { okData, errCode } = boot(t);
+  const { items } = await okData('GET', '/projects/p1/fl/jobs');
+  const cls = items.find((j) => j.task_type === 'classification');
+  const ts = items.find((j) => j.task_type === 'timeseries');
+  const on = await okData('PATCH', '/fl/jobs/' + cls.job_id, { aggregation: 'he' });
+  // 未生成项目密钥：与内核原响应一致
+  const before = await okData('GET', '/fl/jobs/' + cls.job_id + '/he-public-key');
+  assert.equal(before.key_id, on.aggregation_info.he_public_key_id);
+  assert.equal(before.key_size_bits, 2048);
+  assert.match(before.fingerprint, /^SHA256:[0-9a-f]+$/);
+  assert.equal(await errCode('GET', '/fl/jobs/' + ts.job_id + '/he-public-key'), 40400);   // ss 任务无聚合公钥
+  assert.equal(await errCode('GET', '/fl/jobs/nope/he-public-key'), 40400);
+
+  const c = await cfgOf(okData);
+  await okData('POST', AGG + '/keys', { he: c.he });
+  const proj = await okData('GET', AGG + '/public-key');
+  const pk = await okData('GET', '/fl/jobs/' + cls.job_id + '/he-public-key');
+  for (const f of ['key_id', 'scheme', 'key_size_bits', 'public_key', 'fingerprint', 'created_at']) assert.equal(pk[f], proj[f], f);
+  // 轮换后跟随新密钥；CKKS 的 key_size_bits 取 log₂Q
+  const ck = Object.assign({}, c.he, { scheme: 'ckks', poly_modulus_degree: 8192, coeff_modulus_bits: 200, scale_bits: 40, batch_size: 4096 });
+  const k2 = await okData('POST', AGG + '/keys', { he: ck });
+  const pk2 = await okData('GET', '/fl/jobs/' + cls.job_id + '/he-public-key');
+  assert.deepEqual([pk2.key_id, pk2.scheme, pk2.key_size_bits, pk2.poly_modulus_degree], [k2.key_id, 'ckks', 200, 8192]);
+  // 其他项目不受影响
+  const p2 = (await okData('GET', '/projects/p2/fl/jobs')).items.find((j) => j.task_type === 'classification');
+  await okData('PATCH', '/fl/jobs/' + p2.job_id, { aggregation: 'he' });
+  assert.match((await okData('GET', '/fl/jobs/' + p2.job_id + '/he-public-key')).key_id, /^hek_/);
+});
+
 test('[FL-AGG-05] 参数重置：恢复默认策略并落库，密钥保留', async (t) => {
   const { okData, M, errCode } = boot(t);
   const c = await cfgOf(okData);

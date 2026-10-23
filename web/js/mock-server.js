@@ -353,7 +353,9 @@
 
   function aggregationInfo(job) {
     if (job.aggregation === 'he') {
-      return { type: 'he', threshold: null, share_count: null, he_key_ready: true, he_public_key_id: 'hek_' + hashHex(job.job_id, 1).slice(0, 4) };
+      // 项目在「聚合与安全」页生成过密钥时用项目密钥（db.flaKeys 由 js/mock/fed-sec.js 维护），否则用任务派生密钥
+      const pk = ((db.flaKeys || {})[job.project_id] || []).filter(function (x) { return x.status === 'active'; })[0];
+      return { type: 'he', threshold: null, share_count: null, he_key_ready: true, he_public_key_id: pk ? pk.key_id : 'hek_' + hashHex(job.job_id, 1).slice(0, 4) };
     }
     return { type: 'ss', threshold: 2, share_count: 3, he_key_ready: null, he_public_key_id: null };
   }

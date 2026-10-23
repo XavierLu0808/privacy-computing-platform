@@ -377,6 +377,40 @@
       return k.ok(publicKeyView(key));
     });
 
+    /**
+     * 覆盖内核 GET /fl/jobs/{job_id}/he-public-key（API.md §2.8）：任务所属项目在聚合与安全页生成过密钥时，
+     * 返回该项目当前有效密钥，过程管控页与同态应用集成页看到的公钥与本页一致；否则按内核原逻辑生成。
+     * 响应字段与 §2.8 兼容；CKKS 无「模数位数」，key_size_bits 取系数模数总位数 log₂Q，另附 N 与 log₂Q。
+     */
+    k.routeFirst('GET', '/fl/jobs/{job_id}/he-public-key', function (p) {
+      const job = db.flJobs[p.job_id];
+      if (!job) return k.err(40400, '任务不存在');
+      if (job.aggregation !== 'he') return k.err(40400, '当前聚合策略不是同态加密聚合');
+      const key = activeKey(job.project_id);
+      if (key) {
+        return k.ok({
+          key_id: key.key_id,
+          scheme: key.scheme,
+          key_size_bits: key.scheme === 'paillier' ? key.key_size_bits : key.coeff_modulus_bits,
+          poly_modulus_degree: key.poly_modulus_degree,
+          coeff_modulus_bits: key.coeff_modulus_bits,
+          public_key: key.public_key,
+          fingerprint: key.fingerprint,
+          created_at: key.created_at,
+          source: 'project'
+        });
+      }
+      // 内核原逻辑（mock-server.js aggregationInfo + §2.8 路由）
+      return k.ok({
+        key_id: 'hek_' + k.hashHex(job.job_id, 1).slice(0, 4),
+        scheme: 'paillier',
+        key_size_bits: 2048,
+        public_key: k.hashHex('agg' + job.job_id, 8),
+        fingerprint: 'SHA256:' + k.hashHex('fp' + job.job_id, 2).slice(0, 32),
+        created_at: job.created_at
+      });
+    });
+
     /* ================= 指标评估 ================= */
 
     const KINDS = {
