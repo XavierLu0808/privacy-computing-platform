@@ -406,6 +406,7 @@ DELETE /fl/param-templates/{template_id}
 | 25 | GET | `/fl/jobs/{job_id}/metrics` | 每轮指标（扩展 API.md §2.7：`from_round` / `to_round` 与 `start_time` / `end_time` 生效并校验） | FL-PROC-05 / 06 |
 | 26 | GET | `/fl/metrics` | 历史指标查询：按项目 ID / 任务 ID / 写入时间范围 | FL-PROC-08 |
 | 27 | GET（下载） | `/fl/metrics/export`、`/projects/{project_id}/fl/metrics/export` | 历史指标 CSV（条件同 26） | FL-PROC-08 |
+| 27b | GET（下载） | `/fl/jobs/{job_id}/metrics/export?scope=&start_time=&end_time=` | 单任务 CSV（覆盖内核实现，列与 API.md §2.9 一致，时间范围生效） | FL-PROC-08 |
 | 28 | GET | `/fl/jobs/{job_id}/nodes` | 任务维度节点（扩展 API.md §2.10：离线节点 `status = offline`） | FL-PROC-02 |
 | 29 | PATCH | `/projects/{project_id}/nodes/{node_id}` | 新增可选字段 `online`（bool）：置 `false` 表示心跳丢失，使用该节点的 Running 任务转 `Failed` | FL-PROC-01 / 02 |
 
@@ -476,7 +477,7 @@ GET /fl/jobs/{job_id}/eta
 - `dᵣ`：第 r 轮聚合耗时（秒）。mock 的确定性模型：基准 4.2 秒，乘以 (1 + 0.12·sin(0.8r + φ))，加 ±0.3 秒抖动，约每 11 轮出现一次慢节点拖尾（+2.4 秒），φ 由任务 ID 哈希确定。
 - `s₁ = d₁`，`sᵣ = 0.3·dᵣ + 0.7·sᵣ₋₁`；`eta_sec = sᵣ × (总轮次 − r)`；未开始为 `null`，Success 为 0。
 - `eta_naive_sec = 已用时间 / r × 剩余轮次`（算术平均，供对比）。
-- 暂停期间不计时。SSE `round_completed.eta_sec` 仍为内核的线性估计，页面每轮收到推送后调本接口刷新。
+- 暂停期间不计时。SSE `round_completed` 的 `eta_sec` 与 `elapsed_sec` 同为上述平滑结果（mock 通过内核扩展点 `db.etaOf(job)` 提供，并预调内核的已用时间计数器使其等于 Σdᵣ），页面直接使用推送值；本接口用于取 α、公式与逐轮明细。
 
 任务不存在 40400。
 
@@ -491,7 +492,7 @@ GET /fl/jobs/{job_id}/eta
 | `from_round > to_round`；`start_time` 晚于 `end_time` | 40003 |
 | 任务不存在 | 40400 |
 
-页面曲线不画聚合节点：它不持有训练数据。接口与 CSV 仍包含聚合节点的记录，与内核一致。
+页面曲线用 ECharts 5.5.1（`web/vendor/echarts.min.js`）绘制：两张折线图分别对应 `metrics_spec[0]` / `[1]`，横轴轮次 1 – `total_rounds`，纵轴 `y_min` – `y_max`，tooltip 显示「第 N 轮」与各曲线数值，每轮推送实时追加，容器尺寸变化时 resize，切换项目时 dispose。页面曲线不画聚合节点：它不持有训练数据。接口与 CSV 仍包含聚合节点的记录，与内核一致。
 
 ### 6.6 历史指标查询与导出
 
@@ -515,4 +516,6 @@ GET /fl/metrics?project_id=&job_id=&start_time=&end_time=&scope=global|nodes&pag
 project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at
 ```
 
-任务类型不适用的指标留空。错误码同 6.5，另有项目或任务不存在 40400。下载接口无法返回错误包，页面导出前先用 `GET /fl/metrics` 校验条件和条数。
+任务类型不适用的指标留空。错误码同 6.5，另有项目或任务不存在 40400。下载接口无法返回错误包（mock 抛出带原因的错误），页面导出前先用 `GET /fl/metrics` 校验条件和条数。
+
+单任务导出 `GET /fl/jobs/{job_id}/metrics/export` 的列仍为 `job_id,round,series,<指标键>,recorded_at`，默认 `scope = nodes`，`start_time` / `end_time` 按写入时间过滤，时间非法或开始晚于结束时导出失败并给出原因。

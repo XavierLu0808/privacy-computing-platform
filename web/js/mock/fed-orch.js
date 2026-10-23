@@ -1188,6 +1188,7 @@
         job.failure_reason = null;
         st.checkpoints = [];
         st.runtime = allocate(job, pre.nodes);
+        precompensate(job);
       } else if (action === 'pause') {
         // 断点：保存本轮聚合后的全局模型参数、优化器状态与各训练节点的数据读取位置
         const last = job.metrics[job.metrics.length - 1];
@@ -1218,6 +1219,21 @@
       if (action === 'resume' && ck) v.resumed_from_round = ck.round;
       return ok(v);
     });
+
+    /**
+     * 内核 jobTick 每轮先执行 elapsed_sec += 4.2 再推送 round_completed，推送的 eta_sec 取 db.etaOf(job)。
+     * 为让推送里的 elapsed_sec 也等于逐轮耗时之和 Σdᵣ，这里预先把内核计数器调成「Σdᵣ + dᵣ₊₁ − 4.2」，
+     * 内核下一次 +4.2 后正好得到 Σdᵣ₊₁。列表 / 详情 / ETA 接口一律按 etaOf 重新计算，不读这个计数器。
+     */
+    function precompensate(job) {
+      const S = etaOf(job).elapsed_sec;
+      job.elapsed_sec = Math.round((S + roundDur(job, job.current_round + 1) - 4.2) * 10) / 10;
+    }
+    db.etaOf = function (job) {
+      const e = etaOf(job);
+      if (job.current_round < job.total_rounds) precompensate(job);
+      return e.eta_sec;
+    };
 
     k.route('GET', '/fl/jobs/{job_id}/eta', function (p) {
       const job = db.flJobs[p.job_id];
@@ -1322,6 +1338,26 @@
       }).join('\n') + (r.rows.length ? '\n' : '');
       return { fileName: name, contentType: 'text/csv;charset=utf-8', content: '﻿' + csv };
     }
+    // 覆盖内核单任务导出：列与内核一致（job_id,round,series,<指标>,recorded_at，默认 scope = nodes），start_time / end_time 生效
+    k.downloadFirst(/^\/fl\/jobs\/([^/]+)\/metrics\/export$/, function (m, q) {
+      const job = db.flJobs[m[1]];
+      if (!job) return null;
+      const tr = timeRange(q);
+      if (tr.error) throw new Error(tr.error.message);
+      const scope = q.scope || 'nodes';
+      if (scope !== 'global' && scope !== 'nodes') throw new Error('scope 必须是 global 或 nodes');
+      const keys = k.taskTypeOf(job.task_type).metrics.map(function (x) { return x.key; });
+      const line = function (name, src, x) {
+        return [job.job_id, x.round, name].concat(keys.map(function (key) { return src[key]; }), [x.recorded_at]).join(',') + '\n';
+      };
+      let csv = ['job_id', 'round', 'series'].concat(keys, ['recorded_at']).join(',') + '\n';
+      job.metrics.filter(function (x) { return inRange(x, tr); }).forEach(function (x) {
+        csv += line('global', x.global, x);
+        if (scope === 'nodes') x.nodes.forEach(function (n) { csv += line(n.node_id, n, x); });
+      });
+      return { fileName: job.job_id + '_metrics.csv', contentType: 'text/csv;charset=utf-8', content: '\ufeff' + csv };
+    });
+
     k.download(/^\/projects\/([^/]+)\/fl\/metrics\/export$/, function (m, q) {
       return metricsCsv(Object.assign({}, q, { project_id: m[1] }), 'fl_metrics_' + m[1] + '.csv');
     });

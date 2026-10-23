@@ -236,3 +236,43 @@ test('[FL-PROC-08] 历史指标查询：按项目 ID / 任务 ID / 时间范围�
   assert.equal(j.content.trim().split('\n').length, 1 + 15);
   await assert.rejects(download('/projects/p9/fl/metrics/export'));
 });
+
+test('[FL-PROC-07] 训练推送的剩余时间与已用时间取 EMA 平滑结果，与 ETA 接口一致', async (t) => {
+  const { M, okData, tick } = boot(t);
+  const job = await newJob(okData);
+  const events = [];
+  M.subscribe('/fl/jobs/' + job.job_id + '/events', { round_completed: (e) => events.push(e) });
+  await act(okData, job.job_id, 'start');
+  tick(TICK * 3);
+  const e3 = await okData('GET', '/fl/jobs/' + job.job_id + '/eta');
+  assert.equal(events.length, 3);
+  assert.equal(events[2].eta_sec, e3.eta_sec);
+  assert.equal(events[2].elapsed_sec, e3.elapsed_sec);
+  assert.equal(events[0].elapsed_sec, e3.history[0].duration_sec);
+  // 暂停 / 恢复后继续一致
+  await act(okData, job.job_id, 'pause');
+  await act(okData, job.job_id, 'resume');
+  tick(TICK * 2);
+  const e5 = await okData('GET', '/fl/jobs/' + job.job_id + '/eta');
+  assert.equal(events[4].round, 5);
+  assert.equal(events[4].eta_sec, e5.eta_sec);
+  assert.equal(events[4].elapsed_sec, e5.elapsed_sec);
+});
+
+test('[FL-PROC-08] 单任务 CSV 导出按 start_time / end_time 过滤，列与内核一致，非法时间报错', async (t) => {
+  const { okData, download, tick } = boot(t);
+  const job = await newJob(okData);
+  await act(okData, job.job_id, 'start');
+  tick(TICK * 4);
+  const past = new Date(Date.now() - 3600e3).toISOString(), future = new Date(Date.now() + 3600e3).toISOString();
+  const all = await download('/fl/jobs/' + job.job_id + '/metrics/export');
+  const lines = all.content.replace('\ufeff', '').trim().split('\n');
+  assert.equal(lines[0], 'job_id,round,series,loss,accuracy,recorded_at');
+  assert.equal(lines.length, 1 + 4 * 5, '默认 scope = nodes：每轮全局 + 4 个节点');
+  const g = await download('/fl/jobs/' + job.job_id + '/metrics/export?scope=global&start_time=' + past + '&end_time=' + future);
+  assert.equal(g.content.trim().split('\n').length, 1 + 4);
+  const none = await download('/fl/jobs/' + job.job_id + '/metrics/export?start_time=' + future);
+  assert.equal(none.content.trim().split('\n').length, 1);
+  await assert.rejects(download('/fl/jobs/' + job.job_id + '/metrics/export?start_time=bad'), /ISO 8601/);
+  await assert.rejects(download('/fl/jobs/' + job.job_id + '/metrics/export?start_time=' + future + '&end_time=' + past), /不能晚于/);
+});

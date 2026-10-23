@@ -96,11 +96,12 @@
   },
   "FL-PROC-06": {
     "page": "#/fed/proc",
-    "ui": "过程管控 → 收敛曲线卡（「显示：仅全局 / 各参与节点」下拉、图例、两张曲线图）",
+    "ui": "过程管控 → 收敛曲线卡（「显示：仅全局 / 各参与节点」下拉、图例、两张 ECharts 折线图）",
     "steps": [
-      "训练运行中，两张曲线随每轮推送实时延长，横轴为轮次 1 – 总轮次，纵轴为指标值",
+      "训练运行中，两张 ECharts 折线图随每轮推送实时延长，横轴为轮次 1 – 总轮次，纵轴为指标值（量纲取任务类型的 metrics_spec）",
       "「显示」切到「各参与节点」，图例出现全局与 3 个训练节点，各节点曲线同时绘制",
-      "切回「仅全局」只剩一条曲线"
+      "切回「仅全局」只剩一条曲线",
+      "鼠标悬停曲线，tooltip 显示「第 N 轮 · 指标名」与每条曲线的数值；缩放窗口时图表随容器自适应"
     ],
     "expected": "曲线随轮次动态更新，可在全局与各节点之间切换；接口支持 from_round / to_round 截取区间，非法区间返回 40003 / 40002",
     "api": [
@@ -110,9 +111,8 @@
     "tests": [
       "tests/fed-proc.test.mjs: [FL-PROC-06] 动态曲线：全局 / 各节点切换，横轴轮次可按区间截取"
     ],
-    "impl": "切换视图时按 scope = global / nodes 拉取历史曲线，之后每收到一次 round_completed 推送就把该轮的全局与节点指标追加到对应折线，坐标量纲取 metrics_spec 的 y_min / y_max，横轴最大值为 total_rounds。聚合节点不持有训练数据，页面不画它的本地曲线（接口与 CSV 保留记录）。当前曲线用原生 SVG 折线绘制，未引入 ECharts（见 status 说明）。",
-    "status": "partial",
-    "partial_note": "功能完整，但甲方原文写明「基于 ECharts」，当前为原生 SVG 实现：项目是无构建原生站，index.html 未引入 ECharts，且该文件归集成负责人所有。若必须使用 ECharts，需要集成负责人在 index.html 引入 echarts.min.js（建议本地文件），然后把 renderCharts 换成 ECharts 折线图，接口与数据格式不变。"
+    "impl": "曲线基于 ECharts 5.5.1（本地 web/vendor/echarts.min.js）：两张 line 图分别对应 metrics_spec[0] / [1]，xAxis 为 value 轴 1 – total_rounds，yAxis 取 y_min / y_max，tooltip 按 trigger = axis 显示轮次与 digits 位小数。切换视图时按 scope = global / nodes 拉取历史曲线，之后每收到一次 round_completed 推送就追加一个点并以 replaceMerge 更新 series；ResizeObserver 监听容器尺寸做 resize，项目切换时 dispose 实例。配色取 styles.css 的 :root token（全局 --primary，节点依次 --primary-lt / --teal / --amber / --success / --muted-3）。聚合节点不持有训练数据，页面不画它的本地曲线，接口与 CSV 保留记录。",
+    "status": "done"
   },
   "FL-PROC-07": {
     "page": "#/fed/proc",
@@ -125,12 +125,14 @@
     "expected": "剩余时间由已用时间、已完成轮次与总轮次经指数平滑得出；未开始时为「—」；列表、详情与 ETA 接口数值一致",
     "api": [
       "GET /fl/jobs/{job_id}/eta",
-      "GET /fl/jobs/{job_id}"
+      "GET /fl/jobs/{job_id}",
+      "SSE /fl/jobs/{job_id}/events"
     ],
     "tests": [
-      "tests/fed-proc.test.mjs: [FL-PROC-07] 预估剩余时间：按每轮耗时做指数平滑（EMA，α = 0.3），列表 / 详情与 ETA 接口一致"
+      "tests/fed-proc.test.mjs: [FL-PROC-07] 预估剩余时间：按每轮耗时做指数平滑（EMA，α = 0.3），列表 / 详情与 ETA 接口一致",
+      "tests/fed-proc.test.mjs: [FL-PROC-07] 训练推送的剩余时间与已用时间取 EMA 平滑结果，与 ETA 接口一致"
     ],
-    "impl": "以每轮聚合耗时 dᵣ 为观测值做指数滑动平均：s₁ = d₁，sᵣ = α·dᵣ + (1 − α)·sᵣ₋₁，α = 0.3；预估剩余时间 = sᵣ ×（总轮次 − 已完成轮次），已用时间 = Σdᵣ，暂停期间不计时。同时给出算术平均估计（已用时间 / r × 剩余轮次）供对比。mock 的 dᵣ 由确定性模型生成：基准 4.2 秒 × (1 + 0.12·sin(0.8r + φ))，加 ±0.3 秒抖动，约每 11 轮一次慢节点拖尾 +2.4 秒。页面每轮收到 SSE 推送后调用 ETA 接口刷新。",
+    "impl": "以每轮聚合耗时 dᵣ 为观测值做指数滑动平均：s₁ = d₁，sᵣ = α·dᵣ + (1 − α)·sᵣ₋₁，α = 0.3；预估剩余时间 = sᵣ ×（总轮次 − 已完成轮次），已用时间 = Σdᵣ，暂停期间不计时。同时给出算术平均估计（已用时间 / r × 剩余轮次）供对比。mock 的 dᵣ 由确定性模型生成：基准 4.2 秒 × (1 + 0.12·sin(0.8r + φ))，加 ±0.3 秒抖动，约每 11 轮一次慢节点拖尾 +2.4 秒。训练推送 round_completed 的 eta_sec 通过内核扩展点 db.etaOf(job) 直接给出平滑值，elapsed_sec 同为 Σdᵣ，页面直接使用推送值，GET /fl/jobs/{id}/eta 提供 α、公式与逐轮明细。",
     "status": "done"
   },
   "FL-PROC-08": {
@@ -149,9 +151,10 @@
       "GET /fl/jobs/{job_id}/metrics/export"
     ],
     "tests": [
-      "tests/fed-proc.test.mjs: [FL-PROC-08] 历史指标查询：按项目 ID / 任务 ID / 时间范围过滤，导出 CSV 列与行数正确"
+      "tests/fed-proc.test.mjs: [FL-PROC-08] 历史指标查询：按项目 ID / 任务 ID / 时间范围过滤，导出 CSV 列与行数正确",
+      "tests/fed-proc.test.mjs: [FL-PROC-08] 单任务 CSV 导出按 start_time / end_time 过滤，列与内核一致，非法时间报错"
     ],
-    "impl": "历史查询把所选任务的每轮记录展开成行（全局 1 行，scope = nodes 时每个节点再 1 行），按 recorded_at 与 ISO 8601 时间区间过滤，支持 project_id、job_id 组合与分页（page_size 最大 500）。导出与查询共用一个过滤函数，CSV 列固定，分类任务的 RMSE / MAE 与时序任务的 Loss / Accuracy 留空，文件带 UTF-8 BOM 以便 Excel 打开。单任务导出沿用内核的 /fl/jobs/{job_id}/metrics/export。",
+    "impl": "历史查询把所选任务的每轮记录展开成行（全局 1 行，scope = nodes 时每个节点再 1 行），按 recorded_at 与 ISO 8601 时间区间过滤，支持 project_id、job_id 组合与分页（page_size 最大 500）。导出与查询共用一个过滤函数，CSV 列固定，分类任务的 RMSE / MAE 与时序任务的 Loss / Accuracy 留空，文件带 UTF-8 BOM 以便 Excel 打开。单任务导出 /fl/jobs/{job_id}/metrics/export 通过 downloadFirst 覆盖内核实现，列与 API.md §2.9 一致（job_id,round,series,<指标>,recorded_at），start_time / end_time 按写入时间过滤，非法时间导出失败并给出原因。",
     "status": "done"
   }
 }

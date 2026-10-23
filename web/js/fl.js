@@ -18,8 +18,10 @@
     pending: ['待启动', '#8A93A2'], uploading: ['上传中', '#1A4F8A'], suspended: ['已挂起', '#8A5B12'],
     completed: ['已完成', '#1D5C42'], released: ['已释放', '#A33B21'], offline: ['离线', '#A33B21']
   };
-  const NODE_COLORS = ['#7FA9DB', '#0E6F6C', '#9A6516', '#8E5BA8', '#5C6B7F'];
-  const CHART = { w: 548, h: 184, pl: 44, pr: 10, pt: 14, pb: 26 };
+  // 曲线配色取 styles.css 的 :root token（全局用 --primary，节点依次用下列 token）
+  const NODE_TOKENS = ['--primary-lt', '--teal', '--amber', '--success', '--muted-3', '--danger'];
+  let charts = [];       // 两张 ECharts 实例：metrics_spec[0] / [1]
+  let chartObs = null;   // ResizeObserver：窗口缩放、页面显隐时 resize
 
   let ctx = null;        // { projectId }
   let taskTypes = [];    // GET /fl/task-types
@@ -93,6 +95,15 @@
     el.id = 'flElapsed';   // 原 #flElapsed 已随 UI.clear 移除
 
     $('flView').closest('.card').dataset.acc = 'FL-PROC-05 FL-PROC-06';
+    // 收敛曲线改用 ECharts：用两个容器替换原 SVG
+    ['flLossLines', 'flAccLines'].forEach(function (id, i) {
+      const svg = $(id).closest('svg');
+      const box = UI.el('div', 'fl-chart');
+      box.id = 'flChart' + (i + 1);
+      box.setAttribute('role', 'img');
+      box.setAttribute('aria-label', svg.getAttribute('aria-label'));
+      svg.parentNode.replaceChild(box, svg);
+    });
     $('flRound').closest('.metric').dataset.acc = 'FL-PROC-05';
 
     const hq = UI.el('div', 'card card-lg');
@@ -209,7 +220,7 @@
     return next;
   }
 
-  /** 每轮推送后刷新平滑 ETA（SSE 里的 eta_sec 为线性估计）。 */
+  /** 取平滑 ETA 参数（GET /fl/jobs/{id}/eta）；之后每轮的数值直接来自 SSE 推送。 */
   async function refreshEta() {
     const id = job.job_id;
     try {
@@ -656,16 +667,11 @@
     $('flEta').textContent = job.eta_sec === null ? '—' : UI.duration(job.eta_sec);
     $('flElapsed').textContent = UI.duration(job.elapsed_sec);
 
-    // 曲线标题与坐标轴
-    [['flC1Label', 'flC1Max', 'flC1Mid', 'flC1Min'], ['flC2Label', 'flC2Max', 'flC2Mid', 'flC2Min']]
-      .forEach(function (ids, i) {
-        const m = sp[i];
-        $(ids[0]).textContent = m.label + '（纵轴 ' + m.y_min + ' – ' + m.y_max + '，横轴 轮次 1 – ' + job.total_rounds + '）';
-        $(ids[1]).textContent = String(m.y_max);
-        $(ids[2]).textContent = String(Number(((m.y_min + m.y_max) / 2).toFixed(2)));
-        $(ids[3]).textContent = String(m.y_min);
-      });
-    document.querySelectorAll('.flXMax').forEach(function (n) { n.textContent = String(job.total_rounds); });
+    // 曲线标题（坐标轴由 ECharts 按 metrics_spec 绘制）
+    ['flC1Label', 'flC2Label'].forEach(function (id, i) {
+      const m = sp[i];
+      $(id).textContent = m.label + '（纵轴 ' + m.y_min + ' – ' + m.y_max + '，横轴 轮次 1 – ' + job.total_rounds + '，' + (m.better === 'lower' ? '越低越好' : '越高越好') + '）';
+    });
 
     renderProc();
     $('flChartHint').textContent = job.current_round < 2
@@ -718,37 +724,87 @@
     renderJobs();
   }
 
+  function token(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function ensureCharts() {
+    if (charts.length || !window.echarts) return charts.length > 0;
+    charts = ['flChart1', 'flChart2'].map(function (id) { return window.echarts.init($(id), null, { renderer: 'canvas' }); });
+    if (window.ResizeObserver) {
+      chartObs = new ResizeObserver(function () { charts.forEach(function (c) { c.resize(); }); });
+      chartObs.observe($('flChart1').parentNode.parentNode);
+    }
+    return true;
+  }
+
+  function disposeCharts() {
+    if (chartObs) { chartObs.disconnect(); chartObs = null; }
+    charts.forEach(function (c) { c.dispose(); });
+    charts = [];
+  }
+
+  /** 单张图的 ECharts 配置：横轴轮次 1 – total_rounds，纵轴按 metrics_spec 的 y_min / y_max。 */
+  function chartOption(m, lines) {
+    const ink = token('--muted'), grid = token('--line-soft');
+    const axisLabel = { color: ink, fontSize: 11 };
+    return {
+      animationDurationUpdate: 300,
+      grid: { left: 52, right: 16, top: 16, bottom: 36 },
+      tooltip: {
+        trigger: 'axis',
+        formatter: function (ps) {
+          // 节点名为 [a-z0-9-] 的节点 ID，标签为固定中文，无需转义
+          return '第 ' + ps[0].value[0] + ' 轮 · ' + m.label + '<br>' + ps.map(function (p) {
+            const v = p.value[1];
+            return p.marker + p.seriesName + '：' + (v === null || v === undefined ? '—' : Number(v).toFixed(m.digits));
+          }).join('<br>');
+        },
+        axisPointer: { type: 'line', lineStyle: { color: token('--primary-bd') } }
+      },
+      xAxis: {
+        type: 'value', min: 1, max: job.total_rounds, minInterval: 1, name: '轮次', nameLocation: 'middle', nameGap: 24,
+        nameTextStyle: { color: ink, fontSize: 11 }, axisLabel: axisLabel,
+        axisLine: { lineStyle: { color: token('--line') } }, splitLine: { show: false }
+      },
+      yAxis: {
+        type: 'value', min: m.y_min, max: m.y_max, axisLabel: axisLabel,
+        splitLine: { lineStyle: { color: grid } }
+      },
+      series: lines.map(function (l) {
+        return {
+          name: l.label, type: 'line', showSymbol: l.points.length < 2, symbolSize: 5, smooth: false,
+          lineStyle: { width: l.global ? 2.4 : 1.6, color: l.color }, itemStyle: { color: l.color },
+          emphasis: { focus: 'series' },
+          data: l.points.map(function (p) { return [p.round, p[m.key]]; })
+        };
+      })
+    };
+  }
+
   function renderCharts() {
     const keys = Object.keys(series);
-    const lossG = $('flLossLines'), accG = $('flAccLines');
-    UI.clear(lossG); UI.clear(accG);
-
     const legend = $('flLegend');
     UI.clear(legend);
-    if (!job) return;
+    if (!job) { charts.forEach(function (c) { c.clear(); }); return; }
     const sp = spec();
 
     let nodeIdx = 0;
-    keys.forEach(function (key) {
-      const s = series[key];
+    const lines = keys.map(function (key) {
       const isGlobal = key === 'global';
-      const color = isGlobal ? '#1D4E89' : NODE_COLORS[nodeIdx++ % NODE_COLORS.length];
-      const width = isGlobal ? 2.4 : 1.6;
+      const color = isGlobal ? token('--primary') : token(NODE_TOKENS[nodeIdx++ % NODE_TOKENS.length]);
+      return { label: series[key].label, points: series[key].points, color: color, global: isGlobal };
+    });
+    if (ensureCharts()) {
+      charts.forEach(function (c, i) { c.setOption(chartOption(sp[i], lines), { replaceMerge: ['series'] }); });
+    }
 
-      [lossG, accG].forEach(function (g, i) {
-        const m = sp[i];
-        const pts = UI.polyline(s.points.map(function (p) { return { x: p.round, y: p[m.key] }; }),
-          Object.assign({ ymin: m.y_min, ymax: m.y_max, xmax: job.total_rounds }, CHART));
-        if (pts) {
-          g.appendChild(UI.svgEl('polyline', { points: pts, fill: 'none', stroke: color, 'stroke-width': width, 'stroke-linejoin': 'round' }));
-        }
-      });
-
+    lines.forEach(function (l) {
       const item = UI.el('span', 'legend-item');
       const dot = UI.el('i');
-      dot.style.background = color;
+      dot.style.background = l.color;
       item.appendChild(dot);
-      item.appendChild(document.createTextNode(s.label));
+      item.appendChild(document.createTextNode(l.label));
       legend.appendChild(item);
     });
   }
@@ -832,10 +888,16 @@
     job.progress_pct = Math.round((ev.round / job.total_rounds) * 100);
     job.global_metrics_prev = job.global_metrics;
     job.global_metrics = ev.global_metrics;
-    if (!job.eta) { job.elapsed_sec = ev.elapsed_sec; job.eta_sec = ev.eta_sec; }   // 有平滑 ETA 时由 refreshEta 更新
+    // 推送里的 eta_sec / elapsed_sec 已是 EMA 平滑结果（mock 挂 db.etaOf）；平滑后的每轮耗时 = 剩余时间 / 剩余轮次
+    job.elapsed_sec = ev.elapsed_sec;
+    job.eta_sec = ev.eta_sec;
+    const left = job.total_rounds - ev.round;
+    if (job.eta && left > 0 && ev.eta_sec !== null) {
+      job.eta = Object.assign({}, job.eta, { ema_round_sec: ev.eta_sec / left, avg_round_sec: ev.elapsed_sec / ev.round });
+    }
     render();
     syncListItem();
-    refreshEta();
+    if (!job.eta) refreshEta();   // 首轮补取一次平滑参数（α 与公式）
 
     const keys = spec().map(function (m) { return m.key; });
     const point = function (src) {
@@ -904,6 +966,7 @@
 
   function unmount() {
     if (sse) { sse.close(); sse = null; }
+    disposeCharts();
   }
 
   function currentJobId() { return job ? job.job_id : null; }
