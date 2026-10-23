@@ -235,6 +235,9 @@ test('[MPC-OPS-01][MPC-OPS-02][MPC-OPS-03] 实时监控：每方通信量、计�
   const { okData, errCode, M, tick } = boot(t);
   const task = await createTask(okData);
   assert.equal(task.status, 'running');
+  // [D35] 编号日期按 UTC+8：与 created_at 换算到 +08:00 后的日期一致
+  const local = new Date(Date.parse(task.created_at) + 8 * 3600000).toISOString().slice(0, 10).replace(/-/g, '');
+  assert.match(task.task_id, new RegExp('^mpc-' + local + '-\\d{2}$'));
   assert.ok(task.parties.every((p) => p.comm_bytes === 0 && p.compute_sec === 0 && p.interaction_rounds === 0));
   const seen = [];
   const sub = M.subscribe('/mpc/tasks/' + task.task_id + '/events', { metrics: (ev) => seen.push(ev) });
@@ -368,4 +371,17 @@ test('[MPC-OPS-05] 历史任务：按协议 / 时间筛选、两任务对比、�
   // 换项目：p2 历史独立
   const p2 = await okData('GET', '/projects/p2/mpc/tasks');
   assert.ok(p2.items.every((x) => !x.task_id.includes('-p1')));
+});
+
+test('[MPC-OPS-05] [D35] 任务编号日期按 UTC+8：UTC 17:30 创建的任务编号取次日', async (t) => {
+  const { okData, call } = boot(t);
+  // 沙箱与本 realm 共用 Date，把「当前时间」固定为 UTC 2026-10-23T17:30Z（= UTC+8 10-24 01:30）
+  t.mock.method(Date.prototype, 'toISOString', () => '2026-10-23T17:30:00.000Z');
+  const task = await createTask(okData);
+  assert.match(task.task_id, /^mpc-20261024-\d{2}$/);
+  // 失败路径：校验失败不消耗编号，也不产生任务
+  const r = await call('POST', '/projects/p1/mpc/tasks', { steps: FLOW, parties: ROLES3.slice(0, 2) });
+  assert.equal(r.code, 40000);
+  const next = await createTask(okData);
+  assert.equal(Number(next.task_id.slice(-2)), Number(task.task_id.slice(-2)) + 1);
 });

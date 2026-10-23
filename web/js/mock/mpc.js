@@ -645,9 +645,10 @@
 
     /* ================= 任务 ================= */
 
-    function nextTaskId(dateIso) {
+    /** 任务编号 mpc-YYYYMMDD-NN，日期按 UTC+8 取（UTC 16:00 之后已是次日）。 */
+    function nextTaskId() {
       db.seq += 1;
-      const d = (dateIso || new Date().toISOString()).slice(0, 10).replace(/-/g, '');
+      const d = k.fmtLocal(k.NOW()).slice(0, 10).replace(/-/g, '');
       return 'mpc-' + d + '-' + String(db.seq).padStart(2, '0');
     }
 
