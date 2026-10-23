@@ -472,6 +472,7 @@
       if (merged.ip !== undefined && merged.port === undefined) merged.port = node.port;
       const bad = checkNode(merged, true, role);
       if (bad) return bad;
+      if (body.online !== undefined && typeof body.online !== 'boolean') return err(40000, 'online 必须是布尔值');
       const renamed = body.node_id !== undefined && body.node_id !== node.node_id;
       const structural = renamed || (body.role !== undefined && body.role !== node.role) ||
         (body.data_partition !== undefined && body.data_partition !== node.data_partition) ||
@@ -485,6 +486,11 @@
         const used = jobsUsingNode(p.project_id, node.node_id);
         if (used.length) return err(40901, '节点已被 ' + used.length + ' 个历史任务引用，节点 ID 不可修改（可新增节点后删除旧节点）');
         node.node_id = body.node_id;
+      }
+      if (body.online !== undefined && body.online !== node.online) {
+        node.online = body.online;
+        if (node.online) node.last_heartbeat_at = k.NOW();
+        else failJobsOnNode(p.project_id, node.node_id);   // 心跳丢失：使用该节点的运行中任务转 Failed
       }
       if (body.ip !== undefined) node.ip = String(body.ip).trim();
       if (body.port !== undefined) node.port = Number(body.port);
@@ -991,7 +997,7 @@
       v.algo_ref_name = job.algorithm === 'custom' && job.algo_ref && job.algo_ref.kind !== 'builtin'
         ? job.algo_ref.name + ' v' + job.algo_ref.version + (job.algo_ref.kind === 'custom' ? '（自定义模型）' : '（已注册）')
         : null;
-      return v;
+      return Object.assign(v, procView(job));
     }
 
     // 过滤逻辑与内核 GET /projects/{id}/fl/jobs 一致
@@ -1012,12 +1018,332 @@
       return ok(withRef(job));
     });
 
+    /* ================= 过程管控（FL-PROC-01 至 FL-PROC-08） ================= */
+
+    // 与内核 FL_TRANSITIONS 一致（内核未导出），用于返回 allowed_actions
+    const TRANSITIONS = {
+      Created: { start: 'Running', reset: 'Created' },
+      Running: { pause: 'Paused', terminate: 'Terminated' },
+      Paused: { resume: 'Running', terminate: 'Terminated', reset: 'Created' },
+      Success: { reset: 'Created' },
+      Failed: { start: 'Running', reset: 'Created' },
+      Terminated: { start: 'Running', reset: 'Created' }
+    };
+    const EMA_ALPHA = 0.3;
+    const TRAIN_IMAGE = 'registry.local/fl-runtime:1.2.0';
+
+    flo.proc = {};   // job_id -> { history, runtime, checkpoints }
+    function proc(job) {
+      if (!flo.proc[job.job_id]) {
+        const created = { from: null, to: 'Created', action: 'create', at: job.created_at, operator: operator(), reason: null };
+        const h = [created];
+        // 内核种子任务（已完成的历史任务）补齐迁移记录
+        if (job.started_at) h.push({ from: 'Created', to: 'Running', action: 'start', at: job.started_at, operator: operator(), reason: null });
+        flo.proc[job.job_id] = { history: h, runtime: null, checkpoints: [] };
+      }
+      const st = flo.proc[job.job_id];
+      const last = st.history[st.history.length - 1];
+      // 跑满轮次由训练引擎自动迁移到 Success：读取时补记一条迁移与资源回收
+      if (job.status === 'Success' && last.to !== 'Success') {
+        st.history.push({ from: 'Running', to: 'Success', action: 'complete', at: job.finished_at || k.NOW(), operator: '训练引擎', reason: '完成全部 ' + job.total_rounds + ' 轮聚合' });
+        if (st.runtime) releaseWorkers(st.runtime, 'completed', job.finished_at);
+      }
+      return st;
+    }
+
+    /** 第 r 轮的耗时（秒）：基准 4.2 秒，按轮次正弦波动并叠加确定性抖动，约每 11 轮出现一次慢节点拖尾（+2.4 秒）。 */
+    function roundDur(job, r) {
+      const h = parseInt(k.hashHex(job.job_id + ':' + r, 1).slice(0, 4), 16);
+      const phase = (parseInt(k.hashHex(job.job_id, 1).slice(0, 2), 16) % 60) / 10;
+      let d = 4.2 * (1 + 0.12 * Math.sin(0.8 * r + phase)) + ((h % 100) / 100) * 0.6 - 0.3;
+      if (h % 11 === 0) d += 2.4;
+      return Math.round(d * 10) / 10;
+    }
+
+    /** 指数平滑（EMA）预估剩余时间：s₁ = d₁，sᵣ = α·dᵣ + (1 − α)·sᵣ₋₁，ETA = sᵣ ×（总轮次 − 已完成轮次）。 */
+    function etaOf(job) {
+      const r = job.current_round;
+      const hist = [];
+      let elapsed = 0, ema = null;
+      for (let i = 1; i <= r; i++) {
+        const d = roundDur(job, i);
+        elapsed += d;
+        ema = ema === null ? d : EMA_ALPHA * d + (1 - EMA_ALPHA) * ema;
+        hist.push({ round: i, duration_sec: d, ema_sec: Number(ema.toFixed(2)), eta_sec: Number((ema * (job.total_rounds - i)).toFixed(1)) });
+      }
+      const remaining = Math.max(0, job.total_rounds - r);
+      const done = job.status === 'Success';
+      return {
+        job_id: job.job_id, status: job.status, current_round: r, total_rounds: job.total_rounds,
+        elapsed_sec: Number(elapsed.toFixed(1)),
+        eta_sec: done ? 0 : (r === 0 ? null : Number((ema * remaining).toFixed(1))),
+        eta_naive_sec: done ? 0 : (r === 0 ? null : Number((elapsed / r * remaining).toFixed(1))),
+        avg_round_sec: r ? Number((elapsed / r).toFixed(2)) : null,
+        ema_round_sec: ema === null ? null : Number(ema.toFixed(2)),
+        method: 'ema', alpha: EMA_ALPHA,
+        formula: 'sᵣ = α·dᵣ + (1 − α)·sᵣ₋₁，ETA = sᵣ × (总轮次 − 已完成轮次)，α = ' + EMA_ALPHA,
+        history: hist
+      };
+    }
+
+    function procView(job) {
+      const st = proc(job);
+      const e = etaOf(job);
+      return {
+        elapsed_sec: e.elapsed_sec, eta_sec: e.eta_sec,
+        eta: { method: e.method, alpha: e.alpha, ema_round_sec: e.ema_round_sec, avg_round_sec: e.avg_round_sec, eta_naive_sec: e.eta_naive_sec },
+        allowed_actions: Object.keys(TRANSITIONS[job.status] || {}),
+        state_history: st.history.slice(),
+        runtime: st.runtime,
+        checkpoint: st.checkpoints.length ? st.checkpoints[st.checkpoints.length - 1] : null,
+        failure_reason: job.failure_reason || null
+      };
+    }
+
+    function releaseWorkers(rt, status, at) {
+      rt.workers.forEach(function (w) {
+        if (w.status === 'running' || w.status === 'suspended') { w.status = status; w.released_at = at || k.NOW(); }
+      });
+      rt.released = true;
+      rt.released_at = at || k.NOW();
+    }
+
+    /** 启动 / 恢复前的预检：项目、节点可用性、算法兼容性。返回 { error } 或 { checks, nodes }。 */
+    function preflight(job) {
+      const pid = job.project_id;
+      const checks = [];
+      if (!project(pid)) return { error: err(40400, '任务所属项目不存在') };
+      const cfg = config(pid);
+      checks.push({ item: '项目配置', passed: true, detail: '基准模型 ' + cfg.base_algorithm + ' ' + cfg.model_version + '，训练目标 ' + targetView(cfg.target).label + ' ' + (targetView(cfg.target).op === '<=' ? '≤' : '≥') + ' ' + cfg.target.value });
+      const all = db.nodes[pid] || [];
+      const missing = job.node_ids.filter(function (id) { return !all.some(function (n) { return n.node_id === id; }); });
+      if (missing.length) return { error: err(40901, '参与节点已从项目移除：' + missing.join('、') + '，请重置任务后重新选择节点', { missing_node_ids: missing }) };
+      const picked = all.filter(function (n) { return job.node_ids.indexOf(n.node_id) >= 0; });
+      const offline = picked.filter(function (n) { return n.online === false; });
+      if (offline.length) {
+        return { error: err(42201, '节点不可用：' + offline.map(function (n) { return n.node_id; }).join('、') + ' 心跳丢失（离线），请恢复节点后再启动', { offline_node_ids: offline.map(function (n) { return n.node_id; }) }) };
+      }
+      const trainers = picked.filter(function (n) { return n.role === 'trainer'; }).length;
+      const aggs = picked.filter(function (n) { return n.role === 'aggregator'; }).length;
+      if (trainers < 2 || aggs < 1) return { error: err(40000, '参与节点不足：当前 ' + trainers + ' 个训练节点、' + aggs + ' 个聚合节点，至少需要 2 个训练节点和 1 个聚合节点') };
+      checks.push({ item: '节点可用性', passed: true, detail: picked.length + ' 个节点在线（' + trainers + ' 训练 + ' + aggs + ' 聚合）' });
+      const tt = k.taskTypeOf(job.task_type);
+      if (tt.algorithms.indexOf(job.algorithm) < 0) return { error: err(40000, '算法不兼容：' + tt.name + '任务不支持 ' + job.algorithm + '，可选 ' + tt.algorithms.join(' / ')) };
+      if (job.algorithm === 'custom') {
+        if (!job.model_file_id || !db.files[job.model_file_id]) return { error: err(40000, '算法不兼容：自定义模型文件不存在，请重新上传') };
+        const a = job.algo_ref && flo.algos[job.algo_ref.algo_id];
+        if (a && a.task_types.indexOf(job.task_type) < 0) return { error: err(40000, '算法不兼容：' + a.name + ' 不支持' + tt.name + '任务') };
+      }
+      checks.push({ item: '算法兼容性', passed: true, detail: (job.algo_ref ? job.algo_ref.name + ' ' + job.algo_ref.version : job.algorithm) + ' 支持' + tt.name + '任务' });
+      return { checks: checks, nodes: picked };
+    }
+
+    function allocate(job, nodes) {
+      const at = k.NOW();
+      return {
+        allocated_at: at, image: TRAIN_IMAGE, released: false, released_at: null,
+        workers: nodes.map(function (n) {
+          const h = parseInt(k.hashHex(job.job_id + n.node_id + at, 1).slice(0, 6), 16);
+          return {
+            node_id: n.node_id, role: n.role, container_id: 'flc-' + k.hashHex(job.job_id + n.node_id + at, 2).slice(0, 12),
+            pid: 2000 + (h % 60000), cpu_cores: n.role === 'aggregator' ? 2 : 4, memory_mb: n.role === 'aggregator' ? 4096 : 8192,
+            status: 'running', started_at: at, released_at: null
+          };
+        })
+      };
+    }
+
+    function transit(job, from, action, reason) {
+      proc(job).history.push({ from: from, to: job.status, action: action, at: k.NOW(), operator: operator(), reason: reason || null });
+    }
+
+    /** 节点心跳丢失：使用它的运行中任务停止聚合循环并迁移到 Failed，回收容器。 */
+    function failJobsOnNode(pid, nodeId) {
+      runningJobs(pid, nodeId).filter(function (j) { return j.status === 'Running'; }).forEach(function (job) {
+        if (job._timer) { clearInterval(job._timer); job._timer = null; }
+        job.status = 'Failed';
+        job.finished_at = k.NOW();
+        job.failure_reason = '节点 ' + nodeId + ' 心跳丢失，第 ' + (job.current_round + 1) + ' 轮聚合未完成';
+        const st = proc(job);
+        st.history.push({ from: 'Running', to: 'Failed', action: 'fail', at: job.finished_at, operator: '训练引擎', reason: job.failure_reason });
+        if (st.runtime) releaseWorkers(st.runtime, 'failed', job.finished_at);
+        k.emit('/fl/jobs/' + job.job_id + '/events', 'status_changed', { job_id: job.job_id, status: 'Failed', previous_status: 'Running', at: job.finished_at });
+      });
+    }
+
     k.routeFirst('POST', '/fl/jobs/{job_id}/actions', function (p, q, body) {
       const job = db.flJobs[p.job_id];
       if (!job) return err(40400, '任务不存在');
-      const r = k.flAction(job, (body || {}).action);
-      if (r.code === 0) r.data = withRef(job);
-      return r;
+      const action = (body || {}).action;
+      const st = proc(job);
+      let pre = null;
+      if ((action === 'start' || action === 'resume') && (TRANSITIONS[job.status] || {})[action]) {
+        pre = preflight(job);
+        if (pre.error) return pre.error;
+      }
+      const from = job.status;
+      const r = k.flAction(job, action);
+      if (r.code !== 0) return r;
+      if (action === 'start') {
+        job.failure_reason = null;
+        st.checkpoints = [];
+        st.runtime = allocate(job, pre.nodes);
+      } else if (action === 'pause') {
+        // 断点：保存本轮聚合后的全局模型参数、优化器状态与各训练节点的数据读取位置
+        const last = job.metrics[job.metrics.length - 1];
+        const bytes = last ? Math.round(last.nodes.reduce(function (s, n) { return s + n.upload_kb; }, 0) * 1024 / Math.max(1, last.nodes.length)) : 0;
+        st.checkpoints.push({
+          checkpoint_id: fid('ckpt'), round: job.current_round, saved_at: k.NOW(),
+          path: '/data/fl/ckpt/' + job.job_id + '/round_' + String(job.current_round).padStart(3, '0') + '.ckpt',
+          global_model_sha256: k.hashHex('ckpt' + job.job_id + job.current_round, 8),
+          global_model_bytes: bytes, global_metrics: last ? Object.assign({}, last.global) : null,
+          optimizer_state: '服务端聚合器动量与学习率调度步数（step = ' + job.current_round + '）',
+          node_cursors: job.node_ids.filter(function (id) { return (db.nodes[job.project_id] || []).some(function (n) { return n.node_id === id && n.role === 'trainer'; }); })
+            .map(function (id) { return { node_id: id, epoch: job.current_round, batch_offset: 0 }; })
+        });
+        if (st.runtime) st.runtime.workers.forEach(function (w) { if (w.status === 'running') w.status = 'suspended'; });
+      } else if (action === 'resume') {
+        if (st.runtime) st.runtime.workers.forEach(function (w) { if (w.status === 'suspended') w.status = 'running'; });
+      } else if (action === 'terminate') {
+        if (st.runtime) releaseWorkers(st.runtime, 'killed');
+      } else if (action === 'reset') {
+        st.runtime = null;
+        st.checkpoints = [];
+        job.failure_reason = null;
+      }
+      const ck = st.checkpoints[st.checkpoints.length - 1];
+      transit(job, from, action, action === 'resume' && ck ? '从第 ' + ck.round + ' 轮断点继续' : (action === 'terminate' ? '强制终止，容器以 SIGKILL 结束并释放资源' : null));
+      const v = withRef(job);
+      if (pre) v.preflight = pre.checks;
+      if (action === 'resume' && ck) v.resumed_from_round = ck.round;
+      return ok(v);
+    });
+
+    k.route('GET', '/fl/jobs/{job_id}/eta', function (p) {
+      const job = db.flJobs[p.job_id];
+      if (!job) return err(40400, '任务不存在');
+      proc(job);
+      return ok(etaOf(job));
+    });
+
+    /* --- 指标：按轮次 / 写入时间过滤（扩展内核 GET /fl/jobs/{id}/metrics） --- */
+
+    function parseTime(v, name) {
+      if (v === undefined || v === null || v === '') return { t: null };
+      const t = Date.parse(v);
+      if (Number.isNaN(t)) return { error: err(40002, name + ' 不是合法的 ISO 8601 时间：' + v) };
+      return { t: t };
+    }
+    function timeRange(q) {
+      const a = parseTime(q.start_time, 'start_time'), b = parseTime(q.end_time, 'end_time');
+      if (a.error) return a;
+      if (b.error) return b;
+      if (a.t !== null && b.t !== null && a.t > b.t) return { error: err(40003, 'start_time 不能晚于 end_time') };
+      return { from: a.t, to: b.t };
+    }
+    function inRange(m, tr) {
+      const t = Date.parse(m.recorded_at);
+      return (tr.from === null || t >= tr.from) && (tr.to === null || t <= tr.to);
+    }
+
+    k.routeFirst('GET', '/fl/jobs/{job_id}/metrics', function (p, q) {
+      const job = db.flJobs[p.job_id];
+      if (!job) return err(40400, '任务不存在');
+      const scope = q.scope || 'global';
+      if (scope !== 'global' && scope !== 'nodes') return err(40000, 'scope 必须是 global 或 nodes');
+      const from = q.from_round !== undefined ? Number(q.from_round) : 1;
+      const to = q.to_round !== undefined ? Number(q.to_round) : job.total_rounds;
+      if (!Number.isInteger(from) || !Number.isInteger(to) || from < 1) return err(40002, 'from_round / to_round 必须是正整数');
+      if (from > to) return err(40003, 'from_round 不能大于 to_round');
+      const tr = timeRange(q);
+      if (tr.error) return tr.error;
+      const keys = k.taskTypeOf(job.task_type).metrics.map(function (s) { return s.key; });
+      const rows = job.metrics.filter(function (m) { return m.round >= from && m.round <= to && inRange(m, tr); });
+      const point = function (src, m) {
+        const out = { round: m.round, recorded_at: m.recorded_at };
+        keys.forEach(function (key) { out[key] = src[key]; });
+        return out;
+      };
+      const series = [{ key: 'global', label: '全局', points: rows.map(function (m) { return point(m.global, m); }) }];
+      if (scope === 'nodes') {
+        k.jobNodes(job).forEach(function (nd) {
+          series.push({
+            key: nd.node_id, label: nd.node_id,
+            points: rows.map(function (m) { return point(m.nodes.filter(function (x) { return x.node_id === nd.node_id; })[0] || {}, m); })
+          });
+        });
+      }
+      return ok({ total_rounds: job.total_rounds, metrics_spec: k.taskTypeOf(job.task_type).metrics, series: series });
+    });
+
+    /* --- 历史指标查询与导出：按时间范围、项目 ID、任务 ID --- */
+
+    const ALL_KEYS = ['loss', 'accuracy', 'rmse', 'mae'];
+    function historyRows(q) {
+      if (q.project_id && !project(q.project_id)) return { error: err(40400, '项目不存在：' + q.project_id) };
+      if (q.job_id && !db.flJobs[q.job_id]) return { error: err(40400, '任务不存在：' + q.job_id) };
+      const scope = q.scope || 'global';
+      if (scope !== 'global' && scope !== 'nodes') return { error: err(40000, 'scope 必须是 global 或 nodes') };
+      const tr = timeRange(q);
+      if (tr.error) return tr;
+      if (q.project_id) k.seedProject(q.project_id);
+      const jobs = Object.keys(db.flJobs).map(function (id) { return db.flJobs[id]; }).filter(function (j) {
+        return (!q.project_id || j.project_id === q.project_id) && (!q.job_id || j.job_id === q.job_id);
+      });
+      const rows = [];
+      jobs.forEach(function (j) {
+        j.metrics.filter(function (m) { return inRange(m, tr); }).forEach(function (m) {
+          const add = function (series, src) {
+            const row = { project_id: j.project_id, job_id: j.job_id, job_name: j.name, task_type: j.task_type, round: m.round, series: series, recorded_at: m.recorded_at };
+            ALL_KEYS.forEach(function (key) { row[key] = src[key] !== undefined ? src[key] : null; });
+            rows.push(row);
+          };
+          add('global', m.global);
+          if (scope === 'nodes') m.nodes.forEach(function (n) { add(n.node_id, n); });
+        });
+      });
+      return { rows: rows, jobs: jobs.length };
+    }
+
+    k.route('GET', '/fl/metrics', function (p, q) {
+      const r = historyRows(q);
+      if (r.error) return r.error;
+      const size = Math.min(500, Math.max(1, Number(q.page_size) || 50));
+      const page = Math.max(1, Number(q.page) || 1);
+      return ok({ items: r.rows.slice((page - 1) * size, page * size), page: page, page_size: size, total: r.rows.length, job_count: r.jobs });
+    });
+
+    function metricsCsv(q, name) {
+      const r = historyRows(q);
+      if (r.error) return null;
+      const cols = ['project_id', 'job_id', 'task_type', 'round', 'series'].concat(ALL_KEYS, ['recorded_at']);
+      const csv = cols.join(',') + '\n' + r.rows.map(function (row) {
+        return cols.map(function (c) { return row[c] === null ? '' : row[c]; }).join(',');
+      }).join('\n') + (r.rows.length ? '\n' : '');
+      return { fileName: name, contentType: 'text/csv;charset=utf-8', content: '﻿' + csv };
+    }
+    k.download(/^\/projects\/([^/]+)\/fl\/metrics\/export$/, function (m, q) {
+      return metricsCsv(Object.assign({}, q, { project_id: m[1] }), 'fl_metrics_' + m[1] + '.csv');
+    });
+    k.download(/^\/fl\/metrics\/export$/, function (m, q) {
+      return metricsCsv(q, 'fl_metrics' + (q.project_id ? '_' + q.project_id : '') + (q.job_id ? '_' + q.job_id : '') + '.csv');
+    });
+
+    /* --- 任务维度节点：离线节点显示 offline（扩展内核 GET /fl/jobs/{id}/nodes） --- */
+
+    k.routeFirst('GET', '/fl/jobs/{job_id}/nodes', function (p) {
+      const job = db.flJobs[p.job_id];
+      if (!job) return err(40400, '任务不存在');
+      const last = job.metrics[job.metrics.length - 1];
+      const base = job.current_round === 0 ? 'pending' : ({ Running: 'uploading', Paused: 'suspended', Terminated: 'released', Failed: 'released' })[job.status] || 'completed';
+      const items = k.jobNodes(job).map(function (nd) {
+        const m = last ? last.nodes.filter(function (x) { return x.node_id === nd.node_id; })[0] : null;
+        return {
+          node_id: nd.node_id, ip: nd.ip, port: nd.port, role: nd.role, role_label: nd.role_label, data_partition: nd.data_partition,
+          round_upload_kb: m ? m.upload_kb : null, status: nd.online === false ? 'offline' : base
+        };
+      });
+      return ok({ items: items, page: 1, page_size: 20, total: items.length });
     });
   });
 })();

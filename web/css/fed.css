@@ -60,3 +60,14 @@
   .flo-row, .flo-iso { grid-template-columns: minmax(0, 1fr); }
   .flo-lib { grid-template-columns: 230px minmax(0, 1fr); }
 }
+
+/* ---------- 联邦学习 · 过程管控补充块（FL-PROC） ---------- */
+.fl-proc-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.fl-proc-head.fl-wrap { flex-wrap: wrap; row-gap: 8px; }
+.fl-state-info { display: flex; flex-direction: column; gap: 8px; }
+.fl-state-log { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; background: #F5F7FA; border-radius: 6px; }
+.fl-rt-grid { grid-template-columns: minmax(140px, 1.2fr) 60px 150px 90px 120px minmax(140px, 1fr); }
+.fl-hist-grid { grid-template-columns: minmax(160px, 1.6fr) 56px minmax(120px, 1fr) 80px 80px 80px 80px 128px; }
+.fl-ckpt { font-size: 12px; color: var(--muted-3); line-height: 20px; overflow-wrap: anywhere; }
+.fl-mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+.fl-dt { width: 200px; height: 32px; font-size: 13px; }

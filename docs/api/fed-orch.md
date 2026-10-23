@@ -163,7 +163,7 @@ GET /projects/{project_id}/config/export
 PATCH /projects/{project_id}/nodes/{node_id}
 ```
 
-可改 `node_id`、`ip`、`port`、`role`、`data_partition`、`data_dir`，只校验传入字段，规则同 2.1。额外规则：
+可改 `node_id`、`ip`、`port`、`role`、`data_partition`、`data_dir`、`online`（bool，见 6.1），只校验传入字段，规则同 2.1。额外规则：
 
 | 情形 | code |
 |---|---|
@@ -391,3 +391,128 @@ DELETE /fl/param-templates/{template_id}
 | 参数类型或枚举不符 | 40002 |
 | 参数越界 | 40003 |
 | 自定义模型不属于本项目 | 40400 |
+
+---
+
+## 6. 过程管控（FL-PROC-01 至 FL-PROC-08）
+
+对应页面：`#/fed/proc`（页面模块 `FL`，`web/js/fl.js`）；mock 同在 `web/js/mock/fed-orch.js`；测试：`web/tests/fed-proc.test.mjs`。
+
+| # | 方法 | 路径 | 说明 | 验收编号 |
+|---|---|---|---|---|
+| 22 | POST | `/fl/jobs/{job_id}/actions` | 任务动作（扩展 API.md §2.6）：start / resume 前预检、分配容器，pause 保存断点，terminate 释放资源 | FL-PROC-01 / 02 / 03 / 04 |
+| 23 | GET | `/fl/jobs/{job_id}`、`/projects/{project_id}/fl/jobs` | 任务详情 / 列表增加过程管控字段（见 6.1） | FL-PROC-01 / 07 |
+| 24 | GET | `/fl/jobs/{job_id}/eta` | 平滑剩余时间与逐轮耗时 | FL-PROC-07 |
+| 25 | GET | `/fl/jobs/{job_id}/metrics` | 每轮指标（扩展 API.md §2.7：`from_round` / `to_round` 与 `start_time` / `end_time` 生效并校验） | FL-PROC-05 / 06 |
+| 26 | GET | `/fl/metrics` | 历史指标查询：按项目 ID / 任务 ID / 写入时间范围 | FL-PROC-08 |
+| 27 | GET（下载） | `/fl/metrics/export`、`/projects/{project_id}/fl/metrics/export` | 历史指标 CSV（条件同 26） | FL-PROC-08 |
+| 28 | GET | `/fl/jobs/{job_id}/nodes` | 任务维度节点（扩展 API.md §2.10：离线节点 `status = offline`） | FL-PROC-02 |
+| 29 | PATCH | `/projects/{project_id}/nodes/{node_id}` | 新增可选字段 `online`（bool）：置 `false` 表示心跳丢失，使用该节点的 Running 任务转 `Failed` | FL-PROC-01 / 02 |
+
+### 6.1 状态机与任务对象新增字段
+
+迁移表与 API.md §2.1 一致（内核实现，不允许的动作返回 `40901`，`data.allowed_actions` 给出当前可执行动作）：
+
+| 当前状态 | start | pause | resume | terminate | reset | 自动 |
+|---|---|---|---|---|---|---|
+| Created | Running | | | | Created | |
+| Running | | Paused | | Terminated | | 跑满轮次 → Success；参与节点心跳丢失 → Failed |
+| Paused | | | Running（断点续训） | Terminated | Created | |
+| Success | | | | | Created | |
+| Failed | Running（第 0 轮重开） | | | | Created | |
+| Terminated | Running（第 0 轮重开） | | | | Created | |
+
+任务详情 / 列表 / 动作响应新增：
+
+| 字段 | 说明 |
+|---|---|
+| `allowed_actions` | 当前状态可执行的动作 |
+| `state_history[]` | `{ from, to, action, at, operator, reason }`，`action` 取 `create` / `start` / `pause` / `resume` / `terminate` / `reset` / `complete`（跑满轮次）/ `fail`（异常） |
+| `failure_reason` | `Failed` 时的原因，例「节点 node-hangzhou-02 心跳丢失，第 4 轮聚合未完成」 |
+| `runtime` | `{ allocated_at, image, released, released_at, workers[] }`，`workers[]` 为 `{ node_id, role, container_id, pid, cpu_cores, memory_mb, status, started_at, released_at }`，`status` 取 `running` / `suspended` / `killed` / `completed` / `failed` |
+| `checkpoint` | 最近一次断点（见 6.3），无则 `null` |
+| `elapsed_sec` / `eta_sec` | 按 6.4 的逐轮耗时与平滑公式计算 |
+| `eta` | `{ method, alpha, ema_round_sec, avg_round_sec, eta_naive_sec }` |
+
+`PATCH /fl/jobs/{job_id}` 仍是内核实现，响应不含以上字段，前端沿用上次的值。
+
+### 6.2 启动预检与资源分配
+
+`start` 与 `resume` 在执行前做三项检查，任一失败则任务状态不变：
+
+| 检查 | 失败情形 | code |
+|---|---|---|
+| 项目配置 | 任务所属项目不存在 | 40400 |
+| 节点可用性 | 参与节点已从项目移除 | 40901（`data.missing_node_ids`） |
+| | 参与节点离线（`online = false`） | 42201（`data.offline_node_ids`） |
+| | 在册节点不足 2 个训练节点 + 1 个聚合节点 | 40000 |
+| 算法兼容性 | 算法不在任务类型的可选列表；`custom` 的模型文件不存在；注册算法不支持该任务类型 | 40000 |
+
+通过后响应带 `preflight[]`（`{ item, passed, detail }`），`start` 时为每个参与节点分配一个训练容器（镜像 `registry.local/fl-runtime:1.2.0`，训练节点 4 核 / 8 GB，聚合节点 2 核 / 4 GB），写入 `runtime.workers`。
+
+### 6.3 暂停、恢复与强制终止
+
+- `pause`：停止聚合循环，保存断点 `{ checkpoint_id, round, saved_at, path, global_model_sha256, global_model_bytes, global_metrics, optimizer_state, node_cursors[] }`，`path` 形如 `/data/fl/ckpt/{job_id}/round_005.ckpt`，`node_cursors` 为各训练节点的数据读取位置；容器状态改为 `suspended`。
+- `resume`：重新预检，容器恢复 `running`，响应带 `resumed_from_round`，下一轮从「断点轮次 + 1」开始，已存储的轮次不重复不丢失。
+- `terminate`：停止聚合循环，全部容器以 SIGKILL 结束（`status = killed`，记录 `released_at`），`runtime.released = true`，状态迁移到 `Terminated`；之后节点的 `running_job_count` 归零。
+- `reset`：清空指标、断点和运行资源。
+
+### 6.4 预估剩余时间
+
+```
+GET /fl/jobs/{job_id}/eta
+```
+
+```json
+{
+  "job_id": "fl_p1_002", "status": "Running", "current_round": 5, "total_rounds": 30,
+  "elapsed_sec": 20.1, "eta_sec": 100.5, "eta_naive_sec": 100.5,
+  "avg_round_sec": 4.02, "ema_round_sec": 4.02, "method": "ema", "alpha": 0.3,
+  "formula": "sᵣ = α·dᵣ + (1 − α)·sᵣ₋₁，ETA = sᵣ × (总轮次 − 已完成轮次)，α = 0.3",
+  "history": [{ "round": 1, "duration_sec": 4.1, "ema_sec": 4.1, "eta_sec": 118.9 }]
+}
+```
+
+- `dᵣ`：第 r 轮聚合耗时（秒）。mock 的确定性模型：基准 4.2 秒，乘以 (1 + 0.12·sin(0.8r + φ))，加 ±0.3 秒抖动，约每 11 轮出现一次慢节点拖尾（+2.4 秒），φ 由任务 ID 哈希确定。
+- `s₁ = d₁`，`sᵣ = 0.3·dᵣ + 0.7·sᵣ₋₁`；`eta_sec = sᵣ × (总轮次 − r)`；未开始为 `null`，Success 为 0。
+- `eta_naive_sec = 已用时间 / r × 剩余轮次`（算术平均，供对比）。
+- 暂停期间不计时。SSE `round_completed.eta_sec` 仍为内核的线性估计，页面每轮收到推送后调本接口刷新。
+
+任务不存在 40400。
+
+### 6.5 每轮指标与曲线
+
+`GET /fl/jobs/{job_id}/metrics?scope=&from_round=&to_round=&start_time=&end_time=`：返回格式同 API.md §2.7。每轮聚合后写入全局与每个参与节点的指标（分类 `loss` / `accuracy`，时序 `rmse` / `mae`）及 `recorded_at`。
+
+| 情形 | code |
+|---|---|
+| `scope` 不是 `global` / `nodes` | 40000 |
+| 轮次不是正整数；时间不是 ISO 8601 | 40002 |
+| `from_round > to_round`；`start_time` 晚于 `end_time` | 40003 |
+| 任务不存在 | 40400 |
+
+页面曲线不画聚合节点：它不持有训练数据。接口与 CSV 仍包含聚合节点的记录，与内核一致。
+
+### 6.6 历史指标查询与导出
+
+```
+GET /fl/metrics?project_id=&job_id=&start_time=&end_time=&scope=global|nodes&page=&page_size=
+```
+
+条件都可选、可组合（都不传即全部项目）；`page_size` 默认 50、最大 500。响应：
+
+```json
+{
+  "items": [{ "project_id": "p1", "job_id": "fl_p1_001", "job_name": "稀土氧化物价格预测 · LSTM", "task_type": "timeseries",
+              "round": 1, "series": "global", "loss": null, "accuracy": null, "rmse": 0.6725, "mae": 0.4964, "recorded_at": "…" }],
+  "page": 1, "page_size": 50, "total": 115, "job_count": 2
+}
+```
+
+下载 `GET /projects/{project_id}/fl/metrics/export?…` 或 `GET /fl/metrics/export?project_id=&job_id=&…`，CSV 列固定为：
+
+```csv
+project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at
+```
+
+任务类型不适用的指标留空。错误码同 6.5，另有项目或任务不存在 40400。下载接口无法返回错误包，页面导出前先用 `GET /fl/metrics` 校验条件和条数。

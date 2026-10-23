@@ -1,0 +1,157 @@
+{
+  "FL-PROC-01": {
+    "page": "#/fed/proc",
+    "ui": "过程管控 → 当前任务卡「任务状态机」（六个状态标签、当前可执行动作、最近迁移记录、失败原因）+ 控制栏按钮",
+    "steps": [
+      "选中「供应商违约预测 · XGBoost」，状态标签高亮 Created，提示当前可执行「启动训练、重置」，暂停 / 恢复 / 强制终止按钮置灰",
+      "依次点击「启动训练」「暂停」「恢复」，状态标签依次变为 Running、Paused、Running，迁移记录逐条追加（时间 · 原状态 → 新状态 · 动作 · 操作人）",
+      "在任务编排页把 node-hangzhou-02 的在线状态改为离线：任务转 Failed，显示失败原因；跑满轮次的任务自动转 Success；点「强制终止」转 Terminated"
+    ],
+    "expected": "Created、Running、Paused、Success、Failed、Terminated 六种状态都可到达；按钮可用性与迁移表一致；不允许的动作由后端返回 40901 并给出 allowed_actions",
+    "api": [
+      "POST /fl/jobs/{job_id}/actions",
+      "GET /fl/jobs/{job_id}",
+      "PATCH /projects/{project_id}/nodes/{node_id}"
+    ],
+    "tests": [
+      "tests/fed-proc.test.mjs: [FL-PROC-01] 任务状态机：六种状态可达，迁移记录完整，非法迁移返回 40901 与可执行动作"
+    ],
+    "impl": "迁移表：Created 可 start → Running、reset → Created；Running 可 pause → Paused、terminate → Terminated，跑满轮次自动 → Success，参与节点心跳丢失自动 → Failed；Paused 可 resume → Running、terminate → Terminated、reset → Created；Success 只可 reset；Failed 与 Terminated 可 start（从第 0 轮重开）或 reset。迁移由训练引擎的 flAction 执行，表外动作返回 40901 与当前 allowed_actions。每次迁移写一条 state_history（from、to、action、operator、reason、at），自动迁移的操作人记为「训练引擎」。",
+    "status": "done"
+  },
+  "FL-PROC-02": {
+    "page": "#/fed/proc",
+    "ui": "过程管控 → 「启动训练」按钮 + 「运行资源与断点」卡",
+    "steps": [
+      "点击「启动训练」，提示「启动校验通过（项目配置、节点可用性、算法兼容性），已分配 4 个训练容器」",
+      "「运行资源与断点」卡列出每个节点的容器 ID、进程 PID、CPU / 内存与状态「运行中」",
+      "把任一参与节点置为离线后再次启动，提示「节点不可用：… 心跳丢失（离线）」，任务状态不变"
+    ],
+    "expected": "三项预检全部通过才启动并分配容器；节点离线返回 42201，节点被移除返回 40901，节点不足或算法不兼容返回 40000，预检失败时任务不改变状态",
+    "api": [
+      "POST /fl/jobs/{job_id}/actions",
+      "GET /fl/jobs/{job_id}/nodes"
+    ],
+    "tests": [
+      "tests/fed-proc.test.mjs: [FL-PROC-02] 任务启动：校验项目配置、节点可用性、算法兼容性，通过后为每个节点分配训练容器"
+    ],
+    "impl": "start 与 resume 前执行 preflight：校验任务所属项目及其配置存在；参与节点仍在项目中（否则 40901）、全部在线（离线返回 42201 并列出节点）、仍满足至少 2 个训练节点 + 1 个聚合节点；算法在任务类型的可选列表内，custom 算法的模型制品文件存在，注册算法支持该任务类型。通过后为每个节点分配一个训练容器（镜像 registry.local/fl-runtime:1.2.0，训练节点 4 核 / 8 GB，聚合节点 2 核 / 4 GB），记录容器 ID、PID 与启动时间到 runtime.workers。",
+    "status": "done"
+  },
+  "FL-PROC-03": {
+    "page": "#/fed/proc",
+    "ui": "过程管控 → 「暂停」「恢复」按钮 + 「运行资源与断点」卡的「最近断点」",
+    "steps": [
+      "训练进行到第 5 轮时点击「暂停」，提示「第 5 轮断点已保存」，容器状态变为「已挂起（断点已保存）」，下方显示断点路径、模型大小与 SHA-256",
+      "等待数秒，聚合轮次停在 5",
+      "点击「恢复」，提示「已从第 5 轮断点继续训练」，曲线从第 6 轮继续"
+    ],
+    "expected": "暂停期间聚合循环中断、轮次不再增加；恢复后从断点下一轮继续，已存储的指标轮次连续、不重复不丢失；对已暂停任务再暂停、对运行中任务恢复均返回 40901",
+    "api": [
+      "POST /fl/jobs/{job_id}/actions",
+      "GET /fl/jobs/{job_id}/metrics"
+    ],
+    "tests": [
+      "tests/fed-proc.test.mjs: [FL-PROC-03] 暂停与恢复：暂停时保存当前轮次断点，恢复后从断点继续，轮次不重复不丢失"
+    ],
+    "impl": "pause 停止聚合循环定时器并保存断点：当前轮次、本轮聚合后的全局模型参数（路径 /data/fl/ckpt/{job_id}/round_{轮次}.ckpt、字节数与 SHA-256）、本轮全局指标、服务端聚合器的动量与学习率调度步数，以及每个训练节点的数据读取位置（epoch、batch_offset）；容器转 suspended。resume 重新预检后从 current_round 继续下一轮，响应给出 resumed_from_round，迁移记录写明「从第 N 轮断点继续」。",
+    "status": "done"
+  },
+  "FL-PROC-04": {
+    "page": "#/fed/proc",
+    "ui": "过程管控 → 「强制终止」按钮 + 「运行资源与断点」卡",
+    "steps": [
+      "训练运行中点击「强制终止」，提示「已强制终止，训练容器已释放」",
+      "状态标签变为 Terminated，所有容器状态为「已强制结束 · 资源已释放」，轮次不再增加",
+      "任务编排页该任务使用的节点「运行中任务」归零，可删除或改角色"
+    ],
+    "expected": "终止后训练停止、资源释放、状态为 Terminated；对 Created 或已终止任务再终止返回 40901；终止后可重新启动（从第 0 轮开始并重新分配容器）",
+    "api": [
+      "POST /fl/jobs/{job_id}/actions",
+      "GET /projects/{project_id}/nodes"
+    ],
+    "tests": [
+      "tests/fed-proc.test.mjs: [FL-PROC-04] 强制终止：停止训练、容器 SIGKILL 并释放资源，状态迁移到 Terminated"
+    ],
+    "impl": "terminate 仅在 Running / Paused 时允许：停止聚合循环，所有训练容器以 SIGKILL 结束（status = killed，记录 released_at），runtime.released = true，任务迁移到 Terminated 并记录 finished_at。节点的运行中任务数按 Running / Paused 状态实时计算，终止后立即归零，节点管理的删除与改角色限制随之解除。",
+    "status": "done"
+  },
+  "FL-PROC-05": {
+    "page": "#/fed/proc",
+    "ui": "过程管控 → 聚合轮次 / 全局指标卡 + 收敛曲线卡",
+    "steps": [
+      "启动训练，每完成一轮聚合，「聚合轮次」加 1，全局 Loss / Accuracy 卡显示本轮与上一轮数值",
+      "时序任务显示 RMSE / MAE（归一化）"
+    ],
+    "expected": "每轮聚合后存储全局与每个参与节点的指标（分类 Loss / Accuracy，时序 RMSE / MAE）和写入时间，可通过指标接口按轮次读取",
+    "api": [
+      "GET /fl/jobs/{job_id}/metrics",
+      "GET /fl/jobs/{job_id}"
+    ],
+    "tests": [
+      "tests/fed-proc.test.mjs: [FL-PROC-05] 数据存储：每轮聚合后存储全局与各节点的 Loss / Accuracy（时序为 RMSE / MAE）"
+    ],
+    "impl": "训练引擎每完成一轮聚合，向任务的 metrics 追加一条记录：round、recorded_at、global（全局模型在验证集上的指标）和 nodes（各节点本地指标与本轮上传量 upload_kb），指标键由任务类型的 metrics_spec 决定（classification：loss / accuracy；timeseries：rmse / mae），同时通过 SSE round_completed 推送。查询接口校验 scope、轮次区间与时间格式。",
+    "status": "done"
+  },
+  "FL-PROC-06": {
+    "page": "#/fed/proc",
+    "ui": "过程管控 → 收敛曲线卡（「显示：仅全局 / 各参与节点」下拉、图例、两张曲线图）",
+    "steps": [
+      "训练运行中，两张曲线随每轮推送实时延长，横轴为轮次 1 – 总轮次，纵轴为指标值",
+      "「显示」切到「各参与节点」，图例出现全局与 3 个训练节点，各节点曲线同时绘制",
+      "切回「仅全局」只剩一条曲线"
+    ],
+    "expected": "曲线随轮次动态更新，可在全局与各节点之间切换；接口支持 from_round / to_round 截取区间，非法区间返回 40003 / 40002",
+    "api": [
+      "GET /fl/jobs/{job_id}/metrics",
+      "SSE /fl/jobs/{job_id}/events"
+    ],
+    "tests": [
+      "tests/fed-proc.test.mjs: [FL-PROC-06] 动态曲线：全局 / 各节点切换，横轴轮次可按区间截取"
+    ],
+    "impl": "切换视图时按 scope = global / nodes 拉取历史曲线，之后每收到一次 round_completed 推送就把该轮的全局与节点指标追加到对应折线，坐标量纲取 metrics_spec 的 y_min / y_max，横轴最大值为 total_rounds。聚合节点不持有训练数据，页面不画它的本地曲线（接口与 CSV 保留记录）。当前曲线用原生 SVG 折线绘制，未引入 ECharts（见 status 说明）。",
+    "status": "partial",
+    "partial_note": "功能完整，但甲方原文写明「基于 ECharts」，当前为原生 SVG 实现：项目是无构建原生站，index.html 未引入 ECharts，且该文件归集成负责人所有。若必须使用 ECharts，需要集成负责人在 index.html 引入 echarts.min.js（建议本地文件），然后把 renderCharts 换成 ECharts 折线图，接口与数据格式不变。"
+  },
+  "FL-PROC-07": {
+    "page": "#/fed/proc",
+    "ui": "过程管控 → 「预估剩余时间」指标卡（悬停显示公式）",
+    "steps": [
+      "启动训练，「预估剩余时间」每轮刷新，下方显示已用时间与「EMA 平滑（α = 0.3）每轮 X 秒」",
+      "出现慢轮次（约每 11 轮一次）时，剩余时间只小幅上调，不会大幅跳变",
+      "训练完成后剩余时间为 0 秒"
+    ],
+    "expected": "剩余时间由已用时间、已完成轮次与总轮次经指数平滑得出；未开始时为「—」；列表、详情与 ETA 接口数值一致",
+    "api": [
+      "GET /fl/jobs/{job_id}/eta",
+      "GET /fl/jobs/{job_id}"
+    ],
+    "tests": [
+      "tests/fed-proc.test.mjs: [FL-PROC-07] 预估剩余时间：按每轮耗时做指数平滑（EMA，α = 0.3），列表 / 详情与 ETA 接口一致"
+    ],
+    "impl": "以每轮聚合耗时 dᵣ 为观测值做指数滑动平均：s₁ = d₁，sᵣ = α·dᵣ + (1 − α)·sᵣ₋₁，α = 0.3；预估剩余时间 = sᵣ ×（总轮次 − 已完成轮次），已用时间 = Σdᵣ，暂停期间不计时。同时给出算术平均估计（已用时间 / r × 剩余轮次）供对比。mock 的 dᵣ 由确定性模型生成：基准 4.2 秒 × (1 + 0.12·sin(0.8r + φ))，加 ±0.3 秒抖动，约每 11 轮一次慢节点拖尾 +2.4 秒。页面每轮收到 SSE 推送后调用 ETA 接口刷新。",
+    "status": "done"
+  },
+  "FL-PROC-08": {
+    "page": "#/fed/proc",
+    "ui": "过程管控 → 「历史指标查询」卡（范围：当前任务 / 当前项目全部任务 / 全部项目，开始 / 结束时间，曲线，查询，导出 CSV）+ 收敛曲线卡「导出 CSV」",
+    "steps": [
+      "范围选「当前项目全部任务」，曲线选「全局 + 各节点」，点击「查询」，显示「共 N 条（M 个任务）」与前 50 条记录",
+      "开始时间填未来时间再查询，显示 0 条",
+      "清空时间后点「导出 CSV」，下载 fl_metrics_{项目 ID}.csv"
+    ],
+    "expected": "可按项目 ID、任务 ID 和写入时间范围查询历史指标，导出的 CSV 列为 project_id,job_id,task_type,round,series,loss,accuracy,rmse,mae,recorded_at，行数与查询条数一致；时间格式错误返回 40002，开始晚于结束返回 40003，项目不存在返回 40400",
+    "api": [
+      "GET /fl/metrics",
+      "GET /fl/metrics/export",
+      "GET /projects/{project_id}/fl/metrics/export",
+      "GET /fl/jobs/{job_id}/metrics/export"
+    ],
+    "tests": [
+      "tests/fed-proc.test.mjs: [FL-PROC-08] 历史指标查询：按项目 ID / 任务 ID / 时间范围过滤，导出 CSV 列与行数正确"
+    ],
+    "impl": "历史查询把所选任务的每轮记录展开成行（全局 1 行，scope = nodes 时每个节点再 1 行），按 recorded_at 与 ISO 8601 时间区间过滤，支持 project_id、job_id 组合与分页（page_size 最大 500）。导出与查询共用一个过滤函数，CSV 列固定，分类任务的 RMSE / MAE 与时序任务的 Loss / Accuracy 留空，文件带 UTF-8 BOM 以便 Excel 打开。单任务导出沿用内核的 /fl/jobs/{job_id}/metrics/export。",
+    "status": "done"
+  }
+}

@@ -405,7 +405,9 @@
       row.appendChild(dir);
       const run = el('span', n.running_job_count ? 'st-importing' : 'cell-muted', n.running_job_count ? n.running_job_count + ' 个运行中' : '无');
       row.appendChild(run);
-      row.appendChild(el('span', 'cell-muted', UI.datetime(n.last_heartbeat_at)));
+      row.appendChild(n.online === false
+        ? el('span', 'st-failed', '离线 · 心跳丢失')
+        : el('span', 'cell-muted', UI.datetime(n.last_heartbeat_at)));
       const ops = el('span', 'flo-ops');
       ops.appendChild(button('编辑', 'btn-sm', function () { openNode(n); }));
       const del = button('删除', 'btn-sm btn-kill', function () { removeNode(n); });
@@ -440,8 +442,13 @@
     two2.appendChild(UI.formRow('数据分区标识', part, '训练节点必填'));
     two2.appendChild(UI.formRow('本地数据目录', dir, '仅本节点可读'));
     body.appendChild(two2);
+    let online = null;
+    if (edit) {
+      online = UI.selectOf('fnOnline', [{ value: 'true', label: '在线' }, { value: 'false', label: '离线（模拟心跳丢失）' }], n.online === false ? 'false' : 'true');
+      body.appendChild(UI.formRow('在线状态', online, '置为离线后，使用该节点的运行中任务转为 Failed，启动校验也会拒绝该节点'));
+    }
     if (edit && n.running_job_count) {
-      const note = el('div', 'banner-note', '该节点正被 ' + n.running_job_count + ' 个运行中任务使用：只能修改 IP 与端口。');
+      const note = el('div', 'banner-note', '该节点正被 ' + n.running_job_count + ' 个运行中任务使用：只能修改 IP、端口与在线状态。');
       body.appendChild(note);
     }
     const sync = function () { two2.hidden = role.value !== 'trainer'; };
@@ -454,8 +461,10 @@
         const req = { node_id: id.value.trim(), ip: ip.value.trim(), port: port.value === '' ? null : Number(port.value), role: role.value };
         if (role.value === 'trainer') { req.data_partition = part.value.trim(); req.data_dir = dir.value.trim() || undefined; }
         if (edit) {
+          req.online = online.value === 'true';
           const diff = {};
           Object.keys(req).forEach(function (k) { if (req[k] !== undefined && req[k] !== n[k]) diff[k] = req[k]; });
+          if (diff.online === true && n.online === undefined) delete diff.online;
           if (!Object.keys(diff).length) return;
           await Api.patch('/projects/' + ctx.projectId + '/nodes/' + encodeURIComponent(n.node_id), diff);
           UI.toast('节点 ' + req.node_id + ' 已更新');
