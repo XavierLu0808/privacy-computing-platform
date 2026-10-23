@@ -265,7 +265,9 @@
       const seed = pid + id + scheme;
       const ks = scheme === 'paillier' ? (kp.key_size_bits || 2048) : null;
       const N = scheme === 'ckks' ? (kp.poly_modulus_degree || 8192) : null;
-      const Q = scheme === 'ckks' ? (kp.coeff_modulus_bits || CKKS_MAX_COEFF[N]) : null;
+      // 同态模块允许 coeff_modulus_bits 为各素数位数数组，求和即总位数
+      const qRaw = Array.isArray(kp.coeff_modulus_bits) ? kp.coeff_modulus_bits.reduce(function (a, b) { return a + b; }, 0) : kp.coeff_modulus_bits;
+      const Q = scheme === 'ckks' ? (qRaw || CKKS_MAX_COEFF[N]) : null;
       return {
         key_id: id, project_id: pid, scheme: scheme,
         key_size_bits: ks, poly_modulus_degree: N, coeff_modulus_bits: Q,

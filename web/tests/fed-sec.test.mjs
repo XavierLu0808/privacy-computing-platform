@@ -223,6 +223,20 @@ test('[FL-AGG-04] 同态页已有在用的聚合密钥时直接作为项目密�
   assert.equal((await okData('PUT', AGG, Object.assign(c, { strategy: 'he' }))).he_key_matches, true);
 });
 
+test('[FL-AGG-04] 同态页新建的 CKKS 聚合密钥（仅有 key_params）被识别为项目密钥，N / log₂Q 取自 key_params', async (t) => {
+  const { okData, M } = boot(t);
+  const nk = await okData('POST', '/he/keys', { scheme: 'ckks', project_id: 'p1', purpose: 'fl_aggregation' });
+  await okData('GET', '/he/keys?project_id=p1');   // 触发同态模块播种与状态同步
+  // 数组形式的系数模数（各素数位数）按总和计
+  M._db.heKeys[nk.key_id].key_params.coeff_modulus_bits = [60, 40, 40, 60];
+  const keys = (await okData('GET', AGG + '/keys')).items;
+  const mine = keys.find((x) => x.key_id === nk.key_id);
+  assert.ok(mine);
+  assert.deepEqual([mine.scheme, mine.poly_modulus_degree, mine.coeff_modulus_bits], ['ckks', 8192, 200]);
+  const pk = await okData('GET', AGG + '/public-key');
+  assert.equal(pk.key_id, keys.find((x) => x.status === 'active').key_id);
+});
+
 test('[FL-AGG-05] 参数重置：恢复默认策略并落库，密钥保留', async (t) => {
   const { okData, M, errCode } = boot(t);
   const c = await cfgOf(okData);
