@@ -161,7 +161,7 @@
       "查看接口映射表：平台接口 ↔ 实现类 / 函数，来源标注「框架原生」或「平台适配器」",
       "在「实现」下拉选 Opacus 预览映射，点击「切换实现」"
     ],
-    "expected": "平台接口固定为 DPStrategy.build、GradientDP.gaussian、GradientDP.laplace、Accountant.spent、SecureAggregator.aggregate；隐语原生类（DPStrategyFL、GaussianModelDP、SecureAggregator）与适配器补齐项分开标注；切换后非运行任务改用新实现",
+    "expected": "平台接口固定为 DPStrategy.build、GradientDP.gaussian、GradientDP.laplace、Accountant.spent、SecureAggregator.aggregate；隐语原生类（DPStrategyFL、GaussianModelDP、SecureAggregator）与适配器补齐项分开标注；切换后本项目待启动 / 失败 / 已终止任务改用新实现，已完成任务与其他项目不变，提示写明影响范围与任务数",
     "api": [
       "GET /dp/providers",
       "PUT /dp/provider"
@@ -169,7 +169,7 @@
     "tests": [
       "tests/dp.test.mjs: [DP-FW-01] 隐语集成：适配层接口映射、可替换实现、切换 provider"
     ],
-    "impl": "平台只依赖 5 个统一接口，三种实现（secretflow-native、opacus、tf-privacy）暴露同一组接口。隐语侧映射 secretflow.security.privacy.DPStrategyFL、secretflow.security.privacy.mechanism.tensorflow.GaussianModelDP、secretflow.security.aggregation.SecureAggregator，类路径以部署环境的 secretflow 版本为准；隐语没有的联邦拉普拉斯机制与三种会计方式由适配层 dp_adapter 实现。切换实现只影响非运行任务，运行中任务沿用原实现到本次训练结束。 说明：原型阶段隐语类路径按公开文档整理，尚未在真实 secretflow 环境中导入校验。",
+    "impl": "平台只依赖 5 个统一接口，三种实现（secretflow-native、opacus、tf-privacy）暴露同一组接口。隐语侧映射 secretflow.security.privacy.DPStrategyFL、secretflow.security.privacy.mechanism.tensorflow.GaussianModelDP、secretflow.security.aggregation.SecureAggregator，类路径以部署环境的 secretflow 版本为准；隐语没有的联邦拉普拉斯机制与三种会计方式由适配层 dp_adapter 实现。实现按项目选用，切换只影响本项目待启动 / 失败 / 已终止任务；训练中 / 已暂停任务沿用原实现到本次训练结束，已完成任务保留训练时的实现记录。 说明：原型阶段隐语类路径按公开文档整理，尚未在真实 secretflow 环境中导入校验。",
     "status": "done"
   },
   "DP-FW-02": {

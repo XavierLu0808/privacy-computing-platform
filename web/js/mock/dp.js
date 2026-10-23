@@ -11,7 +11,8 @@
   window.MockServer.extend(function (k) {
     const db = k.db;
     const S = db.dpx = {
-      provider: 'secretflow-native',
+      provider: 'secretflow-native',   // 平台默认实现
+      providerOf: {},                   // project_id -> 该项目选用的实现
       policies: {},      // policy_id -> policy
       snap: {},          // job_id -> { started_at, dp }：一次训练运行期间的 DP 配置快照
       queryCfg: {},      // project_id -> 统计查询 DP 配置
@@ -125,6 +126,9 @@
 
     /* ================= 任务 DP 配置（扩展字段 + 快照） ================= */
 
+    const STARTABLE = ['Created', 'Failed', 'Terminated'];
+    function projectProvider(pid) { return S.providerOf[pid] || S.provider; }
+
     function running(job) { return ['Running', 'Paused'].indexOf(job.status) >= 0; }
 
     function normalize(job) {
@@ -132,7 +136,8 @@
       Object.keys(DEFAULT_EXT).forEach(function (key) { if (dp[key] === undefined) dp[key] = DEFAULT_EXT[key]; });
       if (!running(job)) {
         dp.total_rounds = job.total_rounds;   // createJob 已同步；PATCH /fl/jobs/{id} 改轮数时内核不同步 job.dp，这里兜底
-        dp.provider = S.provider;
+        // 只有待启动 / 失败 / 已终止的任务跟随项目当前实现；已完成任务保留训练时的实现记录
+        if (STARTABLE.indexOf(job.status) >= 0 || !dp.provider) dp.provider = projectProvider(job.project_id);
       }
       if (running(job)) {
         const s = S.snap[job.job_id];
@@ -874,19 +879,25 @@
     ];
     function providerOf(id) { return PROVIDERS.filter(function (x) { return x.provider === id; })[0]; }
 
-    k.route('GET', '/dp/providers', function () {
-      return k.ok({ current: S.provider, items: PROVIDERS });
+    k.route('GET', '/dp/providers', function (p, q) {
+      return k.ok({ project_id: q.project_id || null, current: q.project_id ? projectProvider(q.project_id) : S.provider, items: PROVIDERS });
     });
+    /** 按项目切换实现：只改该项目待启动 / 失败 / 已终止的任务；运行中 / 已暂停沿用到本次训练结束；已完成保留记录。 */
     k.route('PUT', '/dp/provider', function (p, q, body) {
       if (!providerOf(body.provider)) return k.err(40000, '未知实现 ' + body.provider);
-      S.provider = body.provider;
-      const affected = [], kept = [];
-      Object.keys(db.flJobs).forEach(function (id) {
-        const job = db.flJobs[id];
-        if (running(job)) kept.push(id);
-        else { job.dp.provider = S.provider; affected.push(id); }
+      if (!body.project_id || !db.projects.some(function (x) { return x.project_id === body.project_id; })) return k.err(40000, 'project_id 必填且必须是已有项目');
+      S.providerOf[body.project_id] = body.provider;
+      const affected = [], kept = [], finished = [];
+      k.jobsOfProject(body.project_id).forEach(function (job) {
+        normalize(job);
+        if (STARTABLE.indexOf(job.status) >= 0) { job.dp.provider = body.provider; affected.push(job.job_id); }
+        else if (running(job)) kept.push({ job_id: job.job_id, status: job.status, provider: job.dp.provider });
+        else finished.push({ job_id: job.job_id, status: job.status, provider: job.dp.provider });
       });
-      return k.ok({ current: S.provider, affected_jobs: affected.length, kept_running: kept });
+      return k.ok({
+        project_id: body.project_id, current: body.provider,
+        affected_jobs: affected.length, affected_job_ids: affected, kept_running: kept, kept_finished: finished
+      });
     });
 
     /* ================= DP-FW-02 训练引擎 DP hook 链 ================= */
@@ -986,7 +997,7 @@
       const job = db.flJobs[p.job_id];
       if (!job) return k.err(40400, '任务不存在');
       const dp = Object.assign({}, DEFAULT_EXT, normalize(job));
-      const prov = providerOf(S.provider);
+      const prov = providerOf(projectProvider(job.project_id));
       const cal = calibrate(dp);
       const n = trainers(job);
       const startable = ['Created', 'Failed', 'Terminated'].indexOf(job.status) >= 0;
@@ -995,7 +1006,7 @@
         { key: 'params', name: '参数在允许范围', pass: dp.epsilon_total >= 0.2 && dp.epsilon_total <= 10 && dp.clip_norm >= 0.2 && dp.clip_norm <= 4 && (dp.mechanism !== 'gaussian' || !!dp.delta),
           detail: 'ε = ' + dp.epsilon_total + '（总预算），C = ' + dp.clip_norm + (dp.mechanism === 'gaussian' ? '，δ = ' + dp.delta : '') },
         { key: 'provider', name: '实现可用', pass: !!prov && prov.mechanisms.indexOf(dp.mechanism) >= 0 && prov.accountants.indexOf(dp.accountant) >= 0,
-          detail: (prov ? prov.name : S.provider) + ' 支持' + MECH_CN[dp.mechanism] + '与' + ACC_CN[dp.accountant] },
+          detail: (prov ? prov.name : projectProvider(job.project_id)) + ' 支持' + MECH_CN[dp.mechanism] + '与' + ACC_CN[dp.accountant] },
         { key: 'calibration', name: '噪声定标完成', pass: isFinite(cal.scale) && cal.scale > 0,
           detail: '噪声倍数 z = ' + cal.scale.toFixed(3) + '，每轮噪声尺度 ' + (dp.mechanism === 'gaussian' ? 'σ' : 'b') + ' = ' + cal.noise_scale.toFixed(3) + '（共 ' + dp.total_rounds + ' 轮，' + ACC_CN[dp.accountant] + '）' },
         { key: 'aggregation', name: '安全聚合已配置', pass: ['he', 'ss'].indexOf(job.aggregation) >= 0, detail: job.aggregation === 'he' ? '同态加密聚合' : '秘密共享聚合' },

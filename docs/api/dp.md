@@ -266,7 +266,7 @@ PUT /dp/provider        { "provider": "opacus" }
 
 `GET` 返回 `current` 与 `items[]`（`provider`、`name`、`library`、`version_note`、`mechanisms`、`accountants`、`mapping[]`）。`mapping[]` = `{ iface, impl, source, note }`：`iface` 为平台统一接口（`DPStrategy.build`、`GradientDP.gaussian`、`GradientDP.laplace`、`Accountant.spent`、`SecureAggregator.aggregate`），`source = native` 表示框架自带类（类路径以部署环境的包版本为准），`adapter` 表示平台适配层补齐的实现。
 
-`PUT` 切换平台当前实现：非运行任务的 `job.dp.provider` 改为新实现，运行中任务沿用原实现直到本次训练结束。响应 `{ current, affected_jobs, kept_running[] }`。错误码 `40000` 未知实现。
+实现按项目选用。`GET /dp/providers?project_id=` 返回该项目当前实现。`PUT /dp/provider { provider, project_id }` 只改该项目内待启动 / 失败 / 已终止（Created / Failed / Terminated）任务的 `job.dp.provider`；训练中 / 已暂停任务沿用原实现直到本次训练结束；已完成任务保留训练时的实现记录（重置回待启动后才跟随项目当前实现）；其他项目不受影响。响应 `{ project_id, current, affected_jobs, affected_job_ids[], kept_running[], kept_finished[] }`（后两者为 `{ job_id, status, provider }`）。错误码 `40000` 未知实现或缺 project_id。
 
 #### DP hook 链
 

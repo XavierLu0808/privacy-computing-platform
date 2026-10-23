@@ -573,18 +573,23 @@
     }));
     card.appendChild(w2);
     const act = el('div', 'dp-actions');
-    const b = D.btn('btn-primary', '对任务启用自适应裁剪（初始 C = ' + r.recommended_clip_norm.toFixed(1) + '）', async function () {
-      try {
-        cfg = await Api.put('/fl/jobs/' + jobId + '/dp', {
-          enabled: cfg.enabled, mechanism: cfg.mechanism, epsilon_total: cfg.epsilon_total, clip_norm: r.recommended_clip_norm,
-          delta: cfg.delta, accountant: cfg.accountant, clip_mode: 'adaptive'
-        });
-        UI.toast('任务「' + job.name + '」已改为自适应裁剪');
-        render();
-      } catch (e) { UI.fail(e); }
-    });
-    act.appendChild(b);
-    if (cfg.clip_mode === 'adaptive') act.appendChild(el('span', 'dp-enabled', '该任务已启用自适应裁剪'));
+    const rec = r.recommended_clip_norm;
+    const isAd = cfg.clip_mode === 'adaptive';
+    // 按钮文案与实际写入的初始 C 一致；已启用且初始 C 已等于推荐值时不再给按钮
+    if (!isAd || Math.abs(cfg.clip_norm - rec) > 1e-9) {
+      act.appendChild(D.btn('btn-primary', isAd ? '把自适应初始 C 从 ' + cfg.clip_norm.toFixed(1) + ' 调整为推荐值 ' + rec.toFixed(1)
+        : '对任务启用自适应裁剪（初始 C = ' + rec.toFixed(1) + '）', async function () {
+        try {
+          cfg = await Api.put('/fl/jobs/' + jobId + '/dp', {
+            enabled: cfg.enabled, mechanism: cfg.mechanism, epsilon_total: cfg.epsilon_total, clip_norm: rec,
+            delta: cfg.delta, accountant: cfg.accountant, clip_mode: 'adaptive'
+          });
+          UI.toast('任务「' + job.name + '」已启用自适应裁剪，初始 C = ' + cfg.clip_norm.toFixed(1));
+          render();
+        } catch (e) { UI.fail(e); }
+      }));
+    }
+    if (isAd) act.appendChild(el('span', 'dp-enabled', '该任务已启用自适应裁剪，初始 C = ' + cfg.clip_norm.toFixed(1)));
     card.appendChild(act);
   }
 
@@ -669,7 +674,7 @@
     const card = el('div', 'card card-lg');
     card.setAttribute('data-acc', 'DP-MECH-04');
     card.appendChild(D.cardHead('新建 DP 策略', '把总预算按权重分到多个分析维度（训练任务 / 字段查询），按所选会计方式反解每步噪声'));
-    const name = inp('dpmPName', '稀土价格多维分析 · ' + new Date().toISOString().slice(5, 10));
+    const name = inp('dpmPName', '稀土价格多维分析 · ' + new Date(Date.now() + 8 * 3600000).toISOString().slice(5, 10))   // 日期按 UTC+8;
     const tot = D.numInput('dpmPEps', 4, 0.2, 50, 0.1);
     const delta = deltaSelect('dpmPDelta', '1e-5');
     let mech = 'gaussian';

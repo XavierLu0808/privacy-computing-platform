@@ -80,15 +80,19 @@
     s.setAttribute('aria-label', '差分隐私实现');
     const sw = D.btn('btn-primary', '切换实现', async function () {
       try {
-        const r = await Api.put('/dp/provider', { provider: s.value });
+        const r = await Api.put('/dp/provider', { provider: s.value, project_id: ctx.projectId });
         providers.current = r.current;
-        UI.toast('已切换为 ' + s.options[s.selectedIndex].textContent + '：' + r.affected_jobs + ' 个未运行任务改用新实现' +
-          (r.kept_running.length ? '，' + r.kept_running.length + ' 个运行中任务沿用原实现直到本次训练结束' : ''));
+        const proj = UI.$('projSelect');
+        const pname = proj && proj.selectedOptions[0] ? proj.selectedOptions[0].textContent : ctx.projectId;
+        UI.toast('项目「' + pname + '」已切换为 ' + s.options[s.selectedIndex].textContent + '：' + r.affected_jobs + ' 个待启动 / 失败 / 已终止任务改用新实现' +
+          (r.kept_running.length ? '；' + r.kept_running.length + ' 个训练中 / 已暂停任务沿用原实现直到本次训练结束' : '') +
+          (r.kept_finished.length ? '；' + r.kept_finished.length + ' 个已完成任务保留训练时的实现记录' : '') + '。其他项目不受影响。');
+        jobs = await D.listJobs(ctx.projectId);
         renderProvider();
         await loadHooks(seq);
       } catch (e) { UI.fail(e); }
     });
-    card.appendChild(D.cardHead('隐语集成 · DP 适配层', '平台只依赖右侧「平台接口」，底层实现可替换', [el('span', 'field-label', '实现'), s, sw]));
+    card.appendChild(D.cardHead('隐语集成 · DP 适配层', '平台只依赖「平台接口」，底层实现可按项目替换；切换只影响本项目待启动 / 失败 / 已终止的任务', [el('span', 'field-label', '实现'), s, sw]));
     const info = el('div', 'dpf-prov');
     info.appendChild(el('span', 'dp-enabled', '当前：' + cur.name));
     info.appendChild(el('span', 'hint', cur.version_note));
@@ -453,7 +457,7 @@
     clearInterval(timer);
     if (!root || root !== sec || !sec.childElementCount) skeleton(sec);
     try {
-      const res = await Promise.all([D.listJobs(ctx.projectId), Api.get('/dp/providers')]);
+      const res = await Promise.all([D.listJobs(ctx.projectId), Api.get('/dp/providers', { project_id: ctx.projectId })]);
       if (my !== seq) return;
       jobs = res[0]; providers = res[1];
       jobId = D.pickJob(ctx.projectId, jobs);

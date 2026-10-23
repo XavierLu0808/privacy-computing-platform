@@ -250,11 +250,24 @@ test('[DP-FW-01] 隐语集成：适配层接口映射、可替换实现、切换
   assert.ok(sf.mapping.some((m) => m.source === 'adapter'), '隐语缺的能力由适配器补齐');
   const ifaces = (x) => x.mapping.map((m) => m.iface);
   p.items.forEach((x) => assert.deepEqual(ifaces(x), ifaces(sf), '各实现暴露同一组平台接口'));
-  const { created } = await jobsOf(okData);
-  const r = await okData('PUT', '/dp/provider', { provider: 'opacus' });
+  const { created, done } = await jobsOf(okData);
+  await okData('GET', '/projects/p2/fl/jobs');
+  const r = await okData('PUT', '/dp/provider', { provider: 'opacus', project_id: P });
   assert.equal(r.current, 'opacus');
-  assert.ok(r.affected_jobs >= 1);
+  // 只作用于本项目待启动 / 失败 / 已终止任务（D40）
+  assert.deepEqual(r.affected_job_ids, [created.job_id]);
+  assert.equal(r.affected_jobs, 1);
+  assert.deepEqual(r.kept_finished.map((x) => x.job_id), [done.job_id]);
   assert.equal((await okData('GET', `/fl/jobs/${created.job_id}/dp`)).provider, 'opacus');
+  assert.equal((await okData('GET', `/fl/jobs/${done.job_id}/dp`)).provider, 'secretflow-native', '已完成任务保留训练时实现');
+  assert.equal((await okData('GET', '/dp/providers?project_id=p1')).current, 'opacus');
+  assert.equal((await okData('GET', '/dp/providers?project_id=p2')).current, 'secretflow-native', '其他项目不受影响');
+  const p2 = (await okData('GET', '/projects/p2/fl/jobs')).items;
+  for (const j of p2) assert.equal((await okData('GET', `/fl/jobs/${j.job_id}/dp`)).provider, 'secretflow-native');
+  // 已完成任务重置后回到待启动，跟随项目当前实现
+  await okData('POST', `/fl/jobs/${done.job_id}/actions`, { action: 'reset' });
+  assert.equal((await okData('GET', `/fl/jobs/${done.job_id}/dp`)).provider, 'opacus');
+  assert.equal(await errCode('PUT', '/dp/provider', { provider: 'opacus' }), 40000);
   assert.equal(await errCode('PUT', '/dp/provider', { provider: 'pydp' }), 40000);
 });
 
@@ -321,6 +334,7 @@ test('[DP-MECH-03] 启用自适应裁剪后仍以原固定 C 为对照；自适�
   const after = await okData('POST', '/dp/adaptive-noise', { target: 'gradient', job_id: id });
   assert.equal(after.fixed_clip_norm, 1, '对照仍是启用前的固定 C');
   assert.equal(after.initial_clip_norm, before.recommended_clip_norm);
+  assert.equal((await okData('GET', `/fl/jobs/${id}/dp`)).clip_norm, after.initial_clip_norm, '写入的初始 C 与对比卡一致（D38）');
   assert.ok(after.summary.noise_reduction_pct > 0);
   // 再切回固定裁剪：对照清空为当前 C
   await okData('PUT', `/fl/jobs/${id}/dp`, { ...GAUSS, accountant: 'rdp', clip_norm: 0.3, clip_mode: 'fixed' });
