@@ -402,8 +402,12 @@
       const sch = algo(scheme);
       const id = k.nextId('hek');
       const created = opts.created_at || k.NOW();
-      const params = scheme === 'paillier' ? { key_size_bits: opts.key_size_bits || 2048 }
-        : (scheme === 'tfhe' ? { parameter_set: 'PARAM_MESSAGE_2_CARRY_2' } : { poly_modulus_degree: 8192 });
+      // 轮换时整体继承旧钥参数（如 CKKS 的 poly_modulus_degree / coeff_modulus_bits / scale_bits），新钥与原用途的参数保持一致
+      const params = opts.key_params ? JSON.parse(JSON.stringify(opts.key_params))
+        : (scheme === 'paillier' ? { key_size_bits: opts.key_size_bits || 2048 }
+          : (scheme === 'tfhe' ? { parameter_set: 'PARAM_MESSAGE_2_CARRY_2' }
+            : (scheme === 'ckks' ? { poly_modulus_degree: 8192, coeff_modulus_bits: 200, scale_bits: CKKS_SCALE_BITS }
+              : { poly_modulus_degree: 8192, coeff_modulus_bits: 218, plain_modulus: 1032193 })));
       const managed = opts.purpose === 'fl_aggregation';
       const key = {
         key_id: id, scheme: scheme, project_id: pid, key_params: params,
@@ -447,6 +451,8 @@
     function syncStatus(m) {
       const c = k.db.heKeys[m.key_id];
       if (c && c.status && c.status !== m.status && ['rotated', 'destroyed'].indexOf(c.status) >= 0 && m.status === 'active') m.status = c.status;
+      // 外部模块轮换时写在 db.heKeys 上的接替关系，本模块元数据为空时补上
+      if (c) ['rotated_to', 'rotated_at', 'rotate_reason', 'rotated_from'].forEach(function (f) { if (!m[f] && c[f]) m[f] = c[f]; });
     }
     function keyView(id) {
       const m = db.keys[id];
@@ -467,7 +473,7 @@
     function rotate(id, reason, at) {
       const m = db.keys[id];
       const old = k.db.heKeys[id];
-      const nk = newKey(m.project_id, algo(m.scheme) ? m.scheme : 'paillier', { purpose: m.purpose, rotated_from: id, key_size_bits: old && old.key_params ? old.key_params.key_size_bits : undefined, created_at: at });
+      const nk = newKey(m.project_id, algo(m.scheme) ? m.scheme : 'paillier', { purpose: m.purpose, rotated_from: id, key_params: old && old.key_params && Object.keys(old.key_params).length ? old.key_params : undefined, created_at: at });
       distribute(db.keys[nk.key_id], m.distributed_to.map(function (d) { return d.node_id; }), at);
       m.status = 'rotated'; m.rotated_to = nk.key_id; m.rotated_at = at || k.NOW(); m.rotate_reason = reason;
       return nk.key_id;

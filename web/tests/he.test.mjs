@@ -317,3 +317,23 @@ test('[HE-APP-03] 外部模块写入 db.heKeys 的聚合密钥：列表兜底显
   const after = await okData('GET', '/he/keys?project_id=p1&status=rotated');
   assert.ok(after.items.some((x) => x.key_id === 'hek_fs02'));
 });
+
+test('[HE-APP-03] 外部 CKKS 聚合密钥：轮换整体继承 key_params，外部写入的 rotated_to 同步到列表', async (t) => {
+  const { M, okData } = boot(t);
+  const db = M._db;
+  const now = new Date().toISOString();
+  db.heKeys.hek_ck01 = { key_id: 'hek_ck01', project_id: 'p1', scheme: 'ckks', purpose: 'fl_aggregation', created_at: now,
+    key_size_bits: 438, key_params: { poly_modulus_degree: 16384, coeff_modulus_bits: 438, scale_bits: 40 } };
+  db.heKeys.hek_ck02 = { key_id: 'hek_ck02', project_id: 'p1', scheme: 'ckks', purpose: 'fl_aggregation', created_at: now,
+    key_params: { poly_modulus_degree: 8192, coeff_modulus_bits: 200, scale_bits: 40 } };
+  await okData('GET', '/he/keys?project_id=p1');
+  const rot = await okData('POST', '/he/keys/hek_ck01/rotate', {});
+  assert.deepEqual(rot.new_key.key_params, { poly_modulus_degree: 16384, coeff_modulus_bits: 438, scale_bits: 40 });
+  // fed-sec 生成新钥时把旧钥标记 rotated 并写 rotated_to
+  db.heKeys.hek_ck02.status = 'rotated';
+  db.heKeys.hek_ck02.rotated_to = 'hek_ck03';
+  const { items } = await okData('GET', '/he/keys?project_id=p1');
+  const old = items.find((x) => x.key_id === 'hek_ck02');
+  assert.equal(old.status, 'rotated');
+  assert.equal(old.rotated_to, 'hek_ck03');
+});

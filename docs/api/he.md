@@ -224,7 +224,7 @@ POST /he/keys/{key_id}/distribute
 POST /he/keys/{key_id}/rotate
 ```
 
-生成同方案、同参数、同用途的新钥并继承分发节点；旧钥标记 `rotated`，保留用于解密历史密文。响应 `{ old_key, new_key }`。错误：密钥不存在 `40402`；非 `active` `40901`。
+生成同方案、同用途的新钥，整体继承旧钥 `key_params`（如 CKKS 的 `poly_modulus_degree` / `coeff_modulus_bits` / `scale_bits`）与分发节点；旧钥标记 `rotated`，保留用于解密历史密文。响应 `{ old_key, new_key }`。错误：密钥不存在 `40402`；非 `active` `40901`。
 
 ### H.7.5 销毁（兼容 API.md §3.6）
 
@@ -240,7 +240,9 @@ DELETE /he/keys/{key_id}
 
 ### H.7.7 外部模块写入的密钥
 
-其他模块（如 fed-sec 聚合与安全页）可直接写 `db.heKeys[key_id]`，本模块在列表、分发、轮换时为其补建元数据。识别字段：`project_id`（必需）、`scheme`（缺省 `paillier`）、`purpose`（只有 `fl_aggregation` 受轮换策略管理，其余视为 `session`）、`status`（`active` / `rotated` / `destroyed`，缺省 `active`；外部事后把 `status` 改为 `rotated` / `destroyed` 会同步过来）、`created_at`（缺失时不参与自动轮换）、`distributed_to` 或 `node_ids`（字符串数组或 `{ node_id, distributed_at }` 数组）、`key_params`（缺省 `{}`）、可选 `rotated_from` / `rotated_to`。
+其他模块（如 fed-sec 聚合与安全页）可直接写 `db.heKeys[key_id]`，本模块在列表、分发、轮换时为其补建元数据。识别字段：`project_id`（必需）、`scheme`（缺省 `paillier`）、`purpose`（只有 `fl_aggregation` 受轮换策略管理，其余视为 `session`）、`status`（`active` / `rotated` / `destroyed`，缺省 `active`；外部事后把 `status` 改为 `rotated` / `destroyed` 会同步过来）、`created_at`（缺失时不参与自动轮换）、`distributed_to` 或 `node_ids`（字符串数组或 `{ node_id, distributed_at }` 数组）、`key_params`（缺省 `{}`；CKKS 为 `{ poly_modulus_degree, coeff_modulus_bits, scale_bits }`，Paillier 为 `{ key_size_bits }`）、可选 `rotated_from` / `rotated_to` / `rotated_at` / `rotate_reason`（本模块元数据为空时从 `db.heKeys` 同步）。
+
+展示：CKKS / BGV 显示「N=8192 · log₂Q=200 bit」（`coeff_modulus_bits` 可为总位数或各素数位数数组，数组时求和），Paillier 显示「密钥长度 2048 bit」。顶层 `key_size_bits` 在 CKKS 下是 log₂Q 兼容字段，前端不用它展示。本模块生成的 CKKS 默认 `key_params = { poly_modulus_degree: 8192, coeff_modulus_bits: 200, scale_bits: 40 }`，BGV 为 `{ poly_modulus_degree: 8192, coeff_modulus_bits: 218, plain_modulus: 1032193 }`。
 
 ### H.7.8 自动轮换策略
 

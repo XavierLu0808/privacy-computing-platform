@@ -446,7 +446,10 @@
         const kk = UI.el('dl', 'he-kv');
         const add2 = function (k, v, cls) { kk.appendChild(UI.el('dt', null, k)); kk.appendChild(UI.el('dd', cls, v)); };
         add2('聚合公钥 ID', pk.key_id);
-        add2('方案', SCHEME_CN[pk.scheme] + '，密钥长度 ' + pk.key_size_bits + ' bit');
+        // CKKS 的顶层 key_size_bits 是 log₂Q 兼容字段，展示按 N / log₂Q；Paillier 按密钥长度
+        add2('方案', (SCHEME_CN[pk.scheme] || pk.scheme) + '，' + keyParamsText({ key_params: pk.poly_modulus_degree
+          ? { poly_modulus_degree: pk.poly_modulus_degree, coeff_modulus_bits: pk.coeff_modulus_bits }
+          : { key_size_bits: pk.key_size_bits } }));
         add2('公钥指纹', pk.fingerprint, 'he-mono');
         add2('公钥（前 64 位）', pk.public_key.slice(0, 64) + '…', 'he-mono');
         add2('生成时间', UI.datetime(pk.created_at));
@@ -513,9 +516,7 @@
       } else {
         ops.appendChild(UI.el('span', 'hint-2', UI.datetime(k.destroyed_at) + ' 销毁'));
       }
-      const kp = k.key_params || {};
-      const params = kp.key_size_bits ? kp.key_size_bits + ' bit'
-        : (kp.poly_modulus_degree ? 'N = ' + kp.poly_modulus_degree : (kp.parameter_set || '默认参数'));
+      const params = keyParamsText(k);
       const sch = UI.el('span', 'field-col');
       sch.style.gap = '2px';
       sch.appendChild(UI.el('span', null, SCHEME_CN[k.scheme] || k.scheme_name || k.scheme || '—'));
@@ -526,6 +527,20 @@
       ]));
     });
     box.appendChild(wrap);
+  }
+  /**
+   * 密钥参数展示：CKKS / BGV 显示「N=8192 · log₂Q=200 bit」（coeff_modulus_bits 可为总位数或各素数位数数组），
+   * Paillier 显示密钥长度。不读顶层 key_size_bits（CKKS 时它是 log₂Q 的兼容字段）。
+   */
+  function keyParamsText(k) {
+    const kp = k.key_params || {};
+    if (kp.poly_modulus_degree) {
+      const q = Array.isArray(kp.coeff_modulus_bits)
+        ? kp.coeff_modulus_bits.reduce(function (s, x) { return s + Number(x || 0); }, 0) : kp.coeff_modulus_bits;
+      return 'N=' + kp.poly_modulus_degree + (q ? ' · log₂Q=' + q + ' bit' : '');
+    }
+    if (kp.key_size_bits) return '密钥长度 ' + kp.key_size_bits + ' bit';
+    return kp.parameter_set || '默认参数';
   }
   function newKeyModal() {
     const body = UI.el('div', 'field-col');
