@@ -126,19 +126,24 @@
   /* ---------- 弹窗：新建训练任务 ---------- */
 
   async function openCreate() {
-    let projNodes, datasets, pipelines;
+    let projNodes, datasets, pipelines, project, library;
     try {
       const r = await Promise.all([
         Api.get('/projects/' + ctx.projectId + '/nodes'),
         Api.get('/projects/' + ctx.projectId + '/datasets', { status: 'ready' }),
-        Api.get('/projects/' + ctx.projectId + '/psi/pipelines', { status: 'finished' })
+        Api.get('/projects/' + ctx.projectId + '/psi/pipelines', { status: 'finished' }),
+        Api.get('/projects/' + ctx.projectId),
+        Api.get('/fl/algorithms', { project_id: ctx.projectId })
       ]);
       projNodes = r[0].items;
       datasets = r[1].items;
       pipelines = r[2].items.filter(function (p) { return p.status === 'finished'; });
+      project = r[3];
+      library = r[4].items;
     } catch (e) { UI.fail(e); return; }
 
-    let taskType = 'classification';
+    // 默认值取任务编排页的项目配置：任务类型跟随训练目标、基准模型、聚合轮数、聚合策略
+    let taskType = project.target.task_type || 'classification';
     let modelFileId = null;
     const body = UI.el('div');
     body.style.cssText = 'display:flex; flex-direction:column; gap:14px;';
@@ -162,11 +167,43 @@
     body.appendChild(typeRow);
 
     const algo = UI.selectOf('njAlgo', []);
-    const agg = UI.selectOf('njAgg', [{ value: 'he', label: '同态加密聚合' }, { value: 'ss', label: '秘密共享聚合' }], 'he');
+    const agg = UI.selectOf('njAgg', [{ value: 'he', label: '同态加密聚合' }, { value: 'ss', label: '秘密共享聚合' }], project.aggregation_default || 'he');
     const two = UI.el('div', 'form-2col');
     two.appendChild(UI.formRow('算法', algo));
-    two.appendChild(UI.formRow('聚合策略', agg));
+    two.appendChild(UI.formRow('聚合策略', agg, project.aggregation_default ? '默认取「聚合与安全」页的项目策略' : null));
     body.appendChild(two);
+
+    // 参数模板（FL-ORCH-09）：选模板填充下方参数，参数按算法 schema 校验
+    const tplSel = UI.selectOf('njTpl', []);
+    const tplRow = UI.formRow('参数模板', tplSel, '模板在「任务编排 → 算法库」维护');
+    const paramBox = UI.el('div');
+    let paramEd = null, tplList = [], loadSeq = 0;
+    body.appendChild(tplRow);
+    body.appendChild(paramBox);
+    async function loadParams() {
+      const seq = ++loadSeq;
+      UI.clear(tplSel); UI.clear(paramBox); paramEd = null; tplList = [];
+      tplRow.hidden = algo.value === 'custom';
+      if (tplRow.hidden || !window.FLO) return;
+      try {
+        const r = await Promise.all([Api.get('/fl/algorithms/' + algo.value), Api.get('/fl/algorithms/' + algo.value + '/templates')]);
+        if (seq !== loadSeq) return;
+        tplList = r[1].items;
+        [{ value: '', label: '不使用模板（schema 默认值）' }].concat(tplList.map(function (t) {
+          return { value: t.template_id, label: t.name + (t.preset ? '（平台预置）' : '（自定义）') };
+        })).forEach(function (o) {
+          const op = document.createElement('option');
+          op.value = o.value; op.textContent = o.label;
+          tplSel.appendChild(op);
+        });
+        paramEd = window.FLO.paramEditor(r[0].params_schema, null, 'njp');
+        paramBox.appendChild(paramEd.el);
+      } catch (e) { UI.fail(e); }
+    }
+    tplSel.addEventListener('change', function () {
+      const t = tplList.filter(function (x) { return x.template_id === tplSel.value; })[0];
+      if (paramEd) paramEd.set(t ? t.params : null);
+    });
 
     const fileIn = UI.el('input');
     fileIn.type = 'file';
@@ -187,7 +224,7 @@
       } catch (e) { fileNote.textContent = e.message; }
     });
 
-    const rounds = UI.inputOf('njRounds', '30', 'number');
+    const rounds = UI.inputOf('njRounds', String(project.total_rounds || 30), 'number');
     const dp = UI.el('label', 'check-item');
     const dpBox = UI.el('input');
     dpBox.type = 'checkbox'; dpBox.id = 'njDp'; dpBox.checked = true;
@@ -282,12 +319,28 @@
       seg.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b.dataset.type === taskType); });
       typeHint.textContent = t.description + ' · 评估指标 ' + t.metrics.map(function (m) { return m.label; }).join(' / ');
       UI.clear(algo);
-      t.algorithms.forEach(function (a) {
+      // 内置算法（带当前版本）→ 已注册算法 / 本项目自定义模型 → 临时上传模型文件
+      const lib = library.filter(function (a) { return a.task_types.indexOf(taskType) >= 0; });
+      const builtin = lib.filter(function (a) { return a.kind === 'builtin'; });
+      t.algorithms.filter(function (a) { return a !== 'custom'; }).forEach(function (a) {
+        const b = builtin.filter(function (x) { return x.algo_id === a; })[0];
         const o = document.createElement('option');
-        o.value = a; o.textContent = ALGO_CN[a] || a;
+        o.value = a; o.textContent = (ALGO_CN[a] || a) + (b ? ' ' + b.current_version : '');
         algo.appendChild(o);
       });
+      lib.filter(function (a) { return a.kind !== 'builtin'; }).forEach(function (a) {
+        const o = document.createElement('option');
+        o.value = a.algo_id; o.textContent = a.name + ' ' + a.current_version + (a.kind === 'custom' ? '（自定义模型）' : '（已注册）');
+        algo.appendChild(o);
+      });
+      if (t.algorithms.indexOf('custom') >= 0) {
+        const o = document.createElement('option');
+        o.value = 'custom'; o.textContent = ALGO_CN.custom + '（本次上传文件）';
+        algo.appendChild(o);
+      }
+      if (algo.querySelector('option[value="' + project.base_algorithm + '"]')) algo.value = project.base_algorithm;
       fileRow.hidden = algo.value !== 'custom';
+      loadParams();
       tsWrap.hidden = !t.requires_timeseries;
       renderDatasets();
       srcChanged();
@@ -296,7 +349,7 @@
       dsRow.hidden = srcSel.value !== 'dataset';
       pipeRow.hidden = srcSel.value !== 'psi_pipeline';
     }
-    algo.addEventListener('change', function () { fileRow.hidden = algo.value !== 'custom'; });
+    algo.addEventListener('change', function () { fileRow.hidden = algo.value !== 'custom'; loadParams(); });
     srcSel.addEventListener('change', srcChanged);
     refresh();
 
@@ -314,6 +367,8 @@
         const name = $('njName').value.trim();
         if (name) req.name = name;
         if (algo.value === 'custom') req.model_file_id = modelFileId;
+        if (paramEd) req.params = paramEd.read();
+        if (tplSel.value) req.template_id = tplSel.value;
         req.dataset_source = srcSel.value === 'dataset'
           ? { type: 'dataset', dataset_ids: checkedDatasets() }
           : { type: 'psi_pipeline', pipeline_id: pipeSel.value };

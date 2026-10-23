@@ -1,0 +1,391 @@
+# 联邦学习 · 任务编排 接口（FL-ORCH-01 至 FL-ORCH-09）
+
+对应页面：`#/fed/orch`（页面模块 `FLO`，`web/js/fl-orch.js`）；mock 实现：`web/js/mock/fed-orch.js`；测试：`web/tests/fed-orch.test.mjs`。
+
+通用约定沿用 API.md §0：统一响应包、`snake_case`、ISO 8601 时间、分页参数 `page` / `page_size`。错误码见 API.md §9。
+
+## 接口一览
+
+| # | 方法 | 路径 | 说明 | 验收编号 |
+|---|---|---|---|---|
+| 1 | GET | `/projects` | 项目列表（v1.2 起返回项目配置字段，支持 `keyword`） | FL-ORCH-01 / 04 |
+| 2 | POST | `/projects` | 创建项目 | FL-ORCH-01 |
+| 3 | GET | `/projects/{project_id}` | 项目详情（含配置） | FL-ORCH-04 |
+| 4 | PATCH | `/projects/{project_id}` | 修改项目配置 | FL-ORCH-04 |
+| 5 | GET（下载） | `/projects/{project_id}/config/export` | 导出项目配置 JSON 文件 | FL-ORCH-04 |
+| 6 | GET | `/projects/{project_id}/nodes` | 节点列表（v1.2 起增加 `data_dir`、`running_job_count`） | FL-ORCH-02 |
+| 7 | POST | `/projects/{project_id}/nodes` | 添加节点（v1.2 起校验 IP / 端口格式、连通性） | FL-ORCH-02 |
+| 8 | PATCH | `/projects/{project_id}/nodes/{node_id}` | 编辑节点 | FL-ORCH-02 |
+| 9 | DELETE | `/projects/{project_id}/nodes/{node_id}` | 删除节点（运行中任务使用时拒绝） | FL-ORCH-02 |
+| 10 | GET | `/projects/{project_id}/isolation` | 数据隔离视图：目录访问矩阵、传输字段白名单、检测记录 | FL-ORCH-03 |
+| 11 | POST | `/projects/{project_id}/isolation/checks` | 越权访问检测 / 传输内容审计 | FL-ORCH-03 |
+| 12 | GET | `/fl/algorithms` | 算法库列表（内置 / 已注册 / 自定义模型） | FL-ORCH-05 / 06 / 07 |
+| 13 | GET | `/fl/algorithms/{algo_id}` | 算法详情：统一接口、参数 schema、版本、操作记录 | FL-ORCH-05 / 08 |
+| 14 | POST | `/fl/algorithms` | 注册算法 / 发布新版本 | FL-ORCH-06 / 08 |
+| 15 | POST | `/projects/{project_id}/fl/models` | 登记自定义模型（结构完整性校验） | FL-ORCH-07 / 08 |
+| 16 | POST | `/fl/algorithms/{algo_id}/actions` | 版本回滚 | FL-ORCH-08 |
+| 17 | GET | `/fl/algorithms/{algo_id}/templates` | 参数模板列表 | FL-ORCH-09 |
+| 18 | POST | `/fl/algorithms/{algo_id}/templates` | 另存参数模板 | FL-ORCH-09 |
+| 19 | DELETE | `/fl/param-templates/{template_id}` | 删除自定义模板 | FL-ORCH-09 |
+| 20 | POST | `/projects/{project_id}/fl/jobs` | 创建训练任务（v1.2 扩展：注册算法、`params`、项目默认值） | FL-ORCH-06 / 07 / 09 |
+
+## 持久化（表结构语义）
+
+mock 存在浏览器内存 `k.db.flo`，真后端按下表落库：
+
+| 表 | 主键 | 主要字段 |
+|---|---|---|
+| `fl_project` | `project_id` | `name`（唯一）、`type`、`created_at` |
+| `fl_project_config` | `project_id` | `description`、`base_algorithm`、`model_version`、`total_rounds`、`target_metric`、`target_value`、`revision`、`updated_at`、`updated_by` |
+| `fl_project_node` | (`project_id`, `node_id`) | `ip`、`port`、`role`、`data_partition`、`data_dir`、`last_heartbeat_at` |
+| `fl_algorithm` | `algo_id` | `name`、`kind`（builtin / registered / custom）、`project_id`（仅 custom）、`task_types`、`base_class`、`framework`、`model_format`、`current_version` |
+| `fl_algorithm_version` | (`algo_id`, `version`) | `params_schema`（JSON）、`file_id`、`structure`（JSON，仅 custom）、`note`、`created_by`、`created_at` |
+| `fl_algorithm_op_log` | 自增 | `algo_id`、`action`（publish / rollback）、`from_version`、`to_version`、`operator`、`reason`、`at` |
+| `fl_param_template` | `template_id` | `algo_id`、`name`（同算法内唯一）、`params`（JSON）、`preset`、`created_by`、`created_at` |
+| `fl_isolation_audit` | `check_id` | `project_id`、`type`、`actor_node_id`、`target_node_id`、`path`、`job_id`、`result`、`detail`、`at`、`operator` |
+
+mock 对内核数据的写入：新建项目时向 `db.projects` 追加项目、`db.nodes[新项目]` 置空数组、`db.seeded[新项目] = true`（新项目不播种演示数据集与任务）；节点增删改直接写 `db.nodes`；注册算法时向 `db.files` 登记一条模型制品记录；新建任务时在内核任务对象上追加 `algo_ref`、`params`。聚合策略只读 `db.fla[project_id].strategy`（聚合与安全页维护）。
+
+---
+
+## 1. 项目
+
+### 1.1 项目列表
+
+```
+GET /projects?keyword=&page=&page_size=
+```
+
+在 API.md §1.3 的基础上，`items[]` 增加以下字段（顶栏下拉只用 `project_id` / `name`，向后兼容）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `description` | string | 项目描述 |
+| `base_algorithm` | string | 基准模型的 `algo_id` |
+| `base_algorithm_name` | string | 基准模型名称 |
+| `model_version` | string | 基准模型版本 |
+| `total_rounds` | int | 聚合轮数，新建训练任务的默认值 |
+| `target` | object | 全局训练目标 `{ metric, label, op, value, task_type }`，`op` 为 `<=` 或 `>=` |
+| `node_count` / `job_count` | int | 节点数 / 任务数 |
+| `aggregation_default` | string \| null | 聚合与安全页设定的项目聚合策略 `ss` / `he`，未设定为 `null` |
+| `revision` | int | 配置版本号，每次修改 +1 |
+| `updated_at` / `updated_by` | string | 最近修改时间 / 修改人 |
+
+### 1.2 创建项目
+
+```
+POST /projects
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `name` | string | 是 | 1–64 个字符，全局唯一 |
+| `type` | string | 否 | `production` / `pilot`（默认）/ `sandbox` |
+| `description` | string | 否 | ≤ 500 个字符 |
+| `base_algorithm` | string | 是 | 内置或已注册算法的 `algo_id` |
+| `model_version` | string | 是 | 须是该算法已有版本 |
+| `total_rounds` | int | 是 | 1–200 |
+| `target.metric` | string | 是 | `accuracy` / `auc` / `loss`（分类）、`rmse` / `mae`（时序，归一化值） |
+| `target.value` | number | 是 | Accuracy / AUC / RMSE / MAE 取 (0, 1]，Loss 取 (0, 10] |
+
+比较方向由指标决定：`loss` / `rmse` / `mae` 为 `≤`，`accuracy` / `auc` 为 `≥`。训练目标所属任务类型须被基准模型支持。
+
+```json
+{
+  "name": "稀土氧化物库存联合预测 · 2027Q1", "type": "pilot", "description": "三方库存数据联合建模",
+  "base_algorithm": "lstm", "model_version": "1.1.0", "total_rounds": 40,
+  "target": { "metric": "rmse", "value": 0.12 }
+}
+```
+
+响应 `data`：项目对象（同 1.1 的 `items[]`），例 `"target": { "metric": "rmse", "label": "RMSE（归一化）", "op": "<=", "value": 0.12, "task_type": "timeseries" }`。新项目没有节点，前端随后调用 `App.reloadProjects(project_id)` 切换顶栏。
+
+| 情形 | code |
+|---|---|
+| 名称为空 / 指标不在枚举内 / 基准模型不支持该训练目标的任务类型 | 40000 |
+| 目标值不是数字 | 40002 |
+| 名称超长、轮数不在 1–200、目标值越界 | 40003 |
+| 基准模型或版本不存在 | 40400 |
+| 项目名称重复 | 40902 |
+
+### 1.3 项目详情 / 修改
+
+```
+GET   /projects/{project_id}
+PATCH /projects/{project_id}
+```
+
+PATCH 字段同 1.2，均可选，只校验传入字段；`base_algorithm` 与 `model_version` 成对校验（只传其一时用当前值补齐）。成功后 `revision` +1，记录 `updated_by` / `updated_at`。项目不存在 40400，其余错误码同 1.2。
+
+### 1.4 导出配置文件
+
+```
+GET /projects/{project_id}/config/export
+```
+
+下载 `fl_project_{project_id}_config.json`：
+
+```json
+{
+  "schema_version": "fl-project-config/1",
+  "exported_at": "2026-10-23T07:02:00+08:00", "exported_by": "Rui",
+  "project": { "project_id": "p1", "name": "稀土氧化物价格联合预测 · 2026Q4", "type": "production", "description": "…", "created_at": "…" },
+  "training": { "base_algorithm": "lstm", "model_version": "1.1.0", "total_rounds": 30, "target": { "metric": "rmse", "op": "<=", "value": 0.12 }, "aggregation_default": null },
+  "nodes": [{ "node_id": "node-shanghai-01", "ip": "10.22.6.14", "port": 8471, "role": "trainer", "data_partition": "part-A", "data_dir": "/data/fl/p1/part-a" }],
+  "isolation_policy": { "dir_rule": "…", "channel_rule": "…", "audit_rule": "…" },
+  "revision": 1, "updated_at": "…", "updated_by": "Rui"
+}
+```
+
+不含任何凭据。
+
+## 2. 节点管理（扩展 API.md §2.11）
+
+节点对象在 API.md 基础上增加：`data_dir`（本地数据目录，训练节点默认 `/data/fl/{project_id}/{分区小写}`，聚合节点为 `null`）、`last_heartbeat_at`、`running_job_count`（使用该节点且状态为 Running / Paused 的任务数）。
+
+### 2.1 添加节点
+
+`POST /projects/{project_id}/nodes`，字段同 API.md §2.11。校验：
+
+| 情形 | code |
+|---|---|
+| 节点 ID 不是小写字母 / 数字 / `-`；角色不是 `trainer` / `aggregator`；训练节点缺数据分区；缺 IP 或端口 | 40000 |
+| IP 不是合法 IPv4 / IPv6；数据分区含非法字符；`data_dir` 不是绝对路径 | 40002 |
+| 端口不在 1–65535；节点 ID 超过 40 个字符 | 40003 |
+| 节点 ID 在项目内重复 | 40902 |
+| 连通性检查失败（mock：`192.0.2.0/24` 文档保留网段视为不可达） | 42201 |
+
+### 2.2 编辑节点
+
+```
+PATCH /projects/{project_id}/nodes/{node_id}
+```
+
+可改 `node_id`、`ip`、`port`、`role`、`data_partition`、`data_dir`，只校验传入字段，规则同 2.1。额外规则：
+
+| 情形 | code |
+|---|---|
+| 节点被运行中任务使用时修改 `node_id` / `role` / `data_partition` / `data_dir`（IP 与端口可改） | 40901，`data.job_ids` 列出任务 |
+| 节点已被任何历史任务引用时修改 `node_id`（节点 ID 是任务引用节点的稳定标识） | 40901 |
+| 新 `node_id` 与已有节点重复 | 40902 |
+| 节点不存在 | 40400 |
+
+改为聚合节点时 `data_partition`、`data_dir` 置空。
+
+### 2.3 删除节点
+
+`DELETE /projects/{project_id}/nodes/{node_id}`：节点被运行中任务使用时返回 40901（`data.job_ids`），不存在 40400。
+
+## 3. 数据隔离
+
+### 3.1 隔离视图
+
+```
+GET /projects/{project_id}/isolation
+```
+
+```json
+{
+  "policy": { "dir_rule": "每个训练节点只挂载自己的数据目录（权限 0700…）", "channel_rule": "…gRPC ModelUpdate…", "audit_rule": "…" },
+  "data_dirs": [{ "node_id": "node-shanghai-01", "data_partition": "part-A", "data_dir": "/data/fl/p1/part-a" }],
+  "matrix": [{ "node_id": "node-shanghai-01", "role": "trainer", "cells": [{ "owner_node_id": "node-shanghai-01", "data_dir": "/data/fl/p1/part-a", "allowed": true }] }],
+  "payload_allowed": [{ "field": "weights_delta", "kind": "gradient", "label": "模型参数增量 / 梯度…" }],
+  "payload_forbidden": [{ "field": "raw_rows", "label": "原始样本行（任何特征明细）" }],
+  "checks": []
+}
+```
+
+`matrix[i].cells[j].allowed` 只在发起节点就是目录属主时为 `true`；聚合节点没有数据目录，对所有目录均为 `false`。传输白名单：训练节点上传 `weights_delta`（gradient）/ `num_samples`（metadata）/ `local_metrics`（metric），聚合节点下发 `global_weights`（model_param）。`checks` 为最近 20 条检测记录，最新在前。
+
+### 3.2 检测
+
+```
+POST /projects/{project_id}/isolation/checks
+```
+
+**目录访问检测** `{ "type": "dir_access", "actor_node_id": "node-shanghai-01", "target_node_id": "node-hangzhou-02" }`：
+
+```json
+{
+  "check_id": "iso_0001", "type": "dir_access", "at": "…", "operator": "Rui",
+  "actor_node_id": "node-shanghai-01", "target_node_id": "node-hangzhou-02",
+  "path": "/data/fl/p1/part-b/train.parquet", "result": "denied",
+  "detail": "open(\"/data/fl/p1/part-b/train.parquet\", O_RDONLY) 被拒绝：EACCES，node-shanghai-01 的挂载命名空间内不存在 node-hangzhou-02 的数据目录",
+  "rule": "…"
+}
+```
+
+本节点读自己目录 `result = allowed`。
+
+**传输内容审计** `{ "type": "payload", "job_id": "可选，默认最近一个有训练记录的任务" }`：取该任务最后一轮各节点消息，按字段白名单检查，并与本项目全部数据集列名比对。
+
+```json
+{
+  "check_id": "iso_0002", "type": "payload", "job_id": "fl_p1_001", "job_name": "稀土氧化物价格预测 · LSTM", "round": 20,
+  "scanned_columns": 92, "result": "passed",
+  "nodes": [
+    { "node_id": "node-shanghai-01", "role": "trainer", "direction": "uplink", "round": 20, "total_bytes": 151552, "raw_fields_found": 0,
+      "fields": [{ "field": "weights_delta", "kind": "gradient", "dtype": "float32", "elements": 37872, "bytes": 151488 }, { "field": "num_samples", "kind": "metadata", "dtype": "int64", "elements": 1, "bytes": 8 }, { "field": "local_metrics", "kind": "metric", "dtype": "float32", "elements": 2, "bytes": 56 }] },
+    { "node_id": "node-center-agg", "role": "aggregator", "direction": "downlink", "fields": [{ "field": "global_weights", "kind": "model_param" }, { "field": "round", "kind": "metadata" }] }
+  ],
+  "detail": "第 20 轮 4 个节点的消息只含白名单字段…命中原始数据字段 0 个"
+}
+```
+
+`total_bytes` 取自内核每轮记录的 `upload_kb × 1024`，梯度元素数按 float32 每个 4 字节换算。
+
+| 情形 | code |
+|---|---|
+| `type` 不合法；`dir_access` 缺节点参数 | 40000 |
+| 目标节点是聚合节点（无数据目录） | 40001 |
+| 节点或任务不属于本项目 | 40400 |
+| 任务尚未产生训练轮次 | 40901 |
+
+## 4. 算法库
+
+### 4.1 算法列表 / 详情
+
+```
+GET /fl/algorithms?kind=&task_type=&project_id=
+GET /fl/algorithms/{algo_id}
+```
+
+`kind`：`builtin` / `registered` / `custom`；自定义模型只在传入所属 `project_id` 时返回。内置算法 5 个：
+
+| algo_id | 名称 | 基类 | 实现 | 任务类型 | 当前版本 |
+|---|---|---|---|---|---|
+| `lr` | 逻辑回归 | `FedLogisticRegression(FedEstimator)` | SecretFlow SS-LR | 分类 | 1.2.0 |
+| `xgb` | XGBoost | `FedXGBoost(FedEstimator)` | SecretFlow SecureBoost | 分类 | 1.2.0 |
+| `cnn` | CNN / MLP | `FedNeuralNet(FedEstimator)`，子类 `FedMLP` / `FedCNN1D` | PyTorch 2.3 + FedAvg | 分类 | 1.1.0 |
+| `lstm` | LSTM | `FedLSTM(FedSequenceModel)` | PyTorch 2.3 + FedAvg | 时序预测 | 1.1.0 |
+| `tcn` | TCN | `FedTCN(FedSequenceModel)` | PyTorch 2.3 + FedAvg | 时序预测 | 1.0.0 |
+
+列表项字段：`algo_id`、`name`、`kind`、`project_id`、`task_types`、`base_class`、`framework`、`description`、`model_format`、`current_version`、`version_count`、`template_count`、`model_file_id`（当前版本制品文件）、`structure`。详情另含：
+
+- `interface[]`：统一接口，所有算法都是 `fit` / `predict` / `evaluate` 三个方法，`{ method, signature, input, output }`，例 `fit(X, y, *, rounds: int, aggregator: Aggregator, params: dict) -> TrainReport`；分类输入 `ndarray[n_samples, n_features]`，时序输入 `ndarray[n_samples, window_size, n_features]`；`evaluate` 分类返回 `{ loss, accuracy }`，时序返回 `{ rmse, mae }`。
+- `params_schema`：当前版本的参数 schema（JSON Schema 子集，见 4.2）。
+- `versions[]`：`{ version, is_current, created_at, created_by, note, file_id, structure }`，新版本在前。
+- `history[]`：`{ action: publish | rollback, from_version, to_version, operator, at, reason }`，最新在前。
+
+算法不存在 40400。
+
+### 4.2 注册算法
+
+```
+POST /fl/algorithms
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `name` | string | 是 | ≤ 40 个字符；与已注册算法同名即发布新版本；不能与内置算法同名 |
+| `version` | string | 是 | `主.次.修订`；同名发布时须大于已有最高版本 |
+| `task_types` | string[] | 是 | `classification` / `timeseries`，至少一个 |
+| `model_format` | string | 是 | `pkl` / `pt` / `h5` / `onnx` |
+| `params_schema` | object \| string | 是 | JSON 对象或 JSON 字符串 |
+| `base_class` / `framework` / `description` | string | 否 | |
+
+参数 schema 校验规则（JSON Schema 子集）：根节点只允许 `$schema` / `title` / `description` / `type` / `properties` / `required` / `additionalProperties`，`type` 必须是 `object`，`properties` 至少 1 个；参数名为小写字母、数字、下划线；参数只允许 `type`（`integer` / `number` / `string` / `boolean`）、`title`、`description`、`default`、`minimum`、`maximum`、`enum`；`minimum` / `maximum` 只用于数值且 `minimum ≤ maximum`；`enum` 非空且与 `type` 一致；`default` 须满足自身约束；`required` 中的名字须在 `properties` 中。
+
+注册成功时登记一条模型制品文件（`file_id = f_{algo_id}_{版本去点}`），新建任务选用该算法时作为 `model_file_id`。响应：算法详情。
+
+| 情形 | code |
+|---|---|
+| 缺名称、格式不在枚举、`task_types` 不合法 | 40000 |
+| 版本号格式错误、schema 不是合法 JSON 或不符合子集规则 | 40002 |
+| 名称超长、新版本号不大于已有最高版本 | 40003 |
+| 与内置算法同名、同名同版本已存在 | 40902 |
+
+### 4.3 自定义模型上传与结构校验
+
+先 `POST /files`（`purpose = fl_model`，API.md §1.4），再：
+
+```
+POST /projects/{project_id}/fl/models
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `file_id` | string | 是 | 上传得到的文件 ID |
+| `name` | string | 否 | 默认取文件名；同项目同名再次上传生成新版本（次版本号 +1） |
+| `task_type` | string | 否 | 默认 `classification`，决定校验输入形状 |
+
+校验项：文件格式（`.pkl` / `.pt` / `.h5` / `.onnx`）、文件大小（> 0 B）、文件头与序列化结构、层结构、输入形状。mock 的确定性规则：文件名含 `corrupt` 判为文件头损坏（按格式给出原因，例 `.h5`：「HDF5 文件签名不匹配…model_config 属性缺失」），大小为 0 判为空文件；通过时层数 = 3 + (FNV 哈希(文件名 + 大小) mod 10)，参数量 = (大小 − 512 B 文件头) / 4（float32），输入形状分类 `(batch, 68)`、时序 `(batch, 30, 11)`。
+
+成功响应：算法详情（`kind = custom`）+ `report`：
+
+```json
+{
+  "valid": true, "format": "pt", "framework": "PyTorch（TorchScript / state_dict）",
+  "layers": 8, "param_count": 102912, "param_count_basis": "按 float32 每个参数 4 字节、扣除 512 B 文件头估算",
+  "input_shape": ["batch", 30, 11], "output_shape": ["batch", 7],
+  "checks": [{ "item": "文件格式", "passed": true, "detail": ".pt · PyTorch（TorchScript / state_dict）" }], "reason": null
+}
+```
+
+| 情形 | code |
+|---|---|
+| 缺 `file_id`、文件用途不是 `fl_model`、未知任务类型 | 40000 |
+| 结构校验失败（`data.report` 含逐项结果与原因） | 40002 |
+| 名称超长 | 40003 |
+| 项目或文件不存在 | 40400 |
+| 同名模型已用于另一任务类型 | 40902 |
+
+### 4.4 版本回滚
+
+```
+POST /fl/algorithms/{algo_id}/actions
+```
+
+```json
+{ "action": "rollback", "version": "1.1.0", "reason": "1.2.0 分桶调整后 p2 精度下降" }
+```
+
+把当前版本指针移到指定版本，追加一条 `history`（操作人、时间、原因）。之后新建的任务使用该版本（任务 `algo_ref.version`），已创建任务不受影响。响应：算法详情。
+
+| 情形 | code |
+|---|---|
+| `action` 不是 `rollback`、缺 `version` | 40000 |
+| 算法或版本不存在 | 40400 |
+| 指定版本已是当前版本 | 40901 |
+
+### 4.5 参数模板
+
+```
+GET    /fl/algorithms/{algo_id}/templates
+POST   /fl/algorithms/{algo_id}/templates      { "name": "浅树快训", "params": { "max_depth": 3, "n_estimators": 50 } }
+DELETE /fl/param-templates/{template_id}
+```
+
+模板对象：`{ template_id, algo_id, name, params, preset, created_by, created_at }`，平台预置在前。每个内置算法预置 2–3 个模板，例 XGBoost「默认参数」`max_depth=6, eta=0.3, n_estimators=200, subsample=0.8, min_child_weight=1`、「快速基线」、「高精度（慢）」。保存时 `params` 按算法当前版本 schema 校验，未填参数补 schema 默认值。
+
+| 情形 | code |
+|---|---|
+| 名称为空；参数不在 schema 中；缺必填参数 | 40000 |
+| 删除平台预置模板 | 40001 |
+| 参数类型或枚举不符 | 40002 |
+| 名称超长；参数越界 | 40003 |
+| 算法或模板不存在 | 40400 |
+| 同算法下模板重名 | 40902 |
+
+## 5. 创建训练任务（扩展 API.md §2.3）
+
+`POST /projects/{project_id}/fl/jobs` 在 API.md §2.3 基础上：
+
+| 字段 | 说明 |
+|---|---|
+| `algorithm` | 除 `lr` / `xgb` / `cnn` / `lstm` / `tcn` / `custom` 外，可传已注册算法（`alg_*`）或本项目自定义模型（`mdl_*`）的 `algo_id`；服务端映射为 `algorithm = custom` + 该算法当前版本的 `model_file_id` |
+| `params` | 可选，按所选算法当前版本 schema 校验并补默认值 |
+| `template_id` | 可选，记录参数来源模板 |
+| `aggregation` | 未传时取 `aggregation_default`（聚合与安全页的项目策略），仍未设置则按原规则必填 |
+| `total_rounds` | 未传时取项目配置 `total_rounds` |
+| `name` | 未传且使用注册算法 / 自定义模型时默认「{算法名} {版本} · {任务类型}」 |
+
+响应在任务详情基础上增加 `algo_ref`（`{ algo_id, name, kind, version, template_id? }`，使用内置算法时同样返回）与 `params`。内置算法且不带 `params` 时行为与 API.md §2.3 完全一致。
+
+| 新增情形 | code |
+|---|---|
+| 注册算法 / 自定义模型不支持该任务类型 | 40000 |
+| 参数不在 schema 中 | 40000 |
+| 参数类型或枚举不符 | 40002 |
+| 参数越界 | 40003 |
+| 自定义模型不属于本项目 | 40400 |

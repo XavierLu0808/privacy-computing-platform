@@ -1,1 +1,62 @@
 /* fed 模块样式 */
+
+/* ---------- 联邦学习 · 任务编排（FL-ORCH） ---------- */
+.flo-row { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.flo-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.flo-wrap { flex-wrap: wrap; row-gap: 8px; }
+.flo-btn-sm { height: 32px; padding: 0 14px; font-size: 13px; }
+.flo-proj-name { font-size: 17px; }
+.flo-search { width: 200px; height: 32px; font-size: 13px; }
+.flo-stack { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.flo-stack > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flo-ops { display: flex; align-items: center; gap: 6px; }
+.flo-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.flo-mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; }
+.flo-mono-soft { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 12px; color: var(--muted-3); }
+.flo-textarea { height: auto; padding: 10px 12px; line-height: 20px; resize: vertical; font-family: inherit; }
+.flo-textarea.flo-mono { font-family: "SF Mono", Menlo, Consolas, monospace; }
+
+.flo-kv { display: grid; grid-template-columns: 110px minmax(0, 1fr); column-gap: 14px; row-gap: 9px; font-size: 13px; }
+.flo-kv-k { color: var(--muted); }
+.flo-kv-v { color: var(--ink); overflow-wrap: anywhere; }
+
+.flo-proj-grid { grid-template-columns: minmax(150px, 1.6fr) 52px minmax(90px, 1fr) minmax(110px, 1.1fr) 50px; }
+.flo-node-grid { grid-template-columns: minmax(130px, 1.2fr) 150px 84px 80px minmax(140px, 1.4fr) 90px 128px 128px; }
+.flo-log-grid { grid-template-columns: 128px 96px minmax(150px, 1fr) 64px minmax(0, 2.6fr); align-items: start; }
+.flo-ver-grid { grid-template-columns: 110px minmax(0, 1fr) 80px 128px 112px; }
+.flo-tpl-grid { grid-template-columns: 130px minmax(0, 1fr) 96px 170px; }
+
+/* 数据隔离 */
+.flo-iso { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 18px; }
+.flo-iso-col { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.flo-matrix-wrap { overflow-x: auto; border: 1px solid var(--line-soft); border-radius: 6px; }
+.flo-matrix th, .flo-matrix td { padding: 8px 10px; vertical-align: middle; }
+.flo-payload { display: flex; flex-direction: column; gap: 8px; }
+.flo-pay-row { display: grid; grid-template-columns: 48px 130px minmax(0, 1fr); gap: 10px; align-items: center; font-size: 13px; }
+.tag.flo-ok { background: #E9F4EF; color: var(--success); }
+.tag.flo-deny { background: #FBEDEA; color: var(--danger); }
+
+/* 算法库 */
+.flo-lib { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; align-items: start; }
+.flo-algo-list { display: flex; flex-direction: column; gap: 8px; }
+.flo-algo-item {
+  display: flex; flex-direction: column; gap: 4px; padding: 12px 14px; text-align: left;
+  background: var(--card); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; font-family: inherit; color: var(--ink);
+}
+.flo-algo-item:hover { background: #F9FBFD; }
+.flo-algo-item.on { background: var(--primary-soft); border-color: var(--primary-bd); }
+.flo-algo-item:focus-visible, .table-row.clickable:focus-visible { outline: 2px solid var(--primary-lt); outline-offset: 1px; }
+.flo-algo-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.flo-algo-detail { display: flex; flex-direction: column; gap: 14px; min-width: 0; padding: 4px 0 0 18px; border-left: 1px solid var(--line-soft); }
+.flo-sec { display: flex; flex-direction: column; gap: 8px; }
+.flo-iface td { white-space: normal; vertical-align: top; line-height: 18px; }
+.flo-iface td:first-child { white-space: nowrap; }
+.flo-history { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; background: #F5F7FA; border-radius: 6px; }
+.flo-struct { display: flex; flex-direction: column; gap: 8px; }
+.flo-struct .flo-pay-row { grid-template-columns: 48px 130px minmax(0, 1fr); }
+.flo-metric-v { font-size: 18px; font-weight: 700; overflow-wrap: anywhere; }
+
+@media (max-width: 1280px) {
+  .flo-row, .flo-iso { grid-template-columns: minmax(0, 1fr); }
+  .flo-lib { grid-template-columns: 230px minmax(0, 1fr); }
+}

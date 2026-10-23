@@ -1,0 +1,139 @@
+{
+  "FL-ORCH-01": {
+    "page": "#/fed/orch",
+    "ui": "任务编排 → 当前项目卡 → 「＋ 新建项目」按钮",
+    "steps": [
+      "点击「＋ 新建项目」",
+      "填写项目名称、项目类型、描述，选择基准模型与模型版本，填写聚合轮数，选择训练目标指标并填写目标值（例如 RMSE 归一化 ≤ 0.12）",
+      "点击「创建项目」",
+      "顶栏「当前项目」下拉出现新项目并自动切换，项目列表新增一行"
+    ],
+    "expected": "新项目出现在项目列表与顶栏，当前项目卡显示的模型版本、聚合轮数、训练目标与填写一致；名称为空、重名、轮数越界、目标值越界、基准模型与训练目标任务类型不匹配时弹窗内提示错误且不创建",
+    "api": ["POST /projects", "GET /projects", "GET /projects/{project_id}"],
+    "tests": [
+      "tests/fed-orch.test.mjs: [FL-ORCH-01] 项目创建：必填 / 越界 / 重名 / 版本校验，创建后出现在列表并带空节点表",
+      "tests/fed-orch.test.mjs: [FL-ORCH-01][FL-ORCH-04] 新建任务默认聚合策略取聚合与安全页的项目配置（k.db.fla）"
+    ],
+    "impl": "项目主表写 project_id / name / type，配置单独存 fl_project_config（description、base_algorithm + model_version、total_rounds、target_metric + target_value、revision）。训练目标的比较方向由指标决定（loss / rmse / mae 为 ≤，accuracy / auc 为 ≥），目标指标所属任务类型必须被基准模型支持，模型版本必须存在于算法版本表。创建后初始化空节点表且不播种演示数据，前端调用 App.reloadProjects(newId) 刷新顶栏并切换；新建训练任务弹窗以项目配置的任务类型、基准模型、聚合轮数为默认值。",
+    "status": "done"
+  },
+  "FL-ORCH-02": {
+    "page": "#/fed/orch",
+    "ui": "任务编排 → 参与方节点卡（「＋ 添加节点」、每行「编辑」「删除」）",
+    "steps": [
+      "点击「＋ 添加节点」，填写节点 ID、IP、端口、角色、数据分区标识（可选本地数据目录），点击「添加」",
+      "在新节点行点「编辑」修改端口或角色并保存",
+      "在新节点行点「删除」并确认",
+      "在过程管控页启动一个训练任务后回到本页：该任务使用的节点「删除」按钮置灰，编辑角色被拒"
+    ],
+    "expected": "节点表即时增删改；IP 格式错误、端口越界、重复节点 ID、连通性失败分别给出明确错误；运行中任务使用的节点不能删除、不能改节点 ID / 角色 / 数据分区 / 数据目录，可改 IP 与端口",
+    "api": ["GET /projects/{project_id}/nodes", "POST /projects/{project_id}/nodes", "PATCH /projects/{project_id}/nodes/{node_id}", "DELETE /projects/{project_id}/nodes/{node_id}"],
+    "tests": ["tests/fed-orch.test.mjs: [FL-ORCH-02] 节点管理：添加校验 IP / 端口 / 重复 ID / 连通性，编辑与删除"],
+    "impl": "节点表主键为 (project_id, node_id)，字段 ip、port、role（trainer / aggregator）、data_partition、data_dir、last_heartbeat_at。添加与编辑校验 IPv4 每段 0–255 或 IPv6、端口 1–65535 整数、node_id 仅小写字母数字短横线且项目内唯一（重复返回 40902）、训练节点必须有数据分区，添加时做连通性检查（不可达返回 42201）。节点被状态为 Running / Paused 的任务引用时删除或修改结构性字段返回 40901 并列出任务；节点 ID 作为任务引用的稳定标识，被任何历史任务引用后不允许改名。",
+    "status": "done"
+  },
+  "FL-ORCH-03": {
+    "page": "#/fed/orch",
+    "ui": "任务编排 → 数据隔离卡（访问矩阵、传输内容清单、「越权访问检测」「传输内容审计」按钮、检测记录表）",
+    "steps": [
+      "查看节点 × 数据目录访问矩阵：每个训练节点只有本节点目录为「可读」，其余为「拒绝」，聚合节点全部「拒绝」",
+      "发起节点选 node-shanghai-01，目标目录选 node-hangzhou-02，点击「越权访问检测」",
+      "点击「传输内容审计」"
+    ],
+    "expected": "越权检测记录为「已拒绝」，说明为 EACCES 拒绝日志及目标路径；传输审计记录为「通过」，列出最后一轮每个节点上传 / 下发的字节数与梯度元素数，训练节点只含 weights_delta / num_samples / local_metrics，聚合节点只下发 global_weights / round，与本项目数据集列名比对命中 0 个",
+    "api": ["GET /projects/{project_id}/isolation", "POST /projects/{project_id}/isolation/checks"],
+    "tests": ["tests/fed-orch.test.mjs: [FL-ORCH-03] 数据隔离：访问矩阵只放行本节点，越权读取被拒并记日志，传输内容只含梯度与参数"],
+    "impl": "每个训练节点登记独立 data_dir（默认 /data/fl/{项目}/{分区}），策略为目录权限 0700 + 节点挂载命名空间隔离，访问判定规则是发起节点 = 目录属主才放行，结果与操作人写入 fl_isolation_audit。跨节点通信只允许 ModelUpdate 消息白名单字段；传输审计取任务最后一轮各节点消息，字节数来自训练引擎每轮记录的 upload_kb，梯度元素数按 float32 4 字节换算，并把消息字段名与本项目所有数据集列名逐一比对，命中即判为泄露。",
+    "status": "done"
+  },
+  "FL-ORCH-04": {
+    "page": "#/fed/orch",
+    "ui": "任务编排 → 当前项目卡（「编辑配置」「导出配置」）+ 项目列表卡（搜索框、点击行查看详情）",
+    "steps": [
+      "在项目列表搜索框输入「供应链」，列表只剩对应项目",
+      "点击任一项目行，弹出项目详情，可「切换到此项目」",
+      "点击「编辑配置」修改名称、聚合轮数、训练目标并保存，当前项目卡配置版本 +1，顶栏名称同步更新",
+      "点击「导出配置」下载 fl_project_{项目 ID}_config.json"
+    ],
+    "expected": "列表、详情与修改后的值一致；配置版本号、修改人、修改时间更新；导出文件包含项目、训练配置、节点清单与隔离策略；非法修改（轮数越界、重名、目标指标与基准模型不匹配）被拒且原配置不变",
+    "api": ["GET /projects", "GET /projects/{project_id}", "PATCH /projects/{project_id}", "GET /projects/{project_id}/config/export"],
+    "tests": [
+      "tests/fed-orch.test.mjs: [FL-ORCH-04] 项目配置：详情、修改持久化（revision 递增）、导出 JSON；非法修改被拒",
+      "tests/fed-orch.test.mjs: [FL-ORCH-01][FL-ORCH-04] 新建任务默认聚合策略取聚合与安全页的项目配置（k.db.fla）"
+    ],
+    "impl": "配置持久化在 fl_project_config 表，PATCH 只校验传入字段，基准模型与版本成对校验，成功后 revision 递增并记录 updated_by / updated_at。列表接口支持 keyword 模糊查询与分页，返回配置摘要与节点数、任务数；新建训练任务未传 total_rounds / aggregation 时分别取项目配置与聚合与安全页的项目策略。导出为 schema_version = fl-project-config/1 的 JSON 文件，内容为项目、训练配置、节点清单（含数据目录）与隔离策略，不含凭据。",
+    "status": "done"
+  },
+  "FL-ORCH-05": {
+    "page": "#/fed/orch",
+    "ui": "任务编排 → 算法库卡 → 「内置算法」页签 → 点选算法，右侧「统一训练 / 预测接口」「参数 schema」",
+    "steps": [
+      "打开「内置算法」页签，左侧列出逻辑回归、XGBoost、CNN / MLP、LSTM、TCN",
+      "依次点选，查看右侧基类、实现框架、统一接口表（fit / predict / evaluate 的签名、输入、输出）与参数 schema"
+    ],
+    "expected": "5 个内置算法都以 fit / predict / evaluate 三个同名方法暴露，分类算法输入 ndarray[n_samples, n_features]、评估返回 loss / accuracy，时序算法输入 ndarray[n_samples, window_size, n_features]、评估返回 rmse / mae；新建训练任务弹窗的算法下拉显示各算法当前版本",
+    "api": ["GET /fl/algorithms", "GET /fl/algorithms/{algo_id}"],
+    "tests": ["tests/fed-orch.test.mjs: [FL-ORCH-05] 内置算法：五个基类，统一 fit / predict / evaluate 接口，按任务类型过滤"],
+    "impl": "内置算法登记在 fl_algorithm（kind = builtin）：逻辑回归 FedLogisticRegression（SecretFlow SS-LR）、XGBoost FedXGBoost（SecureBoost）、FedNeuralNet 基类及 FedMLP / FedCNN1D 子类、FedLSTM 与 FedTCN（FedSequenceModel，PyTorch + FedAvg），全部继承 FedEstimator 并实现 fit(X, y, *, rounds, aggregator, params) → TrainReport、predict(X) → ndarray、evaluate(X, y) → dict。每个算法带 JSON Schema 参数定义，训练引擎按 schema 校验并补默认值，接口目录按 task_type 过滤后供新建任务使用。",
+    "status": "done"
+  },
+  "FL-ORCH-06": {
+    "page": "#/fed/orch",
+    "ui": "任务编排 → 算法库卡 → 「＋ 注册算法」按钮 → 「已注册算法」页签",
+    "steps": [
+      "点击「＋ 注册算法」，填写算法名、版本、模型文件格式、继承基类、适用任务类型、说明与参数 schema（JSON）",
+      "先填写非法 JSON 点「注册」，弹窗提示 schema 不合法；改为合法 schema 后注册",
+      "自动切到「已注册算法」页签并选中新算法，可查看接口与参数 schema",
+      "到过程管控页「＋ 新建训练任务」，分类任务的算法下拉出现「LightGBM-Fed 1.0.0（已注册）」，参数表单按其 schema 渲染，创建成功"
+    ],
+    "expected": "注册成功后算法可查看、可在新建任务中选择；版本号格式、模型格式、schema 子集规则、与内置算法重名、同名同版本重复均被拒绝并给出具体原因",
+    "api": ["POST /fl/algorithms", "GET /fl/algorithms", "GET /fl/algorithms/{algo_id}", "POST /projects/{project_id}/fl/jobs"],
+    "tests": ["tests/fed-orch.test.mjs: [FL-ORCH-06] 算法注册：JSON Schema 子集校验，注册后可用于新建训练任务"],
+    "impl": "注册信息写 fl_algorithm（名称、任务类型、基类、模型格式 pkl / pt / h5 / onnx）与 fl_algorithm_version（版本号 主.次.修订、params_schema、制品 file_id）。参数 schema 按 JSON Schema 子集校验：根 type = object，参数 type 限 integer / number / string / boolean，约束限 minimum / maximum / enum / default / required，并检查 minimum ≤ maximum、enum 与类型一致、默认值满足约束。新建任务时注册算法映射为训练引擎的 custom 算法加该版本制品 model_file_id，params 按 schema 校验后与 algo_ref 一起记录在任务上。",
+    "status": "done"
+  },
+  "FL-ORCH-07": {
+    "page": "#/fed/orch",
+    "ui": "任务编排 → 算法库卡 → 「上传自定义模型」按钮 → 「自定义模型」页签 → 「模型结构校验」区块",
+    "steps": [
+      "点击「上传自定义模型」，选择 corrupt_model.h5（文件名含 corrupt），点击「上传并校验」",
+      "弹窗内显示结构校验报告：文件格式通过、文件大小通过、文件头与序列化结构失败及原因，模型未登记",
+      "改选 ree_price_lstm.pt，任务类型选「时序预测」，再次上传并校验",
+      "切到「自定义模型」页签，右侧显示层数、参数量（含估算口径）、输入形状、输出形状与逐项校验结果"
+    ],
+    "expected": ".pkl / .pt / .h5 / .onnx 可上传；文件损坏或为空时校验失败并说明原因（例如 HDF5 文件签名不匹配、文件为空 0 B），不登记模型；通过的模型给出层数、参数量与输入形状，只在本项目可见并可在新建训练任务中选择",
+    "api": ["POST /files", "POST /projects/{project_id}/fl/models", "GET /fl/algorithms?kind=custom&project_id={project_id}"],
+    "tests": ["tests/fed-orch.test.mjs: [FL-ORCH-07] 自定义模型上传：结构校验给出层数 / 参数量 / 输入形状，损坏或空文件校验失败"],
+    "impl": "前端先以 multipart 调 POST /files（purpose = fl_model）上传，再以 file_id 调 POST /projects/{id}/fl/models 做结构校验：依次检查扩展名、文件大小、文件头与反序列化（pickle STOP 操作码、PyTorch ZIP 中央目录、HDF5 签名与 model_config、ONNX graph.node），再检查层结构与输入形状是否匹配任务类型。mock 以文件名和大小为种子确定性生成层数，参数量按 (大小 − 512 B) / 4 的 float32 口径估算；校验失败返回 40002 与逐项报告，通过的模型以 kind = custom、project_id 作用域登记，并用 CustomModelWrapper 统一包装 fit / predict / evaluate。",
+    "status": "done"
+  },
+  "FL-ORCH-08": {
+    "page": "#/fed/orch",
+    "ui": "任务编排 → 算法库卡 → 任一算法详情 → 「版本历史」区块（「回滚到此版本」按钮 + 操作记录）",
+    "steps": [
+      "选中 XGBoost，版本历史列出 1.2.0（当前）、1.1.0、1.0.0 及说明、发布人、发布时间",
+      "在 1.1.0 行点击「回滚到此版本」，填写回滚原因并确认",
+      "当前版本标记移到 1.1.0，操作记录新增「Rui · 回滚 1.2.0 → 1.1.0（原因）」，算法下拉与新建任务弹窗显示 XGBoost 1.1.0",
+      "自定义模型同名再次上传，版本历史出现 1.1.0，可回滚到 1.0.0"
+    ],
+    "expected": "历史版本全部保留；回滚后当前版本标记改变，记录操作人、时间与原因；之后新建的任务 algo_ref.version 为回滚后的版本，已创建任务不受影响；回滚到当前版本或不存在的版本被拒绝",
+    "api": ["GET /fl/algorithms/{algo_id}", "POST /fl/algorithms/{algo_id}/actions", "POST /fl/algorithms", "POST /projects/{project_id}/fl/models"],
+    "tests": ["tests/fed-orch.test.mjs: [FL-ORCH-08] 模型版本管理：重复上传生成新版本，回滚记录操作人与时间，新任务使用回滚后的版本"],
+    "impl": "每个版本是 fl_algorithm_version 的一行（版本号、参数 schema、制品 file_id、结构报告），fl_algorithm.current_version 是当前版本指针，所有发布与回滚写入 fl_algorithm_op_log（action、from_version、to_version、operator、reason、at）。注册算法同名再注册即发布新版本且版本号必须递增，自定义模型同名再次上传自动次版本号 +1。回滚只移动指针，不删除任何版本；新建任务时取当前版本的 schema 与制品文件，并把版本号写入任务 algo_ref。",
+    "status": "done"
+  },
+  "FL-ORCH-09": {
+    "page": "#/fed/orch",
+    "ui": "任务编排 → 算法库卡 → 算法详情 → 「参数模板」区块；过程管控 → 「＋ 新建训练任务」弹窗 → 「参数模板」下拉",
+    "steps": [
+      "选中 XGBoost，参数模板区列出平台预置的「默认参数」「快速基线」「高精度（慢）」及其参数组合",
+      "点击「＋ 另存为模板」，填写模板名「浅树快训」、max_depth = 99，保存被拒（不能大于 16）；改为 3 后保存，列表出现自定义模板",
+      "到过程管控页「＋ 新建训练任务」，选算法 XGBoost，「参数模板」下拉选「浅树快训」，下方参数表单自动填充，创建任务"
+    ],
+    "expected": "每个内置算法至少 2 个预置模板；自定义模板按算法 schema 校验（越界、类型错误、未知参数、重名被拒），未填参数取默认值；平台预置模板不可删除，自定义模板可删除；新建任务时选模板即填充参数，任务记录 params 与 template_id",
+    "api": ["GET /fl/algorithms/{algo_id}/templates", "POST /fl/algorithms/{algo_id}/templates", "DELETE /fl/param-templates/{template_id}", "POST /projects/{project_id}/fl/jobs"],
+    "tests": ["tests/fed-orch.test.mjs: [FL-ORCH-09] 算法参数模板：预置模板、另存自定义模板（schema 校验 / 重名）、删除限制、任务按模板参数创建"],
+    "impl": "模板存 fl_param_template（algo_id、name 同算法内唯一、params JSON、preset 标记、创建人）。预置组合示例：XGBoost 默认 max_depth = 6 / eta = 0.3 / n_estimators = 200 / subsample = 0.8，快速基线 4 / 0.5 / 100，高精度 8 / 0.05 / 800；LR、CNN / MLP、LSTM、TCN 各 2 套。保存与建任务共用同一个 schema 校验器（类型、enum、minimum / maximum、required），并补齐默认值；新建任务弹窗根据所选算法的 schema 动态生成参数表单，选模板时整体回填。",
+    "status": "done"
+  }
+}
