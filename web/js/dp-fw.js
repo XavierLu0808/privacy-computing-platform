@@ -51,7 +51,7 @@
     const head = el('div', 'page-head');
     const ht = el('div', 'page-head-text');
     ht.appendChild(el('span', 'crumb', '差分隐私 / 框架集成'));
-    ht.appendChild(el('h1', null, '隐语 DP 框架集成与端到端工作流'));
+    ht.appendChild(el('h1', null, 'DP 框架集成与端到端工作流'));
     head.appendChild(ht);
     dom.jobSlot = el('div', 'field');
     head.appendChild(dom.jobSlot);
@@ -75,10 +75,14 @@
     const card = dom.provider;
     UI.clear(card);
     const cur = providers.items.filter(function (p) { return p.provider === providers.current; })[0];
-    const s = noId(UI.selectOf('dpfProv', providers.items.map(function (p) { return { value: p.provider, label: p.name }; }), providers.current), 'dpfProv');
+    const s = noId(UI.selectOf('dpfProv', providers.items.map(function (p) {
+      return { value: p.provider, label: p.name + (p.available === false ? '（未部署）' : '') };
+    }), providers.current), 'dpfProv');
     s.className = 'select';
     s.setAttribute('aria-label', '差分隐私实现');
     const sw = D.btn('btn-primary', '切换实现', async function () {
+      const selected = providers.items.filter(function (p) { return p.provider === s.value; })[0];
+      if (!selected || selected.available === false) return;
       try {
         const r = await Api.put('/dp/provider', { provider: s.value, project_id: ctx.projectId });
         providers.current = r.current;
@@ -92,7 +96,7 @@
         await loadHooks(seq);
       } catch (e) { UI.fail(e); }
     });
-    card.appendChild(D.cardHead('隐语集成 · DP 适配层', '平台只依赖「平台接口」，底层实现可按项目替换；切换只影响本项目待启动 / 失败 / 已终止的任务', [el('span', 'field-label', '实现'), s, sw]));
+    card.appendChild(D.cardHead('DP 实现与适配层', '实现及可用性来自当前后端；切换只影响本项目待启动 / 失败 / 已终止的任务', [el('span', 'field-label', '实现'), s, sw]));
     const info = el('div', 'dpf-prov');
     info.appendChild(el('span', 'dp-enabled', '当前：' + cur.name));
     info.appendChild(el('span', 'hint', cur.version_note));
@@ -103,7 +107,10 @@
     card.appendChild(table);
     function drawMap(id) {
       const p = providers.items.filter(function (x) { return x.provider === id; })[0];
+      sw.disabled = p.available === false;
       UI.clear(table);
+      if (p.available === false) table.appendChild(el('div', 'banner banner-warn',
+        p.unavailable_reason || p.reason || '后端尚未部署该实现，当前只能查看接口说明，不能切换。'));
       table.appendChild(el('span', 'section-label', (id === providers.current ? '接口映射（当前实现）' : '接口映射预览：' + p.name + '（尚未切换）')));
       table.appendChild(grid('dpf-map-grid', ['平台接口', '实现类 / 函数', '来源', '说明'], true));
       p.mapping.forEach(function (m) {
@@ -115,8 +122,8 @@
     }
     s.addEventListener('change', function () { drawMap(s.value); });
     drawMap(providers.current);
-    card.appendChild(el('span', 'hint', '「框架原生」为对应框架自带的类，类路径以部署环境安装的版本为准；「平台适配器」为本平台按统一接口补齐的实现，可整体替换。可替换实现：' +
-      providers.items.map(function (p) { return p.name; }).join('、') + '。'));
+    card.appendChild(el('span', 'hint', '接口映射用于说明实现来源；是否可用以当前后端部署状态为准。可切换实现：' +
+      (providers.items.filter(function (p) { return p.available !== false; }).map(function (p) { return p.name; }).join('、') || '无') + '。'));
   }
 
   /* ================= DP-FW-02 hook 链 ================= */
@@ -127,16 +134,22 @@
 
   async function loadHooks(my) {
     if (!jobId) return;
-    const h = await Api.get('/fl/jobs/' + jobId + '/dp/hooks');
-    if (my !== seq) return;
+    const id = jobId;
+    const h = await Api.get('/fl/jobs/' + id + '/dp/hooks');
+    if (my !== seq || id !== jobId) return;
     const card = dom.hooks;
     UI.clear(card);
     card.appendChild(D.cardHead('DP 初始化与 hook 链', '训练引擎在每轮梯度聚合前（before_aggregate）依次调用'));
     const job = jobOf(jobId);
+    const status = h.job_status || (job && job.status);
+    const rounds = Number.isFinite(h.rounds_completed) ? h.rounds_completed : (job && Number.isFinite(job.current_round) ? job.current_round : '—');
+    const enabled = typeof h.dp_enabled === 'boolean' ? h.dp_enabled : !!(job && job.dp_enabled);
+    const provider = providers.items.filter(function (p) { return p.provider === h.provider; })[0];
+    const providerName = h.provider_name || (provider && provider.name) || h.provider || '—（后端未提供）';
     const st = el('div', 'dpf-prov');
-    st.appendChild(el('span', h.initialized ? 'dp-enabled' : 'tag', h.initialized ? 'DP 已在训练引擎中初始化' : (h.dp_enabled ? 'DP 已启用，启动训练时初始化' : '任务未启用 DP')));
-    st.appendChild(el('span', 'hint', (job ? job.name : jobId) + ' · ' + (D.STATUS_CN[h.job_status] || h.job_status) + ' · 已完成 ' + h.rounds_completed + ' 轮 · ' +
-      h.trainers + ' 个训练参与方 · 实现：' + h.provider_name + (h.initialized_at ? ' · 初始化于 ' + UI.datetime(h.initialized_at) : '')));
+    st.appendChild(el('span', h.initialized ? 'dp-enabled' : 'tag', h.initialized ? 'DP 已在训练引擎中初始化' : (enabled ? 'DP 已启用，等待执行回执确认初始化' : '任务未启用 DP')));
+    st.appendChild(el('span', 'hint', (job ? job.name : jobId) + ' · ' + (D.STATUS_CN[status] || status || '—') + ' · 已完成 ' + rounds + ' 轮 · ' +
+      (Number.isFinite(h.trainers) ? h.trainers : '—') + ' 个训练参与方 · 实现：' + providerName + (h.initialized_at ? ' · 初始化于 ' + UI.datetime(h.initialized_at) : '')));
     card.appendChild(st);
     const chain = el('div', 'dpf-chain');
     h.steps.forEach(function (s, i) {
@@ -161,13 +174,14 @@
 
   async function loadMetrics(my) {
     if (!jobId) return;
-    const m = await Api.get('/fl/jobs/' + jobId + '/dp/metrics', { bins: 21 });
-    if (my !== seq) return;
+    const id = jobId;
+    const m = await Api.get('/fl/jobs/' + id + '/dp/metrics', { bins: 21 });
+    if (my !== seq || id !== jobId) return;
     const card = dom.metrics;
     UI.clear(card);
     card.appendChild(D.cardHead('框架内部 DP 指标', '由训练引擎在加噪 hook 内逐轮上报'));
     if (!m.summary) {
-      card.appendChild(el('div', 'table-empty', '该任务尚无启用 DP 的训练轮次；启动训练后这里逐轮出现裁剪比例、噪声范数与信噪比'));
+      card.appendChild(el('div', 'table-empty', m.reason || '该任务尚无启用 DP 的训练轮次；启动训练后这里逐轮出现裁剪比例、噪声范数与信噪比'));
       return;
     }
     const s = m.summary;
@@ -452,7 +466,7 @@
   }
 
   async function mount(c, sec) {
-    ctx = c;
+    ctx = { projectId: c.projectId };
     const my = ++seq;
     clearInterval(timer);
     if (!root || root !== sec || !sec.childElementCount) skeleton(sec);
@@ -463,6 +477,14 @@
       jobId = D.pickJob(ctx.projectId, jobs);
       renderJobSlot();
       renderProvider();
+      if (!jobId) {
+        [['hooks', 'DP 初始化与 hook 链'], ['metrics', '框架内部 DP 指标'], ['wizard', '联邦差分隐私端到端工作流']].forEach(function (entry) {
+          const card = dom[entry[0]]; UI.clear(card);
+          card.appendChild(D.cardHead(entry[1]));
+          card.appendChild(el('div', 'table-empty', '当前项目没有训练任务，请先在联邦学习模块创建任务。'));
+        });
+        return;
+      }
       renderWizard();
       await tick();
       // 训练推进时 hook 调用次数与指标逐轮变化，2 秒刷新一次
@@ -470,8 +492,9 @@
         const j = jobOf(jobId);
         if (!j) return;
         try {
-          const fresh = await Api.get('/fl/jobs/' + jobId);
-          if (my !== seq) return;
+          const id = jobId;
+          const fresh = await Api.get('/fl/jobs/' + id);
+          if (my !== seq || id !== jobId) return;
           const changed = fresh.status !== j.status || fresh.current_round !== j.current_round;
           Object.assign(j, fresh);
           if (changed) {

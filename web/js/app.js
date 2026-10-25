@@ -50,7 +50,9 @@
   // 旧调用 App.go('fed') 等未指定 sub 时的落点（保持 v1.1 行为）
   const LEGACY_SUB = { fed: 'proc', he: 'app', mpc: 'ops', psi: 'data', dp: 'eval' };
 
-  const ctx = { projectId: null };
+  let ctx = Object.freeze({ projectId: null });
+  let projectIds = new Set(), projectSeq = 0, bootSeq = 0, bound = false;
+  let empty = null;
   let current = null;          // { mod, sub, module }
   let flMounted = false;
   let dpTimer = null;
@@ -140,6 +142,8 @@
     if (location.hash !== hash) history.replaceState(null, '', hash);
 
     const el = $('screen-' + mod + '-' + sub);
+    if (!ctx.projectId) { showEmpty(); return; }
+    if (empty) empty.hidden = true;
     const m = moduleOf(entry);
     if (!m) { placeholder(el, entry); return; }
 
@@ -167,80 +171,111 @@
 
   const PROJECT_KEY = 'privacy-console.project';
 
-  function switchProject(projectId) {
-    try { localStorage.setItem(PROJECT_KEY, projectId); } catch (e) { /* 隐私模式下忽略 */ }
-    if (window.FL) window.FL.unmount();
+  function stopModules() {
+    clearInterval(dpTimer); dpTimer = null;
+    new Set(NAV.flatMap(function (group) { return group.subs.map(function (sub) { return sub.module; }); }))
+      .forEach(function (name) { const module = window[name]; if (module && module.unmount) module.unmount(); });
     flMounted = false;
-    if (current && current.module !== 'FL') {
-      const m = window[current.module];
-      if (m && m.unmount) m.unmount();
+  }
+
+  function showEmpty() {
+    document.querySelectorAll('main .screen').forEach(function (section) { section.hidden = true; });
+    if (!empty) {
+      empty = UI.el('section', 'card card-lg'); empty.id = 'app-project-empty';
+      empty.setAttribute('role', 'status');
+      empty.appendChild(UI.el('h1', null, '暂无可访问项目'));
+      empty.appendChild(UI.el('p', 'hint', '当前账号暂无可访问项目。可新建项目，或在管理员分配项目后刷新列表。'));
+      const create = UI.el('button', 'btn-primary', '新建项目'); create.type = 'button';
+      create.addEventListener('click', async function () {
+        try { if (!window.FLO || !window.FLO.createProject) throw new Error('项目创建入口尚未加载'); await window.FLO.createProject(); }
+        catch (error) { UI.fail(error); }
+      });
+      empty.appendChild(create);
+      const retry = UI.el('button', 'btn', '刷新项目列表'); retry.type = 'button';
+      retry.addEventListener('click', async function () {
+        retry.disabled = true;
+        try { await reloadProjects(); if (ctx.projectId) go(current ? current.mod : 'fed', { sub: current ? current.sub : 'orch' }); }
+        catch (error) { UI.fail(error); }
+        finally { retry.disabled = false; }
+      });
+      empty.appendChild(retry); document.querySelector('main.main').appendChild(empty);
     }
-    ctx.projectId = projectId;
+    empty.hidden = false;
+  }
+
+  function switchProject(projectId) {
+    const target = projectIds.has(projectId) ? projectId : null;
+    if (ctx.projectId === target) { if (!target) showEmpty(); return; }
+    projectSeq += 1;
+    Api.invalidateContext(); stopModules();
+    ctx = Object.freeze({ projectId: target });
+    try { if (target) localStorage.setItem(PROJECT_KEY, target); else localStorage.removeItem(PROJECT_KEY); } catch (error) { /* Selection is optional. */ }
+    $('projSelect').value = target || '';
     if (current) go(current.mod, { sub: current.sub });
+    else if (!target) showEmpty();
   }
 
-  /** 重新拉取项目列表（任务编排页新建项目后调用）；selectId 给出时切到该项目。 */
+  /** Replace only with the latest authorized project list. Never invent a project. */
   async function reloadProjects(selectId) {
+    const ticket = ++projectSeq, session = bootSeq;
     const projects = await Api.get('/projects?page_size=100');
-    const sel = $('projSelect');
-    UI.clear(sel);
-    projects.items.forEach(function (p) {
-      const o = document.createElement('option');
-      o.value = p.project_id;
-      o.textContent = p.name;
-      sel.appendChild(o);
-    });
-    const remembered = (function () { try { return localStorage.getItem(PROJECT_KEY); } catch (e) { return null; } })();
-    const known = function (id) { return id && projects.items.some(function (p) { return p.project_id === id; }); };
-    const target = selectId || ctx.projectId || (known(remembered) ? remembered : projects.items[0].project_id);
-    sel.value = target;
+    if (ticket !== projectSeq || session !== bootSeq) throw Object.assign(new Error('项目列表请求已取消'), { name: 'AbortError', cancelled: true });
+    if (!projects || !Array.isArray(projects.items)) throw new Error('项目列表响应格式不正确');
+    const items = projects.items;
+    if (items.some(function (item) { return !item || typeof item.project_id !== 'string' || !item.project_id; })) throw new Error('项目列表缺少有效编号');
+    projectIds = new Set(items.map(function (item) { return item.project_id; }));
+    const sel = $('projSelect'); UI.clear(sel);
+    items.forEach(function (item) { const option = document.createElement('option'); option.value = item.project_id; option.textContent = item.name; sel.appendChild(option); });
+    let remembered = null;
+    try { remembered = localStorage.getItem(PROJECT_KEY); } catch (error) { /* Selection is optional. */ }
+    const target = projectIds.has(selectId) ? selectId : projectIds.has(ctx.projectId) ? ctx.projectId
+      : projectIds.has(remembered) ? remembered : items.length ? items[0].project_id : null;
+    sel.disabled = !items.length;
+    if (!items.length) { const option = document.createElement('option'); option.value = ''; option.textContent = '暂无项目'; sel.appendChild(option); }
+    sel.value = target || '';
     if (target !== ctx.projectId) switchProject(target);
-    return projects.items;
+    else if (!target) showEmpty();
+    return items;
   }
 
-  async function boot() {
-    try {
-      const results = await Promise.all([Api.get('/me'), Api.get('/platform/info')]);
-      const me = results[0], platform = results[1];
+  function suspend() {
+    bootSeq += 1; projectSeq += 1;
+    Api.invalidateContext(); stopModules();
+    current = null; projectIds = new Set(); ctx = Object.freeze({ projectId: null });
+    document.querySelectorAll('main .screen').forEach(function (section) { section.hidden = true; });
+    if (empty) empty.hidden = true;
+    document.querySelectorAll('.modal-mask').forEach(function (mask) { mask.remove(); });
+  }
 
-      $('avatar').textContent = me.avatar_text || me.display_name.slice(0, 1);
+  async function boot(verifiedUser) {
+    suspend(); const session = ++bootSeq;
+    try {
+      const results = await Promise.all([verifiedUser ? Promise.resolve(verifiedUser) : Api.get('/me'), Api.get('/platform/info')]);
+      if (session !== bootSeq) throw Object.assign(new Error('启动请求已取消'), { name: 'AbortError', cancelled: true });
+      const me = results[0], platform = results[1];
+      $('avatar').textContent = me.avatar_text || (me.display_name || '').slice(0, 1);
       $('brandName').textContent = platform.platform_name + ' 控制台';
       document.title = platform.platform_name + ' · 控制台';
       $('envLabel').textContent = platform.environment_label;
-      $('sourceNote').textContent = window.APP_CONFIG.useMock
-        ? '当前为内置 mock 数据源（config.js: useMock = true），接口契约与 API.md 一致。演示数据保存在本浏览器，刷新不丢失。'
-        : '已连接后端 ' + window.APP_CONFIG.apiBase + '。';
-      if (window.APP_CONFIG.useMock && window.MockServer.resetDemo) {
-        const reset = UI.el('button', 'btn-link', '重置演示数据');
-        reset.type = 'button';
-        reset.style.alignSelf = 'flex-start';
-        reset.addEventListener('click', function () {
-          UI.modal({
-            title: '重置演示数据',
-            body: UI.el('p', null, '清空本浏览器里保存的全部演示数据（新建的项目、节点、任务、配置等），恢复到初始演示状态。此操作不可撤销。'),
-            submitText: '确认重置',
-            onSubmit: function () { window.MockServer.resetDemo(); }
-          });
-        });
-        $('sourceNote').parentNode.appendChild(reset);
-      }
-
-      const items = await reloadProjects();
-      ctx.projectId = $('projSelect').value || items[0].project_id;
-      $('projSelect').addEventListener('change', function () { switchProject($('projSelect').value); });
-
-      window.addEventListener('hashchange', function () {
-        const h = parseHash();
-        if (h && (!current || h.mod !== current.mod || h.sub !== current.sub)) go(h.mod, { sub: h.sub });
-      });
-
-      const h = parseHash() || { mod: 'fed', sub: 'proc' };
-      go(h.mod, { sub: h.sub });
-    } catch (e) {
-      UI.fail(e);
-    }
+      $('sourceNote').textContent = '已连接真实后端 ' + window.APP_CONFIG.apiBase + '。';
+      await reloadProjects();
+      if (session !== bootSeq) throw Object.assign(new Error('启动请求已取消'), { name: 'AbortError', cancelled: true });
+      const route = parseHash() || { mod: 'fed', sub: 'proc' };
+      go(route.mod, { sub: route.sub });
+    } catch (error) { suspend(); throw error; }
   }
 
-  window.App = { go: go, ctx: ctx, reloadProjects: reloadProjects, NAV: NAV };
-  document.addEventListener('DOMContentLoaded', boot);
+  function bind() {
+    if (bound) return; bound = true;
+    // One-time removal of the retired browser-only data store; preserve all other state.
+    try { localStorage.removeItem('privacy-console.mockdb.v1'); } catch (error) { /* Storage is optional. */ }
+    $('projSelect').addEventListener('change', function () { switchProject($('projSelect').value); });
+    window.addEventListener('hashchange', function () {
+      const route = parseHash();
+      if (route && (!current || route.mod !== current.mod || route.sub !== current.sub)) go(route.mod, { sub: route.sub });
+    });
+  }
+
+  window.App = { go: go, get ctx() { return ctx; }, reloadProjects: reloadProjects, switchProject: switchProject, suspend: suspend, NAV: NAV };
+  document.addEventListener('DOMContentLoaded', function () { bind(); window.SflConnection.start(boot); });
 })();

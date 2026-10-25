@@ -9,7 +9,8 @@
   /* ================= 共用工具 DPC ================= */
 
   const MECH_CN = { gaussian: '高斯机制', laplace: '拉普拉斯机制' };
-  const ACC_CN = { basic: '基础组合', advanced: '高级组合', rdp: 'RDP 会计' };
+  const ACC_CN = { basic: '基础组合', advanced: '高级组合', rdp: 'RDP 会计',
+    zcdp_plus_pure_dp_adaptive_composition: 'zCDP + 纯 DP 自适应组合' };
   const STATUS_CN = { Created: '待启动', Running: '训练中', Paused: '已暂停', Success: '已完成', Failed: '失败', Terminated: '已终止' };
   const COLORS = { primary: 'var(--primary)', amber: 'var(--amber)', teal: 'var(--teal)', danger: 'var(--danger)', muted: 'var(--muted-2)' };
   const picked = {};   // projectId -> jobId
@@ -58,7 +59,19 @@
     const sup = String(e).split('').map(function (ch) { return SUP[ch]; }).join('');
     return (Math.abs(m - 1) < 1e-9 ? '' : m.toFixed(1) + ' × ') + '10' + sup;
   }
-  function pct(v, n) { return (v * 100).toFixed(n === undefined ? 1 : n) + '%'; }
+  function finite(v) { return typeof v === 'number' && Number.isFinite(v); }
+  function fixed(v, n) { return finite(v) ? v.toFixed(n) : '—'; }
+  function pct(v, n) { return finite(v) ? (v * 100).toFixed(n === undefined ? 1 : n) + '%' : '—'; }
+  function utilityReason(res) { return res.reason || '模型效用暂不可用；需要经过验证的效用评估结果。'; }
+  function segments(points) {
+    const out = []; let cur = [];
+    points.forEach(function (p) {
+      if (finite(p.x) && finite(p.y)) cur.push(p);
+      else if (cur.length) { out.push(cur); cur = []; }
+    });
+    if (cur.length) out.push(cur);
+    return out;
+  }
   function money(v) { return Math.round(v).toLocaleString('zh-CN'); }
 
   /**
@@ -105,21 +118,22 @@
       svg.appendChild(r);
     });
     (opts.series || []).forEach(function (s) {
-      if (!s.points.length) return;
-      const pl = UI.svgEl('polyline', {
-        points: s.points.map(function (p) { return X(p.x).toFixed(1) + ',' + Y(p.y).toFixed(1); }).join(' '),
-        fill: 'none', 'stroke-width': s.width || 2.2, 'stroke-linejoin': 'round'
-      });
-      pl.style.stroke = s.color;
-      if (s.dash) pl.setAttribute('stroke-dasharray', s.dash);
-      svg.appendChild(pl);
-      if (s.dots) {
-        s.points.forEach(function (p) {
-          const c = UI.svgEl('circle', { cx: X(p.x), cy: Y(p.y), r: 3 });
-          c.style.fill = s.color;
-          svg.appendChild(c);
+      segments(s.points).forEach(function (points) {
+        const pl = UI.svgEl('polyline', {
+          points: points.map(function (p) { return X(p.x).toFixed(1) + ',' + Y(p.y).toFixed(1); }).join(' '),
+          fill: 'none', 'stroke-width': s.width || 2.2, 'stroke-linejoin': 'round'
         });
-      }
+        pl.style.stroke = s.color;
+        if (s.dash) pl.setAttribute('stroke-dasharray', s.dash);
+        svg.appendChild(pl);
+        if (s.dots) {
+          points.forEach(function (p) {
+            const c = UI.svgEl('circle', { cx: X(p.x), cy: Y(p.y), r: 3 });
+            c.style.fill = s.color;
+            svg.appendChild(c);
+          });
+        }
+      });
     });
     (opts.markers || []).forEach(function (m) {
       const ln = UI.svgEl('line', { x1: X(m.x), x2: X(m.x), y1: PT, y2: H - PB, 'stroke-dasharray': '3 3', 'stroke-width': 1 });
@@ -156,17 +170,25 @@
 
   /** 按任务类型给出效用展示文案：分类用 Accuracy（越高越好），时序用 RMSE / MAE（归一化，越低越好）。 */
   function utilText(res) {
+    const ts = res.task_type === 'timeseries';
+    const metrics = res.metrics || [];
+    const r = metrics[0] || { key: 'rmse', label: 'RMSE' }, m = metrics[1];
+    if (res.available === false || (ts && r.available === false) || !finite(ts ? r.estimated : res.estimated_accuracy)) {
+      const reason = utilityReason(res);
+      return { name: ts ? '模型误差（RMSE / MAE）' : '模型效用（预估 Accuracy）',
+        value: '—', sub: reason, short: '效用 —；' + reason };
+    }
     if (res.task_type === 'timeseries') {
-      const r = res.metrics[0], m = res.metrics[1];
+      const change = finite(r.change_pct) ? fixed(r.change_pct, 1) + '%' : '—';
       return {
-        name: '模型误差（预估 ' + r.key.toUpperCase() + '，归一化，越低越好）', value: r.estimated.toFixed(4),
-        sub: '无噪声基线 ' + r.baseline.toFixed(4) + ' · 增幅 ' + r.change_pct.toFixed(1) + '%' + (m ? '；' + m.label + ' ' + m.estimated.toFixed(4) + '（基线 ' + m.baseline.toFixed(4) + '）' : ''),
-        short: r.label + ' ' + r.estimated.toFixed(4) + '（无噪声基线 ' + r.baseline.toFixed(4) + '，增幅 ' + r.change_pct.toFixed(1) + '%）'
+        name: '模型误差（预估 ' + String(r.key || 'rmse').toUpperCase() + '，归一化，越低越好）', value: fixed(r.estimated, 4),
+        sub: '无噪声基线 ' + fixed(r.baseline, 4) + ' · 增幅 ' + change + (m ? '；' + m.label + ' ' + fixed(m.estimated, 4) + '（基线 ' + fixed(m.baseline, 4) + '）' + (!finite(m.estimated) ? '；' + utilityReason(res) : '') : ''),
+        short: (r.label || 'RMSE') + ' ' + fixed(r.estimated, 4) + '（无噪声基线 ' + fixed(r.baseline, 4) + '，增幅 ' + change + '）'
       };
     }
     return {
       name: '模型效用（预估 Accuracy）', value: pct(res.estimated_accuracy),
-      sub: '无噪声基线 ' + pct(res.baseline_accuracy) + ' · 损失 ' + (res.accuracy_loss * 100).toFixed(1) + ' 个百分点',
+      sub: '无噪声基线 ' + pct(res.baseline_accuracy) + ' · 损失 ' + fixed(finite(res.accuracy_loss) ? res.accuracy_loss * 100 : null, 1) + ' 个百分点',
       short: 'Accuracy ' + pct(res.estimated_accuracy) + '（无噪声基线 ' + pct(res.baseline_accuracy) + '）'
     };
   }
@@ -247,8 +269,27 @@
   let mech = 'gaussian';  // 界面上选中的机制（可能尚未被后端接受）
   let budget = null;
   let booted = false;
+  let active = false, estimateRequest = 0, tradeRequest = 0, budgetRequest = 0, auditRequest = 0, saveRequest = 0;
   let seq = 0;            // 防止换任务 / 换项目时旧请求覆盖新结果
   const dom = {};
+  function current(my, id) { return active && my === seq && id === jobId; }
+  function inputs() { return JSON.stringify({ config: currentConfig(), accountant: cfg.accountant || 'rdp' }); }
+  function clearValues(message) {
+    budget = null;
+    ['dpUsed', 'dpUtil', 'dpPerRound', 'dpRounds', 'dpTotalRounds', 'dpNoiseText', 'dpFormula', 'dpClipEcho', 'dpMechName'].forEach(function (id) { $(id).textContent = '—'; });
+    $('dpRoundsBar').style.width = '0%'; $('dpUsedBar').style.width = '0%';
+    $('dpEpsLine').setAttribute('points', ''); $('dpUtilLine').setAttribute('points', '');
+    Array.from($('dpUtilLine').parentNode.querySelectorAll('[data-dp-util-segment]')).forEach(function (node) { node.remove(); });
+    ['dpHist', 'dpAudit'].forEach(function (id) { UI.clear($(id)); });
+    dom.utilSub.textContent = message; dom.usedSub.textContent = message; dom.tradeNote.textContent = message;
+    UI.clear(dom.tradeChart); dom.auditHint.textContent = message;
+    if (dom.providerText) dom.providerText.textContent = message;
+    dom.accLine.textContent = ''; $('dpEnabledChip').textContent = '未选择训练任务';
+    $('dpHistNote').textContent = message; dom.utilName.textContent = '模型效用';
+    if (dom.auditAll) dom.auditAll.disabled = true;
+    if (dom.auditExport) dom.auditExport.disabled = true;
+    ['dpGauss', 'dpLap', 'dpEps', 'dpClip', 'dpDelta'].forEach(function (id) { $(id).disabled = true; });
+  }
 
   const estimateDebounced = UI.debounce(function () { estimate(); tradeoff(); }, 300);
 
@@ -316,6 +357,7 @@
     dom.auditHint = ah;
     const all = btn('btn-sm', '查看全部', showAllAudit);
     const exp = btn('btn-sm', '导出 CSV', exportAudit);
+    dom.auditAll = all; dom.auditExport = exp;
     ah.parentNode.appendChild(all);
     ah.parentNode.appendChild(exp);
     const th = audit.querySelector('.table-head');
@@ -333,6 +375,7 @@
   }
 
   function setMech(m) {
+    if (!cfg) return;
     mech = m;
     renderMech();
     estimate();
@@ -360,11 +403,15 @@
   }
 
   async function save() {
+    if (!cfg) return;
+    const my = seq, id = jobId, request = ++saveRequest, signature = inputs();
     try {
-      cfg = await Api.put('/fl/jobs/' + jobId + '/dp', currentConfig());
-      mech = cfg.mechanism;
+      const saved = await Api.put('/fl/jobs/' + id + '/dp', currentConfig());
+      if (!current(my, id) || request !== saveRequest || !cfg || signature !== inputs()) return;
+      cfg = saved; mech = cfg.mechanism;
       renderAccLine();
     } catch (e) {
+      if (!current(my, id) || request !== saveRequest || !cfg || signature !== inputs()) return;
       // 运行中不允许改配置（40901）：整个界面回滚到后端权威值
       UI.fail(e);
       applyConfig();
@@ -374,7 +421,8 @@
   }
 
   async function estimate() {
-    const my = seq;
+    if (!cfg) return;
+    const my = seq, id = jobId, request = ++estimateRequest, signature = inputs();
     try {
       const body = currentConfig();
       const res = await Api.post('/dp/estimate', {
@@ -387,8 +435,8 @@
         baseline_job_id: jobId,
         histogram_bins: 13
       });
-      if (my === seq) renderEstimate(res, body);
-    } catch (e) { UI.fail(e); }
+      if (current(my, id) && request === estimateRequest && cfg && signature === inputs()) renderEstimate(res, body);
+    } catch (e) { if (current(my, id) && request === estimateRequest && cfg && signature === inputs()) UI.fail(e); }
   }
 
   function renderEstimate(res, body) {
@@ -415,16 +463,27 @@
     // 两条曲线各自归一化到 0–1
     const maxEps = res.curve[res.curve.length - 1].cumulative_epsilon || 1;
     const key = res.task_type === 'timeseries' ? 'estimated_rmse' : 'estimated_accuracy';
-    const accs = res.curve.map(function (p) { return p[key]; });
-    const lo = Math.min.apply(null, accs), hi = Math.max.apply(null, accs);
+    const accs = res.curve.filter(function (p) { return p.available !== false; }).map(function (p) { return p[key]; }).filter(finite);
+    const lo = accs.length ? Math.min.apply(null, accs) : 0, hi = accs.length ? Math.max.apply(null, accs) : 0;
     const span = (hi - lo) || 1;
 
     $('dpEpsLine').setAttribute('points', UI.polyline(
       res.curve.map(function (p) { return { x: p.round, y: p.cumulative_epsilon / maxEps }; }),
       Object.assign({ ymin: 0, ymax: 1, xmax: body.total_rounds }, CHART)));
-    $('dpUtilLine').setAttribute('points', UI.polyline(
-      res.curve.map(function (p) { return { x: p.round, y: (p[key] - lo) / span }; }),
-      Object.assign({ ymin: 0, ymax: 1, xmax: body.total_rounds }, CHART)));
+    const utilLine = $('dpUtilLine'), parent = utilLine.parentNode;
+    Array.from(parent.querySelectorAll('[data-dp-util-segment]')).forEach(function (n) { n.remove(); });
+    const parts = res.available === false ? [] : segments(res.curve.map(function (p) {
+      return { x: p.round, y: finite(p[key]) && p.available !== false ? (p[key] - lo) / span : null };
+    }));
+    utilLine.setAttribute('points', '');
+    parts.forEach(function (points, i) {
+      const line = i === 0 ? utilLine : UI.svgEl('polyline', {
+        fill: 'none', stroke: utilLine.getAttribute('stroke'), 'stroke-width': utilLine.getAttribute('stroke-width'),
+        'stroke-linejoin': 'round', 'data-dp-util-segment': ''
+      });
+      line.setAttribute('points', UI.polyline(points, Object.assign({ ymin: 0, ymax: 1, xmax: body.total_rounds }, CHART)));
+      if (i) parent.appendChild(line);
+    });
 
     const hist = $('dpHist');
     UI.clear(hist);
@@ -439,51 +498,58 @@
   }
 
   async function tradeoff() {
-    const my = seq;
+    if (!cfg) return;
+    const my = seq, id = jobId, request = ++tradeRequest, signature = inputs();
     try {
       const body = currentConfig();
       const res = await Api.post('/dp/tradeoff', {
         mechanism: body.mechanism, clip_norm: body.clip_norm, delta: body.delta,
         total_rounds: body.total_rounds, accountant: cfg.accountant || 'rdp', baseline_job_id: jobId
       });
-      if (my === seq) renderTradeoff(res, body);
-    } catch (e) { UI.fail(e); }
+      if (current(my, id) && request === tradeRequest && cfg && signature === inputs()) renderTradeoff(res, body);
+    } catch (e) { if (current(my, id) && request === tradeRequest && cfg && signature === inputs()) UI.fail(e); }
   }
 
   function renderTradeoff(res, body) {
-    const pts = res.points;
+    const pts = res.points || [];
     const ts = res.task_type === 'timeseries';
-    const base = res.metric.baseline;
-    const vals = pts.map(function (p) { return p.metric_value; }).concat([base]);
+    const metric = res.metric || { label: ts ? 'RMSE' : 'Accuracy' };
+    const base = metric.baseline;
+    UI.clear(dom.tradeChart);
+    if (res.available === false || !pts.some(function (p) { return p.available !== false && finite(p.metric_value); })) {
+      dom.tradeChart.appendChild(UI.el('div', 'table-empty', '模型效用 —'));
+      dom.tradeNote.textContent = utilityReason(res);
+      return;
+    }
+    const vals = pts.filter(function (p) { return p.available !== false; }).map(function (p) { return p.metric_value; }).concat([base]).filter(finite);
     let lo, hi, yTicks, yFmt;
     if (ts) {
-      lo = 0; hi = niceTicks(0, Math.max.apply(null, vals) * 1.05, 4).slice(-1)[0];
+      lo = 0; hi = niceTicks(0, Math.max(.01, Math.max.apply(null, vals)) * 1.05, 4).slice(-1)[0];
       yTicks = niceTicks(0, hi, 4); yFmt = function (v) { return v.toFixed(2); };
     } else {
       lo = Math.floor(Math.min.apply(null, vals) * 10) / 10; hi = 1;
       yTicks = ticks(lo, 1, Math.round((1 - lo) * 10)); yFmt = function (v) { return (v * 100).toFixed(0) + '%'; };
     }
-    UI.clear(dom.tradeChart);
     dom.tradeChart.appendChild(legend([
-      { color: COLORS.primary, label: ts ? '预估 ' + res.metric.label + '（越低越好）' : '预估模型效用（Accuracy，%）' },
-      { color: COLORS.muted, label: '无噪声基线 ' + (ts ? base.toFixed(4) : pct(base)) },
+      { color: COLORS.primary, label: ts ? '预估 ' + metric.label + '（越低越好）' : '预估模型效用（Accuracy，%）' },
+      { color: COLORS.muted, label: '无噪声基线 ' + (ts ? fixed(base, 4) : pct(base)) },
       { color: COLORS.amber, label: '当前总预算' }
     ]));
     dom.tradeChart.appendChild(chart({
       w: 820, h: 210, xmin: 0, xmax: 10, ymin: lo, ymax: hi,
       xTicks: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10], yTicks: yTicks,
       xFmt: function (v) { return v.toFixed(0); }, yFmt: yFmt,
-      xLabel: '总隐私预算 ε', yLabel: ts ? res.metric.label : null, aria: '不同总隐私预算下的预估模型效用',
+      xLabel: '总隐私预算 ε', yLabel: ts ? metric.label : null, aria: '不同总隐私预算下的预估模型效用',
       series: [
         { color: COLORS.muted, dash: '4 4', width: 1.4, points: [{ x: 0, y: base }, { x: 10, y: base }] },
-        { color: COLORS.primary, dots: true, points: pts.map(function (p) { return { x: p.epsilon_total, y: p.metric_value }; }) }
+        { color: COLORS.primary, dots: true, points: pts.map(function (p) { return { x: p.epsilon_total, y: p.available === false ? null : p.metric_value }; }) }
       ],
       markers: [{ x: body.epsilon_total, color: COLORS.amber, label: '当前 ε = ' + body.epsilon_total.toFixed(2) }]
     }));
     const rec = res.recommended_epsilon;
     dom.tradeNote.textContent = rec === null
       ? '在 ε ≤ 10 范围内都达不到「' + res.rule + '」；可改用 RDP 会计或放宽裁剪阈值。'
-      : '平衡点：满足「' + res.rule + '」的最小总预算为 ε = ' + rec.toFixed(2) +
+      : !finite(rec) ? utilityReason(res) : '平衡点：满足「' + res.rule + '」的最小总预算为 ε = ' + rec.toFixed(2) +
         '（' + ACC_CN[res.accountant] + '）。当前 ε = ' + body.epsilon_total.toFixed(2) +
         (body.epsilon_total < rec ? '，隐私更强但效用未达到该要求。' : '，已达到该效用要求；继续增大 ε 效用提升有限，隐私保护减弱。');
   }
@@ -508,7 +574,11 @@
   }
 
   async function loadBudget() {
-    budget = await Api.get('/fl/jobs/' + jobId + '/dp/budget');
+    if (!cfg) return;
+    const my = seq, id = jobId, request = ++budgetRequest;
+    const next = await Api.get('/fl/jobs/' + id + '/dp/budget');
+    if (!current(my, id) || request !== budgetRequest) return;
+    budget = next;
     $('dpRounds').textContent = budget.rounds_completed;
     $('dpTotalRounds').textContent = budget.total_rounds;
     $('dpRoundsBar').style.width = Math.round(budget.rounds_completed / budget.total_rounds * 100) + '%';
@@ -519,7 +589,7 @@
     const sp = UI.el('span', null, String(budget.used_pct));
     sp.id = 'dpUsedPct';
     dom.usedSub.appendChild(sp);
-    dom.usedSub.appendChild(document.createTextNode('%（' + ACC_CN[budget.accountant || 'rdp'] + '累计' +
+    dom.usedSub.appendChild(document.createTextNode('%（' + (ACC_CN[budget.accountant] || budget.accountant || '后端未提供会计方式') + '累计' +
       (budget.delta_total ? '，累计 δ = ' + fmtDelta(budget.delta_total) : '') + (budget.dp_active ? '' : '，本次运行未启用 DP') + '）'));
 
     const T = Math.max(2, budget.total_rounds);
@@ -541,7 +611,10 @@
   }
 
   async function loadAudit() {
-    const res = await Api.get('/fl/jobs/' + jobId + '/dp/audit', { limit: 5 });
+    if (!cfg) return;
+    const my = seq, id = jobId, request = ++auditRequest;
+    const res = await Api.get('/fl/jobs/' + id + '/dp/audit', { limit: 5 });
+    if (!current(my, id) || request !== auditRequest) return;
     const wrap = $('dpAudit');
     UI.clear(wrap);
     dom.auditHint.textContent = '最近 5 轮 · 共 ' + res.total + ' 条';
@@ -553,8 +626,11 @@
   }
 
   async function showAllAudit() {
+    if (!cfg) return;
+    const my = seq, id = jobId;
     try {
-      const res = await Api.get('/fl/jobs/' + jobId + '/dp/audit', { limit: 'all' });
+      const res = await Api.get('/fl/jobs/' + id + '/dp/audit', { limit: 'all' });
+      if (!current(my, id)) return;
       const body = UI.el('div', 'dp-modal-body');
       const job = jobs.filter(function (j) { return j.job_id === jobId; })[0];
       body.appendChild(UI.el('span', 'hint', (job ? job.name : jobId) + ' · 共 ' + res.total + ' 轮记录（按轮次倒序），ε 按' +
@@ -566,12 +642,13 @@
       if (!res.items.length) list.appendChild(UI.el('div', 'table-empty', '暂无记录'));
       res.items.forEach(function (a) { list.appendChild(auditRow(a)); });
       body.appendChild(list);
-      const m = UI.modal({ title: '隐私审计记录（全部）', body: body, submitText: '导出 CSV', width: 860, onSubmit: async function () { await exportAudit(); } });
+      const m = UI.modal({ title: '隐私审计记录（全部）', body: body, submitText: '导出 CSV', width: 860, onSubmit: async function () { if (current(my, id)) await exportAudit(); } });
       return m;
     } catch (e) { UI.fail(e); }
   }
 
   async function exportAudit() {
+    if (!cfg) return;
     try {
       const name = await Api.download('/fl/jobs/' + jobId + '/dp/audit/export');
       if (name) UI.toast('已导出 ' + name);
@@ -580,11 +657,13 @@
 
   async function loadJob(id) {
     const my = ++seq;
-    jobId = id;
+    jobId = id; cfg = null; clearValues('正在加载训练任务…');
     setJob(ctx.projectId, id);
     const c = await Api.get('/fl/jobs/' + jobId + '/dp');
-    if (my !== seq) return;
+    if (!current(my, id)) return;
     cfg = c;
+    dom.auditAll.disabled = false; dom.auditExport.disabled = false;
+    ['dpGauss', 'dpLap', 'dpEps', 'dpClip', 'dpDelta'].forEach(function (key) { $(key).disabled = false; });
     applyConfig();
     const job = jobs.filter(function (j) { return j.job_id === jobId; })[0];
     if (dom.providerText) {
@@ -597,10 +676,12 @@
   /* ---------- 生命周期 ---------- */
 
   async function mount(c) {
-    ctx = c;
-    bindOnce();
+    ctx = { projectId: c.projectId }; active = true; const my = ++seq; jobId = null; cfg = null;
+    bindOnce(); clearValues('当前项目暂无训练任务');
     try {
-      jobs = await listJobs(ctx.projectId);
+      const list = await listJobs(ctx.projectId);
+      if (!active || my !== seq) return;
+      jobs = list;
       UI.clear(dom.jobSlot);
       if (!jobs.length) { UI.toast('当前项目还没有联邦训练任务'); return; }
       const id = pickJob(ctx.projectId, jobs);
@@ -612,11 +693,11 @@
 
   /** 训练推进时由 app.js 调用，刷新预算与审计。 */
   async function refresh() {
-    if (!jobId) return;
+    if (!active || !cfg || !jobId) return;
     try { await Promise.all([loadBudget(), loadAudit()]); } catch (e) { /* 忽略后台刷新失败 */ }
   }
 
-  function unmount() { seq++; }
+  function unmount() { active = false; seq++; jobId = null; cfg = null; }
 
   window.DP = { mount: mount, unmount: unmount, refresh: refresh };
 })();

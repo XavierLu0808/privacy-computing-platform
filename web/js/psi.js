@@ -16,39 +16,8 @@
 
   const SRC_CN = { file: '文件上传', database: '数据库', hdfs: 'HDFS' };
   const DS_ST = { ready: ['已就绪', 'st-ready'], importing: ['接入中', 'st-importing'], failed: ['失败', 'st-failed'] };
-  const CSV_PARSE_MAX_BYTES = 256 * 1048576;   // 超过此大小不在浏览器里读全文件，改由后端按文件大小估算行数
-  const COL_RX = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-  /**
-   * 解析 CSV 文本：首行为表头，其余非空行计为数据行；列类型按前 200 行推断（int / float / date / string）。
-   * 返回 { row_count, columns, sample }（sample 为前 3 行原始值，供节点侧脱敏预览）或 { error }。不处理引号内换行。
-   */
-  function csvProfile(text) {
-    const lines = String(text).replace(/^\uFEFF/, '').split(/\r?\n/).filter(function (l) { return l.trim() !== ''; });
-    if (!lines.length) return { error: '文件为空，至少需要表头行' };
-    const split = function (l) { return l.split(',').map(function (x) { return x.trim().replace(/^"(.*)"$/, '$1'); }); };
-    const head = split(lines[0]);
-    const badName = head.filter(function (h) { return !COL_RX.test(h); })[0];
-    if (badName !== undefined) return { error: '表头列名「' + badName + '」不合法，列名只能用英文字母、数字和下划线，且不以数字开头' };
-    if (head.some(function (h, i) { return head.indexOf(h) !== i; })) return { error: '表头有重复列名' };
-    const sample = lines.slice(1, 201).map(split);
-    const columns = head.map(function (name, i) {
-      const vals = sample.map(function (r) { return r[i]; }).filter(function (v) { return v !== undefined && v !== ''; });
-      let type = 'string';
-      if (vals.length && vals.every(function (v) { return /^-?\d+$/.test(v); })) type = 'int';
-      else if (vals.length && vals.every(function (v) { return /^-?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(v); })) type = 'float';
-      else if (vals.length && vals.every(function (v) { return /^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(v); })) type = 'date';
-      return { name: name, type: type };
-    });
-    return { row_count: lines.length - 1, columns: columns, sample: lines.slice(1, 4).map(split) };
-  }
-
-  /** 行数展示：文件来源且后端按文件大小估算时标注「估算」。 */
-  function rowsText(d) {
-    if (d.row_count === null || d.row_count === undefined) return '—';
-    const est = d.source && d.source.row_count_basis === 'size_estimate';
-    return (est ? '约 ' : '') + UI.rows(d.row_count) + (est ? '（估算）' : '');
-  }
+  // Uploaded CSV structure, rows and preview are resolved by the backend parser.
+  function rowsText(d) { return d.row_count == null ? '—' : UI.rows(d.row_count); }
 
   let ctx = null;
   let protocols = [];
@@ -60,7 +29,10 @@
   let templates = [];
   let pipeline = null;
   let sse = null;
-  let booted = false;
+  let booted = false, active = false, gen = 0, pipelineGen = 0, datasetRequest = 0, detailRequest = 0, configRequest = 0;
+  function token() { return { gen: gen, projectId: ctx && ctx.projectId }; }
+  function current(t) { return active && t.gen === gen && ctx && t.projectId === ctx.projectId; }
+  function closeStream() { if (sse) { sse.close(); sse = null; } }
 
   function protoDef(k) { return protocols.filter(function (p) { return p.protocol === k; })[0]; }
 
@@ -77,7 +49,7 @@
     $('psiToAlgo').addEventListener('click', function () { window.App.go('psi', { sub: 'algo' }); });
     $('dsNew').addEventListener('click', openImport);
     $('dsPartyFilter').addEventListener('change', renderDatasets);
-    $('dsDetailClose').addEventListener('click', function () { $('dsDetail').hidden = true; });
+    $('dsDetailClose').addEventListener('click', function () { detailRequest++; $('dsDetail').hidden = true; });
     ['psiDsA', 'psiDsB'].forEach(function (id, i) {
       $(id).addEventListener('change', function () { renderKeySel(i); renderDsNote(); });
     });
@@ -93,15 +65,20 @@
   /* ---------- 数据接入 ---------- */
 
   async function loadDatasets() {
-    const res = await Api.get('/projects/' + ctx.projectId + '/datasets');
+    const t = token(), request = ++datasetRequest;
+    let res;
+    try { res = await Api.get('/projects/' + t.projectId + '/datasets'); }
+    catch (e) { if (current(t) && request === datasetRequest) throw e; return false; }
+    if (!current(t) || request !== datasetRequest) return false;
     datasets = res.items;
     renderDatasets();
     renderPartySel();
     // 有「接入中」的数据集时轮询，直到全部就绪
     clearTimeout(pollTimer);
     if (datasets.some(function (d) { return d.status === 'importing'; })) {
-      pollTimer = setTimeout(function () { loadDatasets().catch(UI.fail); }, 800);
+      pollTimer = setTimeout(function () { if (current(t)) loadDatasets().catch(UI.fail); }, 800);
     }
+    return true;
   }
 
   function renderDatasets() {
@@ -154,13 +131,15 @@
   }
 
   async function showDetail(id) {
+    const t = token(), request = ++detailRequest;
     try {
       const d = await Api.get('/datasets/' + id);
+      if (!current(t) || request !== detailRequest) return;
       $('dsDetail').hidden = false;
       $('dsDetailTitle').textContent = d.name;
       const basis = d.source && d.source.row_count_basis;
       $('dsDetailMeta').textContent = d.party_name + ' · ' + SRC_CN[d.source_type] + ' · ' + rowsText(d) + ' 行' +
-        (basis === 'parsed' ? '（按上传文件实际解析）' : (basis === 'size_estimate' ? '（按文件大小 ÷ 64 字节 / 行估算）' : '')) +
+        (basis === 'parsed' ? '（按上传文件实际解析）' : '') +
         ' · 特征 ' + d.feature_count + ' 列';
       $('dsColCount').textContent = d.columns.length;
       const cols = $('dsCols');
@@ -188,15 +167,18 @@
           tb.appendChild(tr);
         });
       }
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(t) && request === detailRequest) UI.fail(e); }
   }
 
   function removeDataset(d) {
+    const t = token();
     const body = UI.el('div', 'hint', '删除数据集「' + d.name + '」的登记信息？参与方本地数据不受影响；被运行中的求交流水线使用时不允许删除。');
     UI.modal({
       title: '删除数据集', body: body, submitText: '删除', width: 460,
       onSubmit: async function () {
+        if (!current(t) || !body.isConnected) throw new Error('项目上下文已变更，请重新确认删除');
         await Api.del('/datasets/' + d.dataset_id);   // 40901 时错误留在弹窗底部
+        if (!current(t)) return;
         UI.toast('已删除 ' + d.name);
         $('dsDetail').hidden = true;
         await loadDatasets();
@@ -205,8 +187,11 @@
   }
 
   function openImport() {
-    let fileId = null, fileName = null, profile = null;
+    if (!active) return;
+    const t = token(), projectId = t.projectId;
+    let fileId = null, fileName = null, uploadRequest = 0;
     const body = UI.el('div');
+    const dialogCurrent = function () { return current(t) && body.isConnected; };
     body.style.cssText = 'display:flex; flex-direction:column; gap:14px;';
     const two = UI.el('div', 'form-2col');
     two.appendChild(UI.formRow('数据集名称', UI.inputOf('diName', '')));
@@ -226,36 +211,23 @@
     const hdfsRow = UI.formRow('HDFS 路径', UI.inputOf('diHdfs', 'hdfs://10.22.6.14:8020/warehouse/'));
     const fileIn = UI.el('input');
     fileIn.type = 'file'; fileIn.id = 'diFile'; fileIn.accept = '.csv,.parquet';
-    const fileNote = UI.el('span', 'hint', '文件只上传到本参与方节点，不经过其他参与方');
+    const fileNote = UI.el('span', 'hint', '由后端接收并解析文件；行数、字段和支持格式以服务端校验结果为准');
     const fileRow = UI.formRow('数据文件', fileIn);
     fileRow.appendChild(fileNote);
     body.appendChild(dbBox);
     body.appendChild(hdfsRow);
     body.appendChild(fileRow);
     fileIn.addEventListener('change', async function () {
-      fileId = null; profile = null;
-      const file = fileIn.files[0];
+      const request = ++uploadRequest, file = fileIn.files[0];
+      fileId = null; fileName = null; fileNote.textContent = '由后端解析文件，浏览器不估算行数或样例';
       if (!file) return;
       try {
-        // 先在本地解析 CSV 表头与行数，表头不合法时不上传
-        let parseNote = '';
-        if (/\.csv$/i.test(file.name) && file.size <= CSV_PARSE_MAX_BYTES) {
-          profile = csvProfile(await file.text());
-          if (profile.error) { fileNote.textContent = profile.error; profile = null; fileIn.value = ''; return; }
-          parseNote = ' · 解析得到 ' + UI.rows(profile.row_count) + ' 行 × ' + profile.columns.length + ' 列（表头：' +
-            profile.columns.map(function (c) { return c.name; }).join('、') + '）';
-          const names = profile.columns.map(function (c) { return c.name; });
-          if (names.indexOf($('diKey').value.trim()) < 0) {
-            $('diKey').value = names.filter(function (n) { return /hash|_id$|^id$/i.test(n); })[0] || names[0];
-          }
-        } else {
-          parseNote = ' · 浏览器不解析' + (/\.csv$/i.test(file.name) ? '超过 256 MB 的 CSV' : ' Parquet') + '，行数将按文件大小估算';
-        }
         fileNote.textContent = '上传中…';
-        const f = await Api.upload('/files', file, { purpose: 'dataset', project_id: ctx.projectId });
+        const f = await Api.upload('/files', file, { purpose: 'dataset', project_id: projectId });
+        if (!dialogCurrent() || request !== uploadRequest || fileIn.files[0] !== file) return;
         fileId = f.file_id; fileName = f.file_name;
-        fileNote.textContent = '已上传 ' + f.file_name + '（' + UI.bytes(f.size_bytes) + '）' + parseNote;
-      } catch (e) { fileNote.textContent = e.message; }
+        fileNote.textContent = '已上传 ' + f.file_name + '（' + UI.bytes(f.size_bytes) + '）；接入时由服务端解析行数与字段';
+      } catch (e) { if (dialogCurrent() && request === uploadRequest && fileIn.files[0] === file) fileNote.textContent = e.message; }
     });
 
     const two2 = UI.el('div', 'form-2col');
@@ -274,7 +246,9 @@
     UI.modal({
       title: '接入数据', body: body, submitText: '开始接入', width: 640,
       onSubmit: async function () {
+        if (!dialogCurrent()) throw new Error('项目上下文已变更，请重新打开接入弹窗');
         const type = srcSel.value;
+        if (type === 'file' && !fileId) throw new Error('请等待当前文件上传成功');
         const source = type === 'database' ? { jdbc_url: $('diJdbc').value.trim(), table: $('diTable').value.trim() }
           : (type === 'hdfs' ? { path: $('diHdfs').value.trim() } : { file_id: fileId, file_name: fileName });
         const req = {
@@ -283,18 +257,8 @@
         };
         const t = $('diTime').value.trim();
         if (t) req.time_column = t;
-        if (type === 'file' && profile) {
-          // 求交键按字符串、时间列按日期登记，其余列沿用推断类型
-          req.row_count = profile.row_count;
-          req.columns = profile.columns.map(function (c) {
-            return { name: c.name, type: c.name === req.id_column ? 'string' : (c.name === t ? 'date' : c.type) };
-          });
-          // 前 3 行原始值随文件留在本参与方节点，由节点按列类型脱敏后给详情预览
-          req.sample_rows = profile.sample.map(function (r) {
-            return profile.columns.map(function (c, i) { return r[i] === undefined ? '' : r[i]; });
-          });
-        }
-        const ds = await Api.post('/projects/' + ctx.projectId + '/datasets', req);
+        const ds = await Api.post('/projects/' + projectId + '/datasets', req);
+        if (!dialogCurrent()) return;
         UI.toast('「' + ds.name + '」接入中，schema 探测完成后可用于求交');
         await loadDatasets();
       }
@@ -321,8 +285,7 @@
       }
       list.forEach(function (d) {
         const o = document.createElement('option');
-        const est = d.source && d.source.row_count_basis === 'size_estimate';
-        o.value = d.dataset_id; o.textContent = d.name + '（' + (est ? '约 ' : '') + UI.rows(d.row_count) + ' 行' + (est ? '，估算' : '') + '）';
+        o.value = d.dataset_id; o.textContent = d.name + '（' + rowsText(d) + ' 行）';
         sel.appendChild(o);
       });
       if (list.some(function (d) { return d.dataset_id === keep; })) sel.value = keep;
@@ -353,15 +316,24 @@
     $('psiDsNote').textContent = !$('psiDsA').value || !$('psiDsB').value
       ? '两方都需要选择已就绪的数据集'
       : (a !== b ? '两方求交键列名不同（' + a + ' / ' + b + '），请确认哈希口径一致' : '按 ' + a + ' 求交，原始数据不出域');
+    $('psiRun').disabled = !!(pipeline && pipeline.status === 'running') || !readyPair();
+  }
+
+  function readyPair() {
+    const a = datasets.find(function (d) { return d.dataset_id === $('psiDsA').value && d.status === 'ready'; });
+    const b = datasets.find(function (d) { return d.dataset_id === $('psiDsB').value && d.status === 'ready'; });
+    return !!(config && a && b && a.party_id !== b.party_id && $('psiKeyA').value && $('psiKeyB').value);
   }
 
   /* ---------- 求交配置（来自算法配置页） ---------- */
 
   async function loadConfig() {
+    const t = token(), request = ++configRequest;
     const res = await Promise.all([
-      Api.get('/projects/' + ctx.projectId + '/psi/config'),
-      Api.get('/projects/' + ctx.projectId + '/psi/templates')
+      Api.get('/projects/' + t.projectId + '/psi/config'),
+      Api.get('/projects/' + t.projectId + '/psi/templates')
     ]);
+    if (!current(t) || request !== configRequest) return false;
     config = res[0];
     templates = res[1].items;
     const sel = $('psiCfgSel');
@@ -377,6 +349,7 @@
     });
     sel.value = templates.some(function (t) { return t.template_id === keep; }) ? keep : '';
     renderConfig();
+    return true;
   }
 
   /** 流水线将使用的 { protocol, params, template_id }。 */
@@ -388,6 +361,7 @@
   }
 
   function renderConfig() {
+    if (!config) return;
     const c = chosenConfig();
     const def = protoDef(c.protocol);
     $('psiCfgName').textContent = def.name;
@@ -409,6 +383,7 @@
   }
 
   function renderRunNote() {
+    if (!config) { $('psiRunNote').textContent = ''; return; }
     const c = chosenConfig();
     let text = protoDef(c.protocol).name + ' · ' + c.label + ' · 求交结果直接作为联邦学习的数据准备步骤';
     if (pipeline && pipeline.status !== 'canceled') {
@@ -421,9 +396,10 @@
   /* ---------- 流水线 ---------- */
 
   async function run() {
+    if (!active || !config || !readyPair()) return;
+    const t = token(), operation = ++pipelineGen; closeStream();
     try {
       $('psiRun').disabled = true;
-      const projNodes = (await Api.get('/projects/' + ctx.projectId + '/nodes')).items;
       const c = chosenConfig();
       const req = {
         protocol: c.protocol,
@@ -433,45 +409,44 @@
           { party_id: parties[1].party_id, dataset_id: $('psiDsB').value, id_column: $('psiKeyB').value }
         ],
         alignment: { feature_columns: [] },
-        training: {
-          fl_job_config: {
-            task_type: 'classification', algorithm: 'xgb', aggregation: 'he',
-            node_ids: projNodes.map(function (n) { return n.node_id; })
-          },
-          auto_start: false
-        }
+        // The backend binds the aligned artifacts to its registered node order
+        // and validated vertical training defaults. A list response is not that order.
+        training: { auto_start: false }
       };
       if (c.template_id) req.template_id = c.template_id;
-      pipeline = await Api.post('/projects/' + ctx.projectId + '/psi/pipelines', req);
-      listen();
+      const next = await Api.post('/projects/' + t.projectId + '/psi/pipelines', req);
+      if (!current(t) || operation !== pipelineGen) return;
+      pipeline = next; listen();
       render();
-    } catch (e) { UI.fail(e); $('psiRun').disabled = false; }
+    } catch (e) { if (current(t) && operation === pipelineGen) { UI.fail(e); $('psiRun').disabled = false; } }
   }
 
   async function cancel() {
-    if (!pipeline) return;
+    if (!active || !pipeline) return;
+    const t = token(), operation = ++pipelineGen, id = pipeline.pipeline_id; closeStream();
     try {
-      pipeline = await Api.post('/psi/pipelines/' + pipeline.pipeline_id + '/cancel');
-      if (sse) { sse.close(); sse = null; }
-      render();
-    } catch (e) { UI.fail(e); }
+      const next = await Api.post('/psi/pipelines/' + id + '/cancel');
+      if (!current(t) || operation !== pipelineGen) return;
+      pipeline = next; render();
+    } catch (e) { if (current(t) && operation === pipelineGen) { UI.fail(e); if (pipeline.status === 'running') listen(); } }
   }
 
   function listen() {
-    if (sse) sse.close();
-    sse = Api.subscribe('/psi/pipelines/' + pipeline.pipeline_id + '/events', {
-      stage_progress: function (s) {
-        const idx = pipeline.stages.findIndex(function (x) { return x.stage === s.stage; });
-        if (idx >= 0) pipeline.stages[idx] = s;
-        renderStages();
-        renderRunNote();
+    closeStream();
+    const id = pipeline.pipeline_id, t = token(), operation = pipelineGen;
+    const alive = function () { return current(t) && operation === pipelineGen && pipeline && pipeline.pipeline_id === id; };
+    sse = Api.subscribe('/psi/pipelines/' + id + '/events', {
+      snapshot: function (value) { if (alive()) { pipeline = value; render(); } },
+      stage_progress: function (stage) {
+        if (!alive()) return;
+        const idx = pipeline.stages.findIndex(function (x) { return x.stage === stage.stage; });
+        if (idx >= 0) pipeline.stages[idx] = stage;
+        renderStages(); renderRunNote();
       },
       pipeline_finished: function (ev) {
-        pipeline.status = ev.status;
-        pipeline.fl_job_id = ev.fl_job_id;
-        pipeline.target_project = ev.target_project;
-        pipeline.error = ev.error || null;
-        render();
+        if (!alive()) return;
+        pipeline.status = ev.status; pipeline.fl_job_id = ev.fl_job_id;
+        pipeline.target_project = ev.target_project; pipeline.error = ev.error || null; render();
       }
     });
   }
@@ -479,7 +454,7 @@
   function render() {
     const running = pipeline && pipeline.status === 'running';
     const finished = pipeline && pipeline.status === 'finished';
-    $('psiRun').disabled = running;
+    $('psiRun').disabled = running || !readyPair();
     const failed = pipeline && pipeline.status === 'failed';
     $('psiRun').textContent = running ? '执行中…' : (finished || failed ? '重新执行' : '一键启动');
     $('psiFail').hidden = !failed;
@@ -573,51 +548,48 @@
 
   /** 回到平台集成页时恢复本项目最近一条流水线（运行中则重新订阅进度）。 */
   async function resumePipeline() {
-    if (pipeline) pipeline = await Api.get('/psi/pipelines/' + pipeline.pipeline_id);
+    const t = token(), operation = ++pipelineGen;
+    const previous = pipeline;
+    let next;
+    if (previous) next = await Api.get('/psi/pipelines/' + previous.pipeline_id);
     else {
-      const items = (await Api.get('/projects/' + ctx.projectId + '/psi/pipelines')).items;
-      const last = items[items.length - 1];
-      pipeline = last && last.status !== 'canceled' ? last : null;
+      const items = (await Api.get('/projects/' + t.projectId + '/psi/pipelines')).items;
+      next = items[0] || null; // Real backend lists newest first.
     }
+    if (!current(t) || operation !== pipelineGen) return false;
+    pipeline = next && next.status !== 'canceled' ? next : null;
     if (pipeline && pipeline.status === 'running') listen();
+    return true;
   }
 
   async function mount(c, el, opts) {
-    ctx = c;
+    gen++; active = true; closeStream(); clearTimeout(pollTimer);
+    ctx = { projectId: c.projectId }; const t = token();
     tab = (opts && opts.sub) || 'data';
-    if (lastProject !== c.projectId) {   // 换项目后清掉上一个项目的流水线展示
-      if (sse) { sse.close(); sse = null; }
-      pipeline = null;
-      lastProject = c.projectId;
-    }
-    bindOnce();
+    if (lastProject !== c.projectId) { pipeline = null; lastProject = c.projectId; config = null; templates = []; }
+    bindOnce(); datasets = []; renderDatasets(); renderPartySel(); $('dsDetail').hidden = true;
+    if (tab === 'pipe') render();
     try {
       if (!protocols.length) {
         const res = await Promise.all([Api.get('/psi/protocols'), Api.get('/psi/parties')]);
-        protocols = res[0].items;
-        parties = res[1].items;
+        if (!current(t)) return;
+        protocols = res[0].items; parties = res[1].items;
         const pf = $('dsPartyFilter');
-        parties.forEach(function (p) {
-          const o = document.createElement('option');
-          o.value = p.party_id; o.textContent = p.party_name;
-          pf.appendChild(o);
-        });
+        parties.forEach(function (p) { const o = document.createElement('option'); o.value = p.party_id; o.textContent = p.party_name; pf.appendChild(o); });
       }
-      $('dsDetail').hidden = true;
-      await loadDatasets();
+      if (!await loadDatasets() || !current(t)) return;
       switchTab(tab);
       if (tab === 'pipe') {
-        await loadConfig();
-        await resumePipeline();
+        if (!await loadConfig() || !current(t)) return;
+        if (!await resumePipeline() || !current(t)) return;
         render();
       }
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(t)) UI.fail(e); }
   }
 
   function unmount() {
-    if (sse) { sse.close(); sse = null; }
-    clearTimeout(pollTimer);
+    active = false; gen++; pipelineGen++; closeStream(); clearTimeout(pollTimer);
   }
 
-  window.PSI = { mount: mount, unmount: unmount, csvProfile: csvProfile };
+  window.PSI = { mount: mount, unmount: unmount };
 })();

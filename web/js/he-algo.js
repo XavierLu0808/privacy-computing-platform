@@ -16,6 +16,36 @@
 
   let ctx = null, root = null, built = false;
   let algos = [], libs = null, config = null;
+  let active = false, generation = 0, verifyRevision = 0, optimizeRevision = 0, encodeRevision = 0;
+  let verifyPending = null, optimizePending = null;
+  function ticket() { return { generation: generation, projectId: ctx && ctx.projectId, root: root }; }
+  function current(value) { return active && value.generation === generation && value.projectId === ctx.projectId && value.root === root; }
+  function cancelled(error) { return error && (error.cancelled || error.name === 'AbortError'); }
+  function verifyButton() {
+    const button = $q('#heaVRun'); if (!button) return;
+    button.disabled = !!verifyPending || !config;
+    button.textContent = verifyPending ? '验证进行中…' : '运行验证';
+  }
+  function optimizeButton() {
+    const button = $q('#heaORun'); if (!button) return;
+    button.disabled = !!optimizePending || !config;
+    button.textContent = optimizePending ? '寻优进行中…' : '开始寻优';
+  }
+  function invalidateVerify() {
+    verifyRevision += 1;
+    const out = $q('#heaVOut'); if (!out) return;
+    UI.clear(out);
+    out.appendChild(el('div', 'hint', verifyPending
+      ? '参数已更新；当前验证完成前不会重复提交，旧参数的结果不会用于本页。'
+      : '点击“运行验证”后才执行真实加密、密态运算和解密；计算可能需要一些时间。'));
+    verifyButton();
+  }
+  function invalidateOptimize() {
+    optimizeRevision += 1;
+    const out = $q('#heaOOut'); if (!out) return;
+    UI.clear(out); out.appendChild(el('div', 'hint', '参数已更新，点击“开始寻优”获取当前参数的推荐。'));
+    optimizeButton();
+  }
   const $q = function (sel) { return root.querySelector(sel); };
 
   /* ---------- 工具 ---------- */
@@ -24,7 +54,9 @@
     if (x === null || x === undefined) return '—';
     return String(Number(Number(x).toPrecision(12)));
   }
-  function errStr(e) { return e === 0 ? '0' : Number(e).toExponential(2); }
+  function finite(x) { return typeof x === 'number' && Number.isFinite(x); }
+  function locale(x) { return finite(x) ? x.toLocaleString('zh-CN') : '—'; }
+  function errStr(e) { return !finite(e) ? '—' : e === 0 ? '0' : e.toExponential(2); }
   /** 工具类操作的校验失败直接写在结果区，不弹 toast（输入改一下就会重算）。 */
   function showErr(out, e) {
     UI.clear(out);
@@ -168,12 +200,15 @@
     $q('#heaCfgSave').addEventListener('click', saveConfig);
     $q('#heaVRun').addEventListener('click', runVerify);
     $q('#heaVScheme').addEventListener('change', syncOps);
+    ['heaVOp', 'heaVPrec', 'heaVA', 'heaVB'].forEach(function (id) {
+      ['input', 'change'].forEach(function (event) { $q('#' + id).addEventListener(event, invalidateVerify); });
+    });
     root.querySelectorAll('[data-preset]').forEach(function (b) {
       b.addEventListener('click', function () {
         const p = PRESETS[b.dataset.preset];
         $q('#heaVA').value = p.a; $q('#heaVB').value = p.b;
         $q('#heaVPresetNote').textContent = p.note;
-        runVerify();
+        invalidateVerify();
       });
     });
     const encDebounced = UI.debounce(runEncode, 250);
@@ -182,6 +217,9 @@
     $q('#heaEPrec').addEventListener('input', function () { $q('#heaEPrecVal').textContent = $q('#heaEPrec').value; encDebounced(); });
     $q('#heaESetDefault').addEventListener('click', savePrecision);
     $q('#heaORun').addEventListener('click', runOptimize);
+    ['heaOSec', 'heaODepth', 'heaODigits', 'heaOBatch'].forEach(function (id) {
+      ['input', 'change'].forEach(function (event) { $q('#' + id).addEventListener(event, invalidateOptimize); });
+    });
   }
 
   /* ---------- 算法目录 ---------- */
@@ -273,79 +311,108 @@
     });
   }
   async function saveConfig() {
+    const request = ticket();
     try {
-      config = await Api.put('/projects/' + ctx.projectId + '/he/config', {
+      const saved = await Api.put('/projects/' + ctx.projectId + '/he/config', {
         scheme: $q('#heaCfgScheme').value, library: $q('#heaCfgLib').value, precision: Number($q('#heaCfgPrec').value)
       });
+      if (!current(request)) return;
+      config = saved; invalidateVerify();
       UI.toast('已保存为项目默认：' + algoOf(config.scheme).name + ' · ' + libOf(config.library).name);
       renderCfgNote();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(request) && !cancelled(e)) UI.fail(e); }
   }
   async function savePrecision() {
+    const request = ticket();
     try {
-      config = await Api.put('/projects/' + ctx.projectId + '/he/config', {
+      const saved = await Api.put('/projects/' + ctx.projectId + '/he/config', {
         scheme: config.scheme, library: config.library, precision: Number($q('#heaEPrec').value)
       });
+      if (!current(request)) return;
+      config = saved; invalidateVerify();
       $q('#heaCfgPrec').value = config.precision;
       UI.toast('项目默认精度已设为保留 ' + config.precision + ' 位小数');
       renderCfgNote();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(request) && !cancelled(e)) UI.fail(e); }
   }
 
   /* ---------- 运算验证 ---------- */
 
   function syncOps() {
     const a = algoOf($q('#heaVScheme').value);
+    if (!a) { invalidateVerify(); return; }
     const op = $q('#heaVOp');
     const mulOpt = op.querySelector('option[value="mul"]');
     mulOpt.disabled = a.supported_ops.indexOf('mul_ct_ct') < 0;
     mulOpt.textContent = mulOpt.disabled ? '密文乘法 A ⊗ B（' + a.name + ' 不支持）' : '密文乘法 A ⊗ B';
     if (mulOpt.disabled && op.value === 'mul') op.value = 'mul_plain';
+    invalidateVerify();
   }
   async function runVerify() {
+    if (!active || !config || verifyPending) return;
+    const request = ticket(), revision = verifyRevision;
+    verifyPending = request; verifyButton();
     const out = $q('#heaVOut');
+    UI.clear(out); out.appendChild(el('div', 'hint', '正在执行真实密码验证，请等待请求完成…'));
     const scheme = $q('#heaVScheme').value;
     const body = {
-      scheme: scheme, op: $q('#heaVOp').value, precision: Number($q('#heaVPrec').value),
+      project_id: request.projectId, scheme: scheme, op: $q('#heaVOp').value, precision: Number($q('#heaVPrec').value),
       a: splitList($q('#heaVA').value), b: splitList($q('#heaVB').value)
     };
     if (config && config.scheme === scheme) body.library = config.library;
+    Object.freeze(body.a); Object.freeze(body.b); Object.freeze(body);
     try {
       const r = await Api.post('/he/verify', body);
-      renderVerify(out, r);
-    } catch (e) { showErr(out, e); }
+      if (current(request) && revision === verifyRevision) renderVerify(out, r, body);
+    } catch (e) { if (current(request) && revision === verifyRevision && !cancelled(e)) showErr(out, e); }
+    finally { if (verifyPending === request) { verifyPending = null; if (active) verifyButton(); } }
   }
-  function renderVerify(out, r) {
+  function renderVerify(out, r, request) {
+    if (!r || typeof r !== 'object' || !Array.isArray(r.steps) || !Array.isArray(r.rows) ||
+        r.steps.concat(r.rows).some(function (item) { return !item || typeof item !== 'object' || Array.isArray(item); })) {
+      throw new Error('后端运算验证响应格式不正确：缺少有效的步骤或结果数组');
+    }
+    const missing = '—（后端未提供）';
+    const finite = function (value) { return typeof value === 'number' && Number.isFinite(value); };
+    const measured = function (value) { return finite(value) ? num(value) : missing; };
+    const text = function (value) { return typeof value === 'string' && value ? value : finite(value) ? String(value) : '—'; };
+    const scheme = r.scheme || request.scheme, library = r.library || request.library;
+    const algorithm = algoOf(scheme), lib = library ? libOf(library) : null;
+    const operation = { add: '密文加法 A ⊕ B', mul: '密文乘法 A ⊗ B', mul_plain: '明文数乘 A ⊗ b' }[request.op];
     UI.clear(out);
     const steps = el('div', 'he-steps-row');
-    r.steps.forEach(function (s, i) {
-      const st = el('div', 'he-flow-step');
-      st.appendChild(el('b', null, (i + 1) + '. ' + s.label + '　' + s.elapsed_ms + ' ms'));
-      st.appendChild(el('span', null, s.detail + (s.size_kb !== null ? '；密文 ' + s.size_kb + ' KB' : '')));
-      steps.appendChild(st);
+    r.steps.forEach(function (step, index) {
+      const box = el('div', 'he-flow-step');
+      box.appendChild(el('b', null, (index + 1) + '. ' + text(step.label || step.stage) + '　' + measured(step.elapsed_ms) + ' ms'));
+      box.appendChild(el('span', null, text(step.detail) + '；密文大小 ' + measured(step.size_kb) + ' KB'));
+      steps.appendChild(box);
     });
     out.appendChild(steps);
 
-    const lib = libOf(r.library);
-    let how = MODE_CN[r.mode];
+    let how = MODE_CN[r.mode] || '编码方式：' + missing;
     if (r.mode === 'fixed_point') {
-      how += '：A × 10^' + r.scale_exponent_a + '、B × 10^' + r.scale_exponent_b + ' 取整后加密，结果缩放 10^' + r.result_scale_exponent + '，解密后除回';
+      how += '：A 缩放指数 ' + measured(r.scale_exponent_a) + '、B 缩放指数 ' + measured(r.scale_exponent_b) +
+        '，结果缩放指数 ' + measured(r.result_scale_exponent) + '，解密后按该指数还原';
     } else if (r.mode === 'ckks_native') {
-      how += '：缩放因子 Δ = 2^' + r.ckks_scale_bits + '，结果为近似值';
+      how += '：缩放因子 Δ = ' + (finite(r.ckks_scale_bits) ? '2^' + r.ckks_scale_bits : missing) + '，结果为近似值';
     }
-    const ban = el('div', 'banner-note');
-    ban.appendChild(el('span', null, algoOf(r.scheme).name + ' · ' + (lib ? lib.name : r.library) + ' · ' + r.op_label + '。' + how +
-      '。单条密文 ' + r.ciphertext_kb_each + ' KB（' + r.ciphertext_formula + '）。最大绝对误差 ' + errStr(r.max_abs_error) + '（逐元素 |解密值 − 明文直接计算值| 的最大值）；五步合计耗时 ' + r.total_elapsed_ms + ' ms。'));
-    out.appendChild(ban);
+    const banner = el('div', 'banner-note');
+    banner.appendChild(el('span', null, (algorithm ? algorithm.name : text(scheme)) + ' · ' +
+      (lib ? lib.name : library ? text(library) : missing) + ' · ' + text(r.op_label || operation) + '。' + how +
+      '。单条密文大小 ' + measured(r.ciphertext_kb_each) + ' KB；密文大小公式 ' + (r.ciphertext_formula ? text(r.ciphertext_formula) : missing) +
+      '。最大绝对误差 ' + (finite(r.max_abs_error) ? errStr(r.max_abs_error) : missing) +
+      '（逐元素 |解密值 − 明文直接计算值| 的最大值）；后端合计耗时 ' + measured(r.total_elapsed_ms) + ' ms。'));
+    out.appendChild(banner);
 
     const fixed = r.mode === 'fixed_point';
     out.appendChild(head('hea-verify-grid', ['#', 'A', 'B', '明文直接计算', fixed ? '编码后整数（A, B → 结果）' : '编码', '解密还原值', '绝对误差']));
-    r.rows.forEach(function (x) {
+    r.rows.forEach(function (item) {
       out.appendChild(row('hea-verify-grid he-num', [
-        String(x.index), x.a, x.b, num(x.expected),
-        el('span', 'he-mono', fixed ? x.encoded_a + ', ' + x.encoded_b + ' → ' + x.encoded_result : (r.mode === 'integer' ? '原整数' : 'CKKS 槽位')),
-        el('span', 'cell-strong', num(x.decrypted)),
-        el('span', x.abs_error === 0 ? 'he-ok' : 'cell-muted', errStr(x.abs_error))
+        text(item.index), text(item.a), text(item.b), measured(item.expected),
+        el('span', 'he-mono', fixed ? text(item.encoded_a) + ', ' + text(item.encoded_b) + ' → ' + text(item.encoded_result)
+          : r.mode === 'integer' ? '原整数' : r.mode === 'ckks_native' ? 'CKKS 槽位' : '—'),
+        el('span', 'cell-strong', measured(item.decrypted)),
+        el('span', item.abs_error === 0 ? 'he-ok' : 'cell-muted', finite(item.abs_error) ? errStr(item.abs_error) : missing)
       ]));
     });
   }
@@ -353,19 +420,25 @@
   /* ---------- 数据类型转换与精度 ---------- */
 
   async function runEncode() {
+    if (!active || !config) return;
+    const request = ticket(), revision = ++encodeRevision;
     const out = $q('#heaEOut');
-    const p = Number($q('#heaEPrec').value);
+    const body = Object.freeze({ scheme: $q('#heaEScheme').value, values: Object.freeze(splitList($q('#heaEVals').value)), precision: Number($q('#heaEPrec').value) });
     try {
-      const r = await Api.post('/he/encode', { scheme: $q('#heaEScheme').value, values: splitList($q('#heaEVals').value), precision: p });
-      renderEncode(out, r);
-    } catch (e) { showErr(out, e); }
+      const r = await Api.post('/he/encode', body);
+      if (current(request) && revision === encodeRevision) renderEncode(out, r, body);
+    } catch (e) { if (current(request) && revision === encodeRevision && !cancelled(e)) showErr(out, e); }
   }
-  function renderEncode(out, r) {
+  function renderEncode(out, r, request) {
+    if (!r || !Array.isArray(r.items) || !Array.isArray(r.sweep) || r.items.concat(r.sweep).some(function (item) { return !item || typeof item !== 'object'; })) {
+      throw new Error('后端编码响应格式不正确：缺少有效的编码或精度结果数组');
+    }
     UI.clear(out);
-    const a = algoOf(r.scheme);
+    const scheme = r.scheme || request.scheme, a = algoOf(scheme);
+    const precision = request.precision;
     const ban = el('div', r.converted ? 'banner-note' : 'banner-note');
-    let text = r.note + '。';
-    if (r.plaintext_space) text += a.name + ' 明文空间 ' + r.plaintext_space.label + '。';
+    let text = (r.note || '后端编码结果') + '。';
+    if (r.plaintext_space) text += (a ? a.name : scheme) + ' 明文空间 ' + (r.plaintext_space.label || '—') + '。';
     if (r.overflow) text += '当前精度下编码整数超出明文空间，加密会被拒绝，请降低精度。';
     ban.appendChild(el('span', r.overflow ? 'he-bad' : null, text));
     out.appendChild(ban);
@@ -373,10 +446,10 @@
 
     const split = el('div', 'hea-split');
     const left = el('div', 'card');
-    left.appendChild(el('span', 'card-label', '当前精度：保留 ' + r.precision + ' 位小数，缩放因子 ' + r.scale_factor.toLocaleString('zh-CN')));
+    left.appendChild(el('span', 'card-label', '请求精度：保留 ' + precision + ' 位小数，后端缩放因子 ' + locale(r.scale_factor)));
     left.appendChild(head('hea-enc-grid', ['输入值', '缩放因子', '编码后整数', '位数', '解码还原值', '量化误差']));
     r.items.forEach(function (x) {
-      left.appendChild(row('hea-enc-grid he-num', [x.input, r.scale_factor.toLocaleString('zh-CN'), el('span', 'he-mono', x.encoded_integer),
+      left.appendChild(row('hea-enc-grid he-num', [x.input, locale(r.scale_factor), el('span', 'he-mono', x.encoded_integer == null ? '—' : String(x.encoded_integer)),
         x.encoded_bits + ' bit', el('span', 'cell-strong', x.decoded), el('span', x.abs_error === 0 ? 'he-ok' : 'cell-muted', errStr(x.abs_error))]));
     });
     left.appendChild(el('span', 'hint', '量化误差 = |解码还原值 − 输入值|，四舍五入保证不超过 0.5 × 10^-p'));
@@ -397,8 +470,8 @@
       errCell.style.gap = '4px';
       errCell.appendChild(el('span', null, errStr(s.max_abs_error)));
       errCell.appendChild(bar);
-      right.appendChild(row('hea-sweep-grid he-num' + (s.precision === r.precision ? ' he-hl' : ''), [
-        String(s.precision), s.scale_factor.toLocaleString('zh-CN'), errCell, errStr(s.error_bound), s.max_encoded_bits + ' bit',
+      right.appendChild(row('hea-sweep-grid he-num' + (s.precision === precision ? ' he-hl' : ''), [
+        String(s.precision), locale(s.scale_factor), errCell, errStr(s.error_bound), s.max_encoded_bits + ' bit',
         el('span', s.overflow ? 'he-bad' : 'he-ok', s.overflow ? '溢出，拒绝加密' : '可表示'),
         el('span', s.mul_overflow ? 'he-warn' : 'he-ok', s.mul_overflow ? '乘积溢出，仅可做加法' : '可表示')
       ]));
@@ -411,14 +484,20 @@
   /* ---------- 参数寻优 ---------- */
 
   async function runOptimize() {
+    if (!active || !config || optimizePending) return;
+    const request = ticket(), revision = optimizeRevision;
+    optimizePending = request; optimizeButton();
     const out = $q('#heaOOut');
+    UI.clear(out); out.appendChild(el('div', 'hint', '正在请求当前参数的寻优结果…'));
+    const body = Object.freeze({
+      security_bits: Number($q('#heaOSec').value), mult_depth: Number($q('#heaODepth').value),
+      precision_digits: Number($q('#heaODigits').value), batch_size: Number($q('#heaOBatch').value)
+    });
     try {
-      const r = await Api.post('/he/param-optimize', {
-        security_bits: Number($q('#heaOSec').value), mult_depth: Number($q('#heaODepth').value),
-        precision_digits: Number($q('#heaODigits').value), batch_size: Number($q('#heaOBatch').value)
-      });
-      renderOptimize(out, r);
-    } catch (e) { showErr(out, e); }
+      const r = await Api.post('/he/param-optimize', body);
+      if (current(request) && revision === optimizeRevision) renderOptimize(out, r, body);
+    } catch (e) { if (current(request) && revision === optimizeRevision && !cancelled(e)) showErr(out, e); }
+    finally { if (optimizePending === request) { optimizePending = null; if (active) optimizeButton(); } }
   }
   function metric(name, value, sub) {
     const m = el('div', 'metric');
@@ -427,26 +506,33 @@
     m.appendChild(el('span', 'metric-sub', sub));
     return m;
   }
-  function renderOptimize(out, r) {
+  function renderOptimize(out, r, request) {
+    if (!r || !r.recommended || typeof r.recommended !== 'object' || !Array.isArray(r.recommended.coeff_modulus_bits) ||
+        !Array.isArray(r.candidates) || !Array.isArray(r.rules) || !Array.isArray(r.security_table) ||
+        r.candidates.some(function (candidate) { return !candidate || !Array.isArray(candidate.coeff_modulus_bits) || !Array.isArray(candidate.reasons); }) ||
+        r.security_table.some(function (item) { return !item || typeof item !== 'object'; })) {
+      throw new Error('后端参数寻优响应格式不正确：缺少有效的推荐或候选结果');
+    }
+    const input = request;
     UI.clear(out);
     const b = r.recommended;
     const g = el('div', 'hea-metric5');
-    g.appendChild(metric('多项式阶数 N', b.poly_modulus_degree.toLocaleString('zh-CN'), '槽位 ' + b.slots.toLocaleString('zh-CN') + ' 个（N / 2），满足批大小 ' + r.input.batch_size));
-    g.appendChild(metric('模数链（bit）', '[' + b.coeff_modulus_bits.join(', ') + ']', '总模数 ' + b.total_modulus_bits + ' bit，' + r.input.security_bits + ' 位安全上限 ' + b.max_modulus_bits + ' bit'));
-    g.appendChild(metric('缩放因子 Δ', '2^' + b.scale_bits, '整数部分可用 ' + b.integer_bits + ' bit，小数精度 ' + r.input.precision_digits + ' 位'));
+    g.appendChild(metric('多项式阶数 N', locale(b.poly_modulus_degree), '槽位 ' + locale(b.slots) + ' 个（N / 2），满足批大小 ' + input.batch_size));
+    g.appendChild(metric('模数链（bit）', '[' + b.coeff_modulus_bits.join(', ') + ']', '总模数 ' + b.total_modulus_bits + ' bit，' + input.security_bits + ' 位安全上限 ' + b.max_modulus_bits + ' bit'));
+    g.appendChild(metric('缩放因子 Δ', '2^' + b.scale_bits, '整数部分可用 ' + b.integer_bits + ' bit，小数精度 ' + input.precision_digits + ' 位'));
     g.appendChild(metric('单次运算耗时（估算）', b.est_add_ms + ' / ' + b.est_mul_ms + ' ms', '密文加法 / 密文乘法（含重线性化、重缩放）'));
-    g.appendChild(metric('单条密文大小', b.ciphertext_kb + ' KB', '2 × N × L × 8 字节，L = ' + (b.coeff_modulus_bits.length - 1) + ' 个素数（不含特殊素数），1 KB = 1024 字节；与运算验证同一公式'));
+    g.appendChild(metric('单条密文大小（估算）', b.ciphertext_kb + ' KB', '2 × N × L × 8 字节，L = ' + (b.coeff_modulus_bits.length - 1) + ' 个素数（不含特殊素数），1 KB = 1024 字节；参数模型估算，不代表真实序列化字节，实际大小以验证步骤的后端测量为准'));
     out.appendChild(g);
 
     out.appendChild(el('span', 'card-label', '候选方案对比'));
-    out.appendChild(head('hea-cand-grid', ['N', '模数链（bit）', '总模数 / 上限', '余量', '槽位', '加法（ms）', '乘法（ms）', '密文（KB）', '结论']));
+    out.appendChild(head('hea-cand-grid', ['N', '模数链（bit）', '总模数 / 上限', '余量', '槽位', '加法估算（ms）', '乘法估算（ms）', '密文估算（KB）', '结论']));
     r.candidates.forEach(function (c) {
-      const verdict = c.recommended ? el('span', 'he-ok', '推荐：满足约束的最小 N，性能最优')
-        : (c.feasible ? el('span', 'cell-muted', '可行：安全余量更大，耗时与密文约增加 1 倍以上') : el('span', 'he-bad', '不可行：' + c.reasons.join('；')));
+      const verdict = c.recommended ? el('span', 'he-ok', '推荐：满足约束的最小 N（参数模型）')
+        : (c.feasible ? el('span', 'cell-muted', '可行：满足当前约束，估算值供比较') : el('span', 'he-bad', '不可行：' + c.reasons.join('；')));
       out.appendChild(row('hea-cand-grid he-num' + (c.recommended ? ' he-hl' : ''), [
-        el('span', 'cell-strong', c.poly_modulus_degree.toLocaleString('zh-CN')), '[' + c.coeff_modulus_bits.join(', ') + ']',
+        el('span', 'cell-strong', locale(c.poly_modulus_degree)), '[' + c.coeff_modulus_bits.join(', ') + ']',
         c.total_modulus_bits + ' / ' + c.max_modulus_bits + ' bit', el('span', c.margin_bits < 0 ? 'he-bad' : null, c.margin_bits + ' bit'),
-        c.slots.toLocaleString('zh-CN'), String(c.est_add_ms), String(c.est_mul_ms), String(c.ciphertext_kb), verdict
+        locale(c.slots), String(c.est_add_ms), String(c.est_mul_ms), String(c.ciphertext_kb), verdict
       ]));
     });
 
@@ -455,7 +541,7 @@
     basis.appendChild(el('b', null, '寻优依据'));
     const ul = el('ul', 'he-rules');
     r.rules.forEach(function (t) { ul.appendChild(el('li', null, t)); });
-    ul.appendChild(el('li', null, 'HomomorphicEncryption.org 安全标准（三元秘密、经典攻击）' + r.input.security_bits + ' 位安全下总模数上限：' +
+    ul.appendChild(el('li', null, 'HomomorphicEncryption.org 安全标准（三元秘密、经典攻击）' + input.security_bits + ' 位安全下总模数上限：' +
       r.security_table.map(function (x) { return 'N = ' + x.poly_modulus_degree + ' → ' + x.max_modulus_bits + ' bit'; }).join('，')));
     basis.appendChild(ul);
     out.appendChild(basis);
@@ -464,15 +550,19 @@
   /* ---------- 生命周期 ---------- */
 
   async function load() {
+    const request = ticket();
     try {
       if (!algos.length) {
         const res = await Promise.all([Api.get('/he/algorithms'), Api.get('/he/libraries')]);
+        if (!current(request)) return;
         algos = res[0].items; libs = res[1];
-        fillSchemeSelect('heaVScheme', 'ckks');
-        fillSchemeSelect('heaEScheme', 'bgv');
-        renderCatalog();
       }
-      config = await Api.get('/projects/' + ctx.projectId + '/he/config');
+      const saved = await Api.get('/projects/' + request.projectId + '/he/config');
+      if (!current(request)) return;
+      config = saved;
+      fillSchemeSelect('heaVScheme', config.scheme);
+      fillSchemeSelect('heaEScheme', 'bgv');
+      renderCatalog();
       fillSchemeSelect('heaCfgScheme', config.scheme);
       fillLibSelect(config.library);
       $q('#heaCfgPrec').value = config.precision;
@@ -483,18 +573,22 @@
       syncOps();
       renderCfgNote();
       renderMatrix();
-      await Promise.all([runVerify(), runEncode(), runOptimize()]);
-    } catch (e) { UI.fail(e); }
+      invalidateOptimize();
+      await runEncode();
+    } catch (e) { if (current(request) && !cancelled(e)) UI.fail(e); }
   }
 
   function mount(c, sectionEl) {
-    ctx = c;
+    ctx = c; active = true; generation += 1; verifyRevision += 1; optimizeRevision += 1;
+    config = null;
     if (root !== sectionEl) { root = sectionEl; built = false; }
     if (!built) build();
-    load();
+    verifyButton(); optimizeButton();
+    invalidateVerify(); invalidateOptimize();
+    return load();
   }
 
-  function unmount() { /* 无定时器、无长连接 */ }
+  function unmount() { active = false; generation += 1; verifyRevision += 1; optimizeRevision += 1; encodeRevision += 1; }
 
   window.HEA = { mount: mount, unmount: unmount };
 })();

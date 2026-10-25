@@ -19,6 +19,7 @@
   let datasets = [];
   let tab = 'param';
   let seq = 0;
+  let ready = false;
   const panes = {};
   const tabBtns = {};
 
@@ -28,6 +29,10 @@
   function noId(n, id) { if (!id) n.removeAttribute('id'); return n; }
   function sel(id, opts, value) { return noId(UI.selectOf(id, opts, value), id); }
   function inp(id, value, type) { return noId(UI.inputOf(id, value, type), id); }
+
+  function queryLabel(r) { return r.label || r.column || '字段未提供'; }
+  function queryUnit(r) { return typeof r.unit === 'string' && r.unit.trim() ? ' ' + r.unit : ''; }
+  function queryNumber(value) { return typeof value === 'number' && Number.isFinite(value) ? D.money(value) : '—'; }
 
   function jobOf(id) { return jobs.filter(function (j) { return j.job_id === id; })[0]; }
   function isRunning(j) { return j && (j.status === 'Running' || j.status === 'Paused'); }
@@ -50,7 +55,7 @@
   }
   function floatCols(dsId) {
     const ds = datasets.filter(function (d) { return d.dataset_id === dsId; })[0];
-    return ds ? ds.columns.filter(function (c) { return c.type === 'float'; }) : [];
+    return ds ? ds.columns.filter(function (c) { return c.type === 'float' || c.type === 'int'; }) : [];
   }
   function columnSelect(id, dsId, value) {
     const cols = floatCols(dsId);
@@ -125,7 +130,13 @@
     ['param', 'adapt', 'policy'].forEach(function (k) { sec.appendChild(panes[k]); });
   }
 
+  function setReady(value) {
+    ready = value;
+    Object.keys(tabBtns).forEach(function (k) { tabBtns[k].disabled = !ready; });
+  }
+
   function showTab(t) {
+    if (!ready) return;
     tab = t;
     Object.keys(panes).forEach(function (k) {
       panes[k].hidden = k !== t;
@@ -136,6 +147,7 @@
   }
 
   function render() {
+    if (!ready) return;
     const my = seq;
     const fn = { param: renderParam, adapt: renderAdapt, policy: renderPolicy }[tab];
     Promise.resolve(fn(my)).catch(UI.fail);
@@ -290,10 +302,15 @@
       };
     }
     const preview = UI.debounce(async function () {
+      if (my !== seq) return;
       const b = form();
       if (!(b.epsilon_total > 0 && b.clip_norm > 0)) { t1.textContent = '请输入有效的 ε 与 C'; return; }
       try {
-        const r = await Api.post('/dp/estimate', Object.assign({ total_rounds: cfg.total_rounds, baseline_job_id: jobId }, b));
+        const r = await Api.post('/dp/estimate', {
+          total_rounds: cfg.total_rounds, baseline_job_id: jobId,
+          mechanism: b.mechanism, epsilon_total: b.epsilon_total, clip_norm: b.clip_norm,
+          delta: b.delta, accountant: b.accountant, clip_mode: b.clip_mode
+        });
         if (my !== seq) return;
         const g = b.mechanism === 'gaussian';
         t1.textContent = '每轮噪声 ' + (g ? 'σ' : 'b') + ' = ' + r.noise_scale.toFixed(3) + '（噪声倍数 z = ' + (g ? 'σ' : 'b') + ' / C = ' + r.noise_multiplier.toFixed(3) +
@@ -307,12 +324,16 @@
     preview();
 
     async function save() {
+      if (my !== seq) return;
       err.hidden = true;
       try {
-        cfg = await Api.put('/fl/jobs/' + jobId + '/dp', form());
+        const saved = await Api.put('/fl/jobs/' + job.job_id + '/dp', form());
+        if (my !== seq) return;
+        cfg = saved;
         UI.toast('已写入任务「' + job.name + '」的 DP 配置');
         render();
       } catch (e) {
+        if (my !== seq) return;
         err.textContent = (e.code === 40901 ? '保存被拒绝：' : '保存失败：') + e.message + (e.code ? '（错误码 ' + e.code + '）' : '');
         err.hidden = false;
         UI.fail(e);
@@ -366,7 +387,7 @@
     actions.appendChild(D.btn('btn', '执行一次加噪查询', async function () {
       try {
         const r = await Api.post('/projects/' + ctx.projectId + '/dp/query', form());
-        UI.toast(r.label + '：加噪结果 ' + D.money(r.noisy_value) + ' ' + r.unit);
+        UI.toast(queryLabel(r) + '：加噪结果 ' + queryNumber(r.noisy_value) + queryUnit(r));
         await loadReleases();
       } catch (e) { UI.fail(e); }
     }));
@@ -383,10 +404,10 @@
       if (!r.items.length) { list.appendChild(el('div', 'table-empty', '尚未发布，点击「执行一次加噪查询」')); return; }
       r.items.slice(0, 8).forEach(function (x) {
         list.appendChild(grid('dpm-rel-grid', [
-          UI.datetime(x.released_at), x.label + ' · ' + (x.query === 'mean' ? '全量均值' : '月度均价'),
+          UI.datetime(x.released_at || x.created_at), queryLabel(x) + ' · ' + (x.query === 'mean' ? '全量均值' : '月度均价'),
           D.MECH_CN[x.mechanism] + ' · ε = ' + x.epsilon_spent.toFixed(3) + (x.policy_id ? '（策略 ' + x.policy_id + '）' : ''),
-          D.money(x.clip_lower) + ' – ' + D.money(x.clip_upper) + ' ' + x.unit,
-          D.money(x.noisy_value) + ' ' + x.unit, '± ' + D.money(x.expected_rmse) + ' ' + x.unit
+          queryNumber(x.clip_lower) + ' – ' + queryNumber(x.clip_upper) + queryUnit(x),
+          queryNumber(x.noisy_value) + queryUnit(x), '± ' + queryNumber(x.expected_rmse) + queryUnit(x)
         ]));
       });
     }
@@ -450,7 +471,7 @@
 
   function drawField(out, r) {
     UI.clear(out);
-    const u = ' ' + r.unit;
+    const u = queryUnit(r);
     const s = r.stats;
     const mg = el('div', 'metric-grid');
     mg.appendChild(metric('中位数', D.money(s.median) + u, '对数正态拟合，对数标准差 s = ' + s.log_sd));
@@ -473,7 +494,7 @@
     pts.forEach(function (p) { p.y = p.y / peak; });
     const wrap = el('div', 'dp-chart-wrap');
     wrap.appendChild(D.legend([
-      { color: C.primary, label: r.label + ' 分布（归一化密度）' },
+      { color: C.primary, label: queryLabel(r) + ' 分布（归一化密度）' },
       { color: C.teal, label: '自适应裁剪区间 P' + (r.adaptive.q_low * 100) + ' – P' + (r.adaptive.q_high * 100) },
       { color: C.amber, label: '固定裁剪上界（公开范围 ' + D.money(s.public_upper) + u + (s.public_upper > xmax ? '，在图右侧之外' : '') + '）' }
     ]));
@@ -486,7 +507,7 @@
       w: 820, h: 180, xmin: 0, xmax: xmax, ymin: 0, ymax: 1.05,
       xTicks: D.niceTicks(0, xmax, 5), yTicks: [0, 0.5, 1],
       xFmt: function (v) { return D.money(v); }, yFmt: function (v) { return v.toFixed(1); },
-      xLabel: r.unit, aria: '字段取值分布与裁剪区间', series: [{ color: C.primary, points: pts }], markers: markers
+      xLabel: typeof r.unit === 'string' ? r.unit : '', aria: '字段取值分布与裁剪区间', series: [{ color: C.primary, points: pts }], markers: markers
     }));
     out.appendChild(wrap);
 
@@ -674,7 +695,7 @@
     const card = el('div', 'card card-lg');
     card.setAttribute('data-acc', 'DP-MECH-04');
     card.appendChild(D.cardHead('新建 DP 策略', '把总预算按权重分到多个分析维度（训练任务 / 字段查询），按所选会计方式反解每步噪声'));
-    const name = inp('dpmPName', '稀土价格多维分析 · ' + new Date(Date.now() + 8 * 3600000).toISOString().slice(5, 10))   // 日期按 UTC+8;
+    const name = inp('dpmPName', '多维 DP 分析 · ' + new Date(Date.now() + 8 * 3600000).toISOString().slice(5, 10))   // 日期按 UTC+8;
     const tot = D.numInput('dpmPEps', 4, 0.2, 50, 0.1);
     const delta = deltaSelect('dpmPDelta', '1e-5');
     let mech = 'gaussian';
@@ -695,9 +716,11 @@
     card.appendChild(el('span', 'section-label', '分析维度'));
     card.appendChild(grid('dpm-dim-grid', ['名称', '类型', '绑定对象', '权重', '步数', '裁剪阈值 C', '分到的 ε', ''], true));
     card.appendChild(dimsWrap);
-    const dsId = 'ds_' + ctx.projectId + '_ree_price';
+    const queryDataset = datasets.filter(function (d) { return floatCols(d.dataset_id).length; })[0];
+    const queryColumn = queryDataset && floatCols(queryDataset.dataset_id)[0];
     const rows = [];
-    const startJob = jobs.filter(function (j) { return !isRunning(j); })[0] || jobOf(jobId);
+    let generate = null;
+    const startJob = jobs.filter(function (j) { return ['Created', 'Failed', 'Terminated'].indexOf(j.status) >= 0; })[0];
     function addRow(d) {
       const r = { kind: d.kind };
       const line = el('div', 'table-row dpm-dim-grid');
@@ -728,10 +751,10 @@
           r.clip.disabled = false;
           syncSteps();
         } else {
-          r.ds = datasetSelect(null, d.dataset_id || dsId);
+          r.ds = datasetSelect(null, d.dataset_id || (queryDataset && queryDataset.dataset_id));
           r.ds.className = 'select select-sm';
           r.ds.setAttribute('aria-label', '数据集');
-          r.col = columnSelect(null, r.ds.value, d.column || 'nd2o3_price');
+          r.col = columnSelect(null, r.ds.value, d.column);
           r.col.className = 'select select-sm';
           r.col.setAttribute('aria-label', '字段');
           linkColumns(r.ds, r.col);
@@ -753,6 +776,7 @@
       shares();
     }
     function shares() {
+      if (generate) generate.disabled = rows.length === 0;
       const W = rows.reduce(function (s, r) { return s + (Number(r.weight.value) || 0); }, 0) || 1;
       rows.forEach(function (r) {
         const sh = (Number(r.weight.value) || 0) / W;
@@ -760,16 +784,22 @@
       });
     }
     tot.addEventListener('input', shares);
-    addRow({ label: '联合训练', kind: 'training', weight: 3, clip: cfg ? cfg.clip_norm : 1 });
-    addRow({ label: 'Nd₂O₃ 全量均价', kind: 'query', weight: 1, steps: 12, dataset_id: dsId, column: 'nd2o3_price', query: 'mean' });
-    addRow({ label: 'CeO₂ 月度均价', kind: 'query', weight: 1, steps: 12, dataset_id: dsId, column: 'ceo2_price', query: 'group_mean' });
+    if (startJob) addRow({ label: startJob.name || startJob.job_id, kind: 'training', job_id: startJob.job_id, weight: 3, clip: cfg ? cfg.clip_norm : 1 });
+    if (queryColumn) addRow({ label: queryColumn.name + ' 全量均值', kind: 'query', weight: 1, steps: 12, dataset_id: queryDataset.dataset_id, column: queryColumn.name, query: 'mean' });
+    if (!rows.length) card.appendChild(el('div', 'table-empty', '当前没有可配置的训练任务或包含数值字段的就绪数据集。'));
 
     const err = el('div', 'banner banner-err');
     err.hidden = true;
     const act = el('div', 'dp-actions');
-    act.appendChild(D.btn('btn-sm', '添加维度', function () { addRow({ label: '维度 ' + (rows.length + 1), kind: 'query', weight: 1, steps: 10 }); }));
+    const add = D.btn('btn-sm', '添加维度', function () {
+      if (queryColumn) addRow({ label: queryColumn.name + ' 全量均值', kind: 'query', weight: 1, steps: 10, dataset_id: queryDataset.dataset_id, column: queryColumn.name });
+      else if (startJob) addRow({ label: startJob.name || startJob.job_id, kind: 'training', job_id: startJob.job_id, weight: 1, clip: cfg ? cfg.clip_norm : 1 });
+    });
+    add.disabled = !queryColumn && !startJob;
+    act.appendChild(add);
     act.appendChild(el('span', 'spacer'));
-    act.appendChild(D.btn('btn-primary', '生成策略', async function () {
+    generate = D.btn('btn-primary', '生成策略', async function () {
+      if (my !== seq || !rows.length) return;
       err.hidden = true;
       try {
         const body = {
@@ -782,7 +812,8 @@
           })
         };
         const pol = await Api.post('/projects/' + ctx.projectId + '/dp/policies', body);
-        UI.toast('已生成策略「' + pol.name + '」，可在下方下发到训练任务');
+        if (my !== seq) return;
+        UI.toast('已生成策略「' + pol.name + '」，可在下方查看绑定维度');
         name.value = name.value.replace(/( · \d+)?$/, ' · ' + Math.floor(Math.random() * 90 + 10));
         const listCard = panes.policy.querySelector('.dpm-policy-list');
         if (listCard) await loadPolicies(listCard.parentNode, my);
@@ -790,7 +821,9 @@
         err.textContent = e.message + (e.code ? '（错误码 ' + e.code + '）' : '');
         err.hidden = false;
       }
-    }));
+    });
+    generate.disabled = rows.length === 0;
+    act.appendChild(generate);
     card.appendChild(act);
     card.appendChild(err);
     return card;
@@ -805,44 +838,53 @@
     card.appendChild(list);
     if (!res.items.length) { list.appendChild(el('div', 'table-empty', '尚未生成策略')); return; }
     res.items.forEach(function (pol) {
+      const applied = Array.isArray(pol.applied) ? pol.applied : null;
+      const hasTraining = pol.dimensions.some(function (d) { return d.kind === 'training'; });
       const box = el('div', 'dpm-policy');
       const h = el('div', 'dp-card-head');
       h.appendChild(el('span', 'cell-strong', pol.name));
       h.appendChild(el('span', 'tag', pol.policy_id));
       h.appendChild(el('span', 'tag tag-cls', D.MECH_CN[pol.mechanism] + ' · ' + D.ACC_CN[pol.accountant]));
       h.appendChild(el('span', 'hint', '总预算 ε = ' + pol.epsilon_total.toFixed(2) + '（各维度相加），累计 δ = ' + D.fmtDelta(pol.delta_total) +
-        (pol.applied_at ? '；' + UI.datetime(pol.applied_at) + ' 已下发 ' + pol.applied.length + ' 个任务' : '；未下发')));
+        (applied ? (pol.applied_at ? '；' + UI.datetime(pol.applied_at) : '') + '；已下发 ' + applied.length + ' 个任务' : (hasTraining ? '；下发状态未提供' : '；不含训练维度'))));
       h.appendChild(el('span', 'spacer'));
-      h.appendChild(D.btn('btn-primary', '下发到训练任务', async function () {
+      const apply = D.btn('btn-primary', '下发到训练任务', async function () {
+        if (my !== seq || !hasTraining) return;
         try {
           const r = await Api.post('/dp/policies/' + pol.policy_id + '/apply', {});
           UI.toast('已下发：' + r.applied.map(function (a) { return a.job_name + '（ε = ' + a.epsilon_total.toFixed(3) + '）'; }).join('、'));
           await refreshCfg();
           await loadPolicies(card, seq);
         } catch (e) { UI.fail(e); }
-      }));
+      });
+      apply.disabled = !hasTraining;
+      h.appendChild(apply);
       box.appendChild(h);
       box.appendChild(grid('dpm-pol-grid', ['维度', '绑定对象', '权重占比', '分到的 ε', '步数', '每步噪声倍数 z（基础 / 高级 / RDP）', '状态'], true));
       pol.dimensions.forEach(function (d) {
-        const nb = d.noise_by_accountant;
+        const nb = d.noise_by_accountant || {};
+        function multiplier(value) {
+          const n = typeof value === 'number' ? value : value && value.noise_multiplier;
+          return typeof n === 'number' && Number.isFinite(n) ? n.toFixed(2) : '—';
+        }
         let state;
         if (d.kind === 'training') {
-          const done = pol.applied.some(function (a) { return a.dimension_key === d.key; });
-          state = el('span', done ? 'st-ready' : 'cell-muted', done ? '已下发' : '待下发');
+          const done = applied && applied.some(function (a) { return a.dimension_key === d.key; });
+          state = el('span', done ? 'st-ready' : 'cell-muted', applied ? (done ? '已下发' : '待下发') : '下发状态未提供');
         } else {
           state = D.btn('btn-sm', '发布一次（' + d.steps_used + ' / ' + d.steps + '）', async function () {
             try {
               const r = await Api.post('/projects/' + ctx.projectId + '/dp/query', { policy_id: pol.policy_id, dimension_key: d.key });
-              UI.toast(d.label + '：加噪结果 ' + D.money(r.noisy_value) + ' ' + r.unit + '（单次 ε = ' + r.epsilon_spent.toFixed(4) + '，剩余 ' + (r.steps - r.steps_used) + ' 次）');
+              UI.toast((d.label || queryLabel(r)) + '：加噪结果 ' + queryNumber(r.noisy_value) + queryUnit(r) + '（单次 ε = ' + r.epsilon_spent.toFixed(4) + '；剩余次数以刷新后的策略记录为准）');
               await loadPolicies(card, seq);
             } catch (e) { UI.fail(e); }
           });
         }
         box.appendChild(grid('dpm-pol-grid', [
           el('span', 'cell-strong', d.label),
-          d.kind === 'training' ? '训练 · ' + d.job_name + '，C = ' + d.sensitivity : '查询 · ' + d.column + '（' + (d.query === 'mean' ? '全量均值' : '月度均价') + '）',
+          d.kind === 'training' ? '训练 · ' + (d.job_name || (jobOf(d.job_id) && jobOf(d.job_id).name) || d.job_id) + '，C = ' + d.sensitivity : '查询 · ' + d.column + '（' + (d.query === 'mean' ? '全量均值' : '月度均价') + '）',
           d.share_pct.toFixed(1) + '%', d.epsilon.toFixed(3), d.steps + (d.kind === 'training' ? ' 轮' : ' 次'),
-          nb.basic.noise_multiplier.toFixed(2) + ' / ' + nb.advanced.noise_multiplier.toFixed(2) + ' / ' + nb.rdp.noise_multiplier.toFixed(2),
+          multiplier(nb.basic) + ' / ' + multiplier(nb.advanced) + ' / ' + multiplier(nb.rdp),
           state
         ]));
       });
@@ -851,8 +893,12 @@
   }
 
   async function refreshCfg() {
-    jobs = await D.listJobs(ctx.projectId);
-    if (jobId) cfg = await Api.get('/fl/jobs/' + jobId + '/dp');
+    const my = seq, id = jobId;
+    const freshJobs = await D.listJobs(ctx.projectId);
+    if (my !== seq || id !== jobId) return;
+    const freshCfg = id ? await Api.get('/fl/jobs/' + id + '/dp') : null;
+    if (my !== seq || id !== jobId) return;
+    jobs = freshJobs; cfg = freshCfg;
   }
 
   /* ================= 生命周期 ================= */
@@ -862,17 +908,26 @@
     UI.clear(slot);
     if (!jobs.length) return;
     const f = D.jobField('dpmJobSel', jobs, jobId, async function (v) {
-      jobId = v;
+      const my = ++seq;
+      jobId = v; cfg = null; setReady(false);
       D.setJob(ctx.projectId, v);
-      try { cfg = await Api.get('/fl/jobs/' + v + '/dp'); render(); } catch (e) { UI.fail(e); }
+      Object.keys(panes).forEach(function (k) { UI.clear(panes[k]); panes[k].appendChild(el('div', 'table-empty', '正在加载任务配置…')); });
+      try {
+        const loaded = await Api.get('/fl/jobs/' + v + '/dp');
+        if (my !== seq || v !== jobId) return;
+        cfg = loaded; setReady(true); render();
+      } catch (e) { if (my === seq && v === jobId) UI.fail(e); }
     });
     slot.appendChild(f.wrap);
   }
 
   async function mount(c, sec) {
-    ctx = c;
+    ctx = { projectId: c.projectId };
     const my = ++seq;
     if (!root || root !== sec || !sec.childElementCount) skeleton(sec);
+    setReady(false); jobId = null; cfg = null; jobs = [];
+    UI.clear(UI.$('dpmJobSlot'));
+    Object.keys(panes).forEach(function (k) { UI.clear(panes[k]); panes[k].appendChild(el('div', 'table-empty', '正在加载任务与数据集配置…')); });
     try {
       const res = await Promise.all([
         D.listJobs(ctx.projectId),
@@ -882,14 +937,15 @@
       if (my !== seq) return;
       jobs = res[0]; mechs = res[1].items; datasets = res[2].items;
       jobId = D.pickJob(ctx.projectId, jobs);
-      cfg = jobId ? await Api.get('/fl/jobs/' + jobId + '/dp') : null;
+      const loaded = jobId ? await Api.get('/fl/jobs/' + jobId + '/dp') : null;
       if (my !== seq) return;
+      cfg = loaded; setReady(true);
       renderJobSlot();
       showTab(tab);
     } catch (e) { UI.fail(e); }
   }
 
-  function unmount() { seq++; }
+  function unmount() { seq++; setReady(false); }
 
   window.DPM = { mount: mount, unmount: unmount };
 })();

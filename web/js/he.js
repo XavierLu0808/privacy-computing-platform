@@ -7,7 +7,7 @@
   const GUIDE = [
     ['① 生成密钥对', '选择加密算法后生成公私钥，私钥由平台密钥服务托管，页面只拿到 key_id 与公钥摘要'],
     ['② 加密', '用公钥加密明文 A、B；Paillier 先按保留小数位定点化为整数'],
-    ['③ 密态运算', '在密文上直接计算所选运算，服务端全程不接触明文'],
+    ['③ 密态运算', '在密文上直接计算所选运算，密态运算阶段不解密输入'],
     ['④ 解密', '用私钥解密结果并与明文直接计算的结果比对'],
     ['全流程', '可修改明文、运算或精度后重新执行，或点「重置」销毁本次密钥']
   ];
@@ -20,7 +20,17 @@
   let logs = [];
   let totalMs = 0;
   let booted = false;
-  let projectId = null;
+  let projectId = null, active = false, generation = 0, flowRevision = 0, flowRequest = 0, keyRequest = 0, logRequest = 0, jobsRequest = 0;
+  function ticket() { return { generation: generation, projectId: projectId }; }
+  function current(t) { return active && t.generation === generation && t.projectId === projectId; }
+  function flowTicket() { return Object.assign(ticket(), { revision: flowRevision, request: ++flowRequest, scheme: $('heAlgo').value }); }
+  function modalContext(body) {
+    const request = ticket();
+    return { request: request, valid: function () { return current(request) && body.isConnected; }, check: function () {
+      if (!current(request) || !body.isConnected) throw new Error('项目上下文已变更，请重新打开密钥操作');
+    } };
+  }
+  function flowCurrent(t) { return current(t) && t.revision === flowRevision && t.request === flowRequest; }
 
   function scheme() {
     return schemes.filter(function (s) { return s.scheme === $('heAlgo').value; })[0] || schemes[0];
@@ -33,7 +43,7 @@
     $('heAlgo').addEventListener('change', function () { resetFlow(); renderConfig(); });
     $('heA').addEventListener('input', resetFlow);
     $('heB').addEventListener('input', resetFlow);
-    $('heOp').addEventListener('change', function () { if (stage > 2) { stage = 2; renderSteps(); } });
+    $('heOp').addEventListener('change', function () { flowRevision++; if (stage > 2) { stage = 2; renderSteps(); } });
     $('hePrec').addEventListener('input', function () {
       $('hePrecVal').textContent = $('hePrec').value;
       resetFlow();
@@ -47,25 +57,30 @@
   }
 
   function resetFlow() {
-    stage = 0; logs = []; totalMs = 0;
+    flowRevision++; stage = 0; logs = []; totalMs = 0;
     cipherA = cipherB = resultCt = null;
     renderSteps(); renderLogs();
   }
 
   async function destroyKey() {
     if (!key) return;
-    const id = key.key_id;
+    const id = key.key_id, request = ticket();
     key = null;
     try { await Api.del('/he/keys/' + id); } catch (e) { /* 重置时忽略 */ }
-    if (appBuilt) loadKeys();
+    if (appBuilt && current(request)) loadKeys();
   }
 
   /* ---------- 四步 ---------- */
 
   async function doKeygen() {
+    if (!active) return;
+    resetFlow(); const request = flowTicket();
     try {
       await destroyKey();
-      key = await Api.post('/he/keys', { scheme: $('heAlgo').value, project_id: ctx.projectId });
+      if (!flowCurrent(request)) return;
+      const next = await Api.post('/he/keys', { scheme: request.scheme, project_id: request.projectId });
+      if (!flowCurrent(request)) return;
+      key = next;
       const params = key.key_params.key_size_bits
         ? '密钥长度 ' + key.key_params.key_size_bits + ' bit'
         : 'poly_modulus_degree ' + key.key_params.poly_modulus_degree;
@@ -74,16 +89,19 @@
       stage = 1;
       renderSteps(); renderLogs();
       if (appBuilt) loadKeys();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (flowCurrent(request)) UI.fail(e); }
   }
 
   async function doEncrypt() {
+    if (!active || !key) return;
+    const request = flowTicket();
     try {
       const res = await Api.post('/he/encrypt', {
         key_id: key.key_id,
         precision: Number($('hePrec').value),
         values: [{ name: 'A', value: $('heA').value }, { name: 'B', value: $('heB').value }]
       });
+      if (!flowCurrent(request)) return;
       cipherA = res.ciphertexts[0];
       cipherB = res.ciphertexts[1];
       let body = 'Enc(A) = ' + cipherA.preview + '…\nEnc(B) = ' + cipherB.preview + '…';
@@ -95,10 +113,12 @@
         body, res.elapsed_ms);
       stage = 2;
       renderSteps(); renderLogs();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (flowCurrent(request)) UI.fail(e); }
   }
 
   async function doEvaluate() {
+    if (!active || !key) return;
+    const request = flowTicket();
     const op = $('heOp').value;
     const body = { key_id: key.key_id, op: op, left_ciphertext_id: cipherA.ciphertext_id };
     if (op === 'mul' && isPaillier()) {
@@ -108,21 +128,25 @@
     }
     try {
       const res = await Api.post('/he/evaluate', body);
+      if (!flowCurrent(request)) return;
       resultCt = res.result_ciphertext_id;
-      const noise = res.noise_budget_remaining === null ? '' : ' · 剩余噪声预算 ' + res.noise_budget_remaining + ' bit';
+      const noise = res.noise_budget_remaining == null ? '' : ' · 剩余噪声预算 ' + res.noise_budget_remaining + ' bit';
       pushLog('③ 密态运算',
         '耗时 ' + res.elapsed_ms.toFixed(1) + ' ms · 结果密文 ' + res.size_kb + ' KB' + noise,
-        res.expression + ' = ' + res.preview + '…　全程未解密，服务端不接触明文', res.elapsed_ms);
+        res.expression + ' = ' + res.preview + '…　密态运算阶段不解密输入', res.elapsed_ms);
       stage = 3;
       renderSteps(); renderLogs();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (flowCurrent(request)) UI.fail(e); }
   }
 
   async function doDecrypt() {
+    if (!active || !key) return;
+    const request = flowTicket();
     try {
       const res = await Api.post('/he/decrypt', {
         key_id: key.key_id, ciphertext_id: resultCt, verify: true
       });
+      if (!flowCurrent(request)) return;
       pushLog('④ 解密', '耗时 ' + res.elapsed_ms.toFixed(1) + ' ms',
         'Dec(结果) = ' + res.plaintext, res.elapsed_ms, true);
       stage = 4;
@@ -130,15 +154,16 @@
       renderSteps(); renderLogs();
 
       if (res.verification) {
-        $('heVerify').hidden = false;
+        const matched = res.verification.matched;
+        $('heVerify').hidden = false; $('heVerify').className = 'banner ' + (matched === true ? 'banner-ok' : 'banner-err');
         $('heVerifyText').textContent =
           '密文运算结果 ' + res.plaintext + ' 与明文直接计算结果 ' + res.verification.expected +
-          ' 一致（绝对误差 ' + res.verification.abs_error + '）；累计密文体积 ' +
+          (matched === true ? ' 一致' : matched === false ? ' 不一致' : ' 未提供匹配判定') + '（绝对误差 ' + res.verification.abs_error + '）；累计密文体积 ' +
           res.session_summary.total_ciphertext_kb + ' KB，' +
           (res.session_summary.logged ? '已记入下方「加解密性能日志」（来源：全流程配置）。' : '未记入日志。');
         if (appBuilt) loadLogs();
       }
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (flowCurrent(request)) UI.fail(e); }
   }
 
   function pushLog(title, meta, body, ms, final) {
@@ -388,9 +413,12 @@
   }
 
   async function loadApp() {
+    const request = ticket();
     try {
-      nodes = (await Api.get('/projects/' + projectId + '/nodes')).items || [];
-    } catch (e) { nodes = []; }
+      const res = await Api.get('/projects/' + request.projectId + '/nodes');
+      if (!current(request)) return;
+      nodes = res.items || [];
+    } catch (e) { if (!current(request)) return; nodes = []; }
     UI.clear($('heSimOut'));
     await Promise.all([loadJobs(), loadKeys(), loadLogs()]);
   }
@@ -398,8 +426,11 @@
   /* ---------- HE-APP-02 ---------- */
 
   async function loadJobs(focusId) {
+    const request = ticket(), serial = ++jobsRequest;
     try {
-      jobs = (await Api.get('/projects/' + projectId + '/fl/jobs')).items;
+      const res = await Api.get('/projects/' + request.projectId + '/fl/jobs');
+      if (!current(request) || serial !== jobsRequest) return;
+      jobs = res.items;
       const sel = $('heFlJob');
       const cur = focusId || sel.value;
       UI.clear(sel);
@@ -411,11 +442,12 @@
       });
       if (cur && jobs.some(function (j) { return j.job_id === cur; })) sel.value = cur;
       await renderFl();
-    } catch (e) { inlineErr($('heFlInfo'), e); }
+    } catch (e) { if (current(request) && serial === jobsRequest) inlineErr($('heFlInfo'), e); }
   }
   function jobOf(id) { return jobs.filter(function (j) { return j.job_id === id; })[0]; }
 
   async function renderFl() {
+    const request = ticket(), selected = $('heFlJob').value;
     const box = $('heFlInfo');
     const job = jobOf($('heFlJob').value);
     UI.clear(box);
@@ -442,9 +474,12 @@
       n.appendChild(go);
       box.appendChild(n);
     }
-    if (isHe) {
+    if (isHe && !(job.aggregation_info && job.aggregation_info.he_key_ready)) {
+      box.appendChild(UI.el('div', 'hint', '本任务的训练公钥尚未就绪；后端在启动训练时绑定并返回实际公钥信息。'));
+    } else if (isHe) {
       try {
         const pk = await Api.get('/fl/jobs/' + job.job_id + '/he-public-key');
+        if (!current(request) || selected !== $('heFlJob').value) return;
         const kk = UI.el('dl', 'he-kv');
         const add2 = function (k, v, cls) { kk.appendChild(UI.el('dt', null, k)); kk.appendChild(UI.el('dd', cls, v)); };
         add2('聚合公钥 ID', pk.key_id);
@@ -457,7 +492,7 @@
         add2('生成时间', UI.datetime(pk.created_at));
         box.appendChild(UI.el('span', 'card-label', '本任务同态聚合公钥（训练开始时下发到各参与节点）'));
         box.appendChild(kk);
-      } catch (e) { inlineErr(box, e); }
+      } catch (e) { if (current(request) && selected === $('heFlJob').value) inlineErr(box, e); }
     }
   }
 
@@ -479,16 +514,18 @@
   /* ---------- HE-APP-03 ---------- */
 
   async function loadKeys() {
+    const request = ticket(), serial = ++keyRequest;
     const box = $('heKeyList');
     try {
-      const res = await Api.get('/he/keys', { project_id: projectId, status: keyFilter || undefined });
+      const res = await Api.get('/he/keys', { project_id: request.projectId, status: keyFilter || undefined });
+      if (!current(request) || serial !== keyRequest) return;
       $('hePolEnabled').checked = res.policy.enabled;
       $('hePolDays').value = res.policy.period_days;
       $('hePolNote').textContent = res.policy.enabled
         ? '自动轮换已启用：联邦聚合密钥生成满 ' + res.policy.period_days + ' 天自动轮换，新钥继承原分发节点，旧钥只保留用于解密历史密文。流程会话密钥 24 小时后过期。'
         : '自动轮换已关闭：联邦聚合密钥只在手动轮换时更换。';
       renderKeys(box, res.items);
-    } catch (e) { inlineErr(box, e); }
+    } catch (e) { if (current(request) && serial === keyRequest) inlineErr(box, e); }
   }
   function renderKeys(box, items) {
     UI.clear(box);
@@ -537,15 +574,16 @@
   function keyParamsText(k) {
     const kp = k.key_params || {};
     if (kp.poly_modulus_degree) {
-      const q = Array.isArray(kp.coeff_modulus_bits)
-        ? kp.coeff_modulus_bits.reduce(function (s, x) { return s + Number(x || 0); }, 0) : kp.coeff_modulus_bits;
+      const coefficients = kp.coeff_modulus_bits || kp.coefficient_modulus_bits;
+      const q = Array.isArray(coefficients)
+        ? coefficients.reduce(function (s, x) { return s + Number(x || 0); }, 0) : coefficients;
       return 'N=' + kp.poly_modulus_degree + (q ? ' · log₂Q=' + q + ' bit' : '');
     }
     if (kp.key_size_bits) return '密钥长度 ' + kp.key_size_bits + ' bit';
     return kp.parameter_set || '默认参数';
   }
   function newKeyModal() {
-    const body = UI.el('div', 'field-col');
+    const body = UI.el('div', 'field-col'), context = modalContext(body);
     body.style.gap = '14px';
     const sch = UI.selectOf('heNkScheme', [
       { value: 'paillier', label: 'Paillier（半同态，联邦聚合默认）' }, { value: 'ckks', label: 'CKKS（全同态，浮点）' },
@@ -561,9 +599,11 @@
     UI.modal({
       title: '生成联邦聚合密钥', body: body, submitText: '生成',
       onSubmit: async function () {
-        const req = { scheme: sch.value, project_id: projectId, purpose: 'fl_aggregation', node_ids: checks.picked() };
+        context.check();
+        const req = { scheme: sch.value, project_id: context.request.projectId, purpose: 'fl_aggregation', node_ids: checks.picked() };
         if (sch.value === 'paillier') req.key_params = { key_size_bits: Number(size.value) };
         const k = await Api.post('/he/keys', req);
+        if (!context.valid()) return;
         const sup = k.superseded_key_ids || [];
         UI.toast('已生成密钥 ' + k.key_id + '，分发到 ' + k.distributed_to.length + ' 个节点' +
           (sup.length ? '；原在用聚合密钥 ' + sup.join('、') + ' 已标记为已轮换（一个项目只保留一把在用聚合密钥）' : ''));
@@ -575,10 +615,13 @@
     const have = (k.distributed_to || []).map(function (d) { return d.node_id; });
     const checks = nodeChecks(have);
     const body = UI.formRow('分发到节点', checks, '已分发的节点保持不变，新勾选的节点追加分发');
+    const context = modalContext(body);
     UI.modal({
       title: '分发公钥 · ' + k.key_id, body: body, submitText: '分发',
       onSubmit: async function () {
+        context.check();
         const r = await Api.post('/he/keys/' + k.key_id + '/distribute', { node_ids: checks.picked() });
+        if (!context.valid()) return;
         UI.toast(k.key_id + ' 已分发到 ' + r.distributed_to.length + ' 个节点');
         loadKeys();
       }
@@ -593,12 +636,15 @@
   }
   function destroyModal(k) {
     const body = UI.el('div', 'hint', '销毁后 ' + k.key_id + ' 及其下所有密文被删除，用它加密的数据将无法再解密。此操作不可撤销。');
+    const context = modalContext(body);
     body.style.fontSize = '13px';
     body.style.lineHeight = '22px';
     UI.modal({
       title: '确认销毁密钥', body: body, submitText: '确认销毁',
       onSubmit: async function () {
+        context.check();
         await Api.del('/he/keys/' + k.key_id);
+        if (!context.valid()) return;
         if (key && key.key_id === k.key_id) { key = null; resetFlow(); }
         UI.toast('已销毁密钥 ' + k.key_id);
         loadKeys();
@@ -668,9 +714,11 @@
     return { source: $('heLogSource').value || undefined, ref_id: $('heLogRef').value || undefined };
   }
   async function loadLogs() {
+    const request = ticket(), serial = ++logRequest;
     const box = $('heLogList');
     try {
-      const res = await Api.get('/projects/' + projectId + '/he/logs', logQuery());
+      const res = await Api.get('/projects/' + request.projectId + '/he/logs', logQuery());
+      if (!current(request) || serial !== logRequest) return;
       logRefs = res.refs;
       const sel = $('heLogRef');
       const cur = sel.value;
@@ -687,7 +735,7 @@
       });
       sel.value = cur && logRefs.some(function (r) { return r.ref_id === cur; }) ? cur : '';
       renderLogs2(box, res);
-    } catch (e) { inlineErr(box, e); }
+    } catch (e) { if (current(request) && serial === logRequest) inlineErr(box, e); }
   }
   const LOG_SRC = { fl_job: ['训练任务', 'tag tag-cls'], simulation: ['流程测试', 'tag tag-ts'], session: ['全流程配置', 'tag'] };
   const STAGE_CN = { keygen: '密钥生成', encrypt: '加密', aggregate: '密态聚合', decrypt: '解密', evaluate: '密态运算' };
@@ -719,7 +767,7 @@
     });
     box.appendChild(wrap);
     box.appendChild(UI.el('span', 'hint', '共 ' + res.total + ' 条' + (res.total > LIMIT ? '，页面显示最近 ' + LIMIT + ' 条，完整数据请导出 CSV' : '') +
-      '。计算口径：' + res.timing_basis + '。'));
+      '。计算口径：' + (res.timing_basis || '以各条后端日志所记录的测量范围为准') + '。'));
   }
   async function exportLogs() {
     try {
@@ -731,9 +779,10 @@
   /* ---------- 生命周期 ---------- */
 
   async function mount(c) {
+    active = true; generation++;
     // App 的 ctx 是同一个对象，换项目时 projectId 已被改写，用上次 mount 记下的值判断
     if (projectId && projectId !== c.projectId && stage > 0) { destroyKey(); resetFlow(); }
-    ctx = c;
+    ctx = { projectId: c.projectId };
     projectId = c.projectId;
     bindOnce();
     buildApp();
@@ -758,7 +807,7 @@
     } catch (e) { UI.fail(e); }
   }
 
-  function unmount() { /* 无长连接 */ }
+  function unmount() { active = false; generation++; }
 
   window.HE = { mount: mount, unmount: unmount };
 })();

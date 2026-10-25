@@ -12,6 +12,8 @@
   const ROLE_CN = { input: '输入方', compute: '计算方', output: '输出方' };
   const SEC_CN = { semi_honest: '半诚实', malicious: '恶意' };
   const TEMPLATES = [
+    { label: '各方求和 → 求均值（秘密共享）', steps: [
+      { operator: 'secure_sum', protocol: 'ss' }, { operator: 'secure_mean', protocol: 'ss' }] },
     { label: '各方求和 → 求均值 → 与阈值比较', steps: [
       { operator: 'secure_sum', protocol: 'ss' }, { operator: 'secure_mean', protocol: 'ss' },
       { operator: 'secure_compare', protocol: 'gc', operand: { cmp: 'gt', threshold: 1266000 } }] },
@@ -24,7 +26,8 @@
 
   let ctx = null;
   let root = null;
-  let gen = 0;               // 换项目时丢弃过期响应
+  let gen = 0, active = false, estimateRequest = 0, dryRequest = 0, createRequest = 0;
+  function current(my) { return active && my === gen; }
   let cat = null;            // GET /mpc/protocols
   const S = {
     paramTab: 'ss', advanced: false,
@@ -284,22 +287,24 @@
   }
 
   async function onSaveParams() {
-    const p = S.paramTab;
+    const p = S.paramTab, my = gen, projectId = ctx.projectId;
     try {
-      const r = await Api.put('/projects/' + ctx.projectId + '/mpc/params/' + p, { params: S.draft[p] });
+      const r = await Api.put('/projects/' + projectId + '/mpc/params/' + p, { params: S.draft[p] });
+      if (!current(my)) return;
       S.saved[p] = clone(r.params); S.draft[p] = clone(r.params); S.customized[p] = r.customized;
       UI.toast(protoName(p) + '参数已保存，新建任务默认使用该配置');
       renderParams(); renderCatalog(); scheduleEstimate();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(my)) UI.fail(e); }
   }
   async function onResetParams() {
-    const p = S.paramTab;
+    const p = S.paramTab, my = gen, projectId = ctx.projectId;
     try {
-      const r = await Api.del('/projects/' + ctx.projectId + '/mpc/params/' + p);
+      const r = await Api.del('/projects/' + projectId + '/mpc/params/' + p);
+      if (!current(my)) return;
       S.saved[p] = clone(r.params); S.draft[p] = clone(r.params); S.customized[p] = r.customized;
       UI.toast(protoName(p) + '参数已恢复默认');
       renderParams(); scheduleEstimate();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(my)) UI.fail(e); }
   }
   function clone(x) { return JSON.parse(JSON.stringify(x)); }
 
@@ -524,13 +529,15 @@
   }
 
   async function onDryRun() {
-    const my = gen;
+    if (!active) return;
+    const my = gen, request = ++dryRequest, projectId = ctx.projectId;
+    const body = payload(), signature = JSON.stringify(body);
     try {
-      const r = await Api.post('/projects/' + ctx.projectId + '/mpc/flows/dry-run', payload());
-      if (my !== gen) return;
+      const r = await Api.post('/projects/' + projectId + '/mpc/flows/dry-run', body);
+      if (!current(my) || request !== dryRequest || signature !== JSON.stringify(payload())) return;
       S.dry = r;
       renderDry();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(my) && request === dryRequest && signature === JSON.stringify(payload())) UI.fail(e); }
   }
 
   /** 最后一步是阈值比较时说明判断条件，避免「是 / 否」裸值。 */
@@ -607,6 +614,8 @@
   let estTimer = null;
   function scheduleEstimate() {
     clearTimeout(estTimer);
+    if (!active) return;
+    S.dry = null; renderDry();
     estTimer = setTimeout(loadEstimate, 250);
   }
 
@@ -621,7 +630,7 @@
     const rtt = UI.inputOf('mpcpRtt', 20, 'number');
     rtt.min = 0; rtt.max = 1000;
     [rows, bw, rtt].forEach(function (x) { x.className = 'input mpc-input-md'; x.addEventListener('change', scheduleEstimate); });
-    form.appendChild(fieldInline('数据规模（每个输入方的行数）', rows));
+    form.appendChild(fieldInline('预估数据规模（假设每个输入方的行数）', rows));
     form.appendChild(fieldInline('单方链路带宽（Mbps）', bw));
     form.appendChild(fieldInline('往返时延 RTT（ms）', rtt));
     const pc = el('div', 'field-col');
@@ -631,32 +640,31 @@
     pc.appendChild(pcv);
     form.appendChild(pc);
     body.appendChild(form);
+    body.appendChild(el('span', 'hint', '规模、带宽与时延用于性能预估；实际任务读取已登记输入，执行行数由服务端计算，不使用这里假设的行数。'));
     const res = el('div', 'mpc-est-out');
     res.id = 'mpcpEstOut';
     body.appendChild(res);
   }
 
   async function loadEstimate() {
+    if (!active) return;
     const out = $('mpcpEstOut');
     if (!out || !S.steps.length) {
       if (out) { UI.clear(out); out.appendChild(el('div', 'table-empty', '添加计算步骤后自动预估')); }
       return;
     }
-    const my = gen;
+    const my = gen, request = ++estimateRequest, projectId = ctx.projectId;
     const n = Math.max(3, selectedParties().length);
     $('mpcpEstN').textContent = n + ' 方（取自参与方配置与角色，不足 3 方按 3 方全角色估算）';
-    const body = payload();
-    // 参与方够 3 方时按实际角色预估（输入分享只计输入方发出的份额），否则按 3 方全角色估算
-    if (body.parties.length < 3) { delete body.parties; body.party_count = n; }
-    body.data_rows = Number($('mpcpRows').value);
-    body.bandwidth_mbps = Number($('mpcpBw').value);
-    body.rtt_ms = Number($('mpcpRtt').value);
+    const body = estimatePayload();
+    const signature = JSON.stringify(body);
+    const stillCurrent = function () { return current(my) && request === estimateRequest && signature === JSON.stringify(estimatePayload()); };
     try {
-      const r = await Api.post('/projects/' + ctx.projectId + '/mpc/estimate', body);
-      if (my !== gen) return;
+      const r = await Api.post('/projects/' + projectId + '/mpc/estimate', body);
+      if (!stillCurrent()) return;
       renderEstimate(r);
     } catch (e) {
-      if (my !== gen) return;
+      if (!stillCurrent()) return;
       UI.clear(out);
       const b = el('div', 'banner banner-err', '无法预估：' + e.message);
       b.id = 'mpcpEstErr';
@@ -703,30 +711,46 @@
 
   /* ---------- 创建任务 ---------- */
 
-  async function onCreate() {
-    const v = partyIssues();
-    if (v.issues.length) { UI.toast('参与方配置不满足要求：' + v.issues[0], true); $('mpcpParties').scrollIntoView({ behavior: 'smooth' }); return; }
+  function estimatePayload() {
+    const body = payload();
+    if (body.parties.length < 3) { delete body.parties; body.party_count = Math.max(3, selectedParties().length); }
+    body.data_rows = Number($('mpcpRows').value);
+    body.bandwidth_mbps = Number($('mpcpBw').value);
+    body.rtt_ms = Number($('mpcpRtt').value);
+    return body;
+  }
+
+  function taskPayload() {
     const body = payload();
     body.name = $('mpcpName').value.trim();
-    body.data_rows = Number($('mpcpRows').value);
     body.bandwidth_mbps = Number($('mpcpBw').value);
     body.rtt_ms = Number($('mpcpRtt').value);
     body.anomaly_threshold_pct = Number($('mpcpThr').value);
     body.auto_start = true;
+    return body;
+  }
+
+  async function onCreate() {
+    if (!active) return;
+    const v = partyIssues();
+    if (v.issues.length) { UI.toast('参与方配置不满足要求：' + v.issues[0], true); $('mpcpParties').scrollIntoView({ behavior: 'smooth' }); return; }
+    const body = taskPayload(), signature = JSON.stringify(body), my = gen, request = ++createRequest, projectId = ctx.projectId;
+    const stillCurrent = function () { return current(my) && request === createRequest && signature === JSON.stringify(taskPayload()); };
     const b = $('mpcpCreate');
     b.disabled = true;
     try {
-      const task = await Api.post('/projects/' + ctx.projectId + '/mpc/tasks', body);
-      UI.toast('已创建任务 ' + task.task_id + '，正在执行');
+      const task = await Api.post('/projects/' + projectId + '/mpc/tasks', body);
+      if (!stillCurrent()) return;
+      UI.toast('已创建任务 ' + task.task_id + '，执行状态以运维监控为准');
       App.go('mpc', { sub: 'ops', taskId: task.task_id });
-    } catch (e) { UI.fail(e); }
-    finally { b.disabled = false; }
+    } catch (e) { if (stillCurrent()) UI.fail(e); }
+    finally { if (current(my) && request === createRequest) b.disabled = false; }
   }
 
   /* ---------- 生命周期 ---------- */
 
   async function mount(c, section) {
-    ctx = c;
+    active = true; clearTimeout(estTimer); ctx = { projectId: c.projectId };
     root = section;
     gen += 1;
     const my = gen;
@@ -736,7 +760,7 @@
         Api.get('/projects/' + ctx.projectId + '/mpc/params'),
         Api.get('/projects/' + ctx.projectId + '/mpc/parties')
       ]);
-      if (my !== gen) return;
+      if (!current(my)) return;
       cat = res[0];
       S.saved = {}; S.customized = {};
       res[1].items.forEach(function (x) { S.saved[x.protocol] = x.params; S.customized[x.protocol] = x.customized; });
@@ -754,11 +778,11 @@
       renderFlow();
       renderEstForm();
       loadEstimate();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(my)) UI.fail(e); }
   }
 
   function unmount() {
-    gen += 1;
+    active = false; gen += 1;
     clearTimeout(estTimer);
   }
 

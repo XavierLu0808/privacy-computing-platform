@@ -1,6 +1,6 @@
 # 联邦学习 · 任务编排 接口（FL-ORCH-01 至 FL-ORCH-09）
 
-对应页面：`#/fed/orch`（页面模块 `FLO`，`web/js/fl-orch.js`）；mock 实现：`web/js/mock/fed-orch.js`；测试：`web/tests/fed-orch.test.mjs`。
+对应页面：`#/fed/orch`（页面模块 `FLO`，`web/js/fl-orch.js`）；原型实现和旧需求测试仅保留在 Git 历史 `6578ca3`；当前真实客户端测试入口见根 README。
 
 通用约定沿用 API.md §0：统一响应包、`snake_case`、ISO 8601 时间、分页参数 `page` / `page_size`。错误码见 API.md §9。
 
@@ -398,7 +398,7 @@ DELETE /fl/param-templates/{template_id}
 
 ## 6. 过程管控（FL-PROC-01 至 FL-PROC-08）
 
-对应页面：`#/fed/proc`（页面模块 `FL`，`web/js/fl.js`）；mock 同在 `web/js/mock/fed-orch.js`；测试：`web/tests/fed-proc.test.mjs`。
+对应页面：`#/fed/proc`（页面模块 `FL`，`web/js/fl.js`）；旧原型与需求测试仅保留于 Git 历史 `6578ca3`，不作为当前后端验收。
 
 | # | 方法 | 路径 | 说明 | 验收编号 |
 |---|---|---|---|---|

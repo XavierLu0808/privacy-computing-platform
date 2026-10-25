@@ -1,0 +1,8 @@
+.app[hidden] { display: none; }
+.connection-gate { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f3f6fa; }
+.connection-card { width: min(100%, 460px); padding: 32px; border: 1px solid #dce3ec; border-radius: 16px; background: #fff; box-shadow: 0 12px 40px #20385812; }
+.connection-card h1 { margin: 0 0 16px; font-size: 24px; }
+.connection-hint { color: #596579; line-height: 1.7; margin-bottom: 24px; }
+.connection-card .input { width: 100%; margin-top: 8px; }
+.connection-status { min-height: 40px; color: #7b3535; font-size: 14px; line-height: 1.5; }
+.connection-card button { width: 100%; min-height: 40px; }

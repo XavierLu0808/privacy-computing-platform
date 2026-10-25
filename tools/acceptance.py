@@ -6,7 +6,8 @@
   2. docs/acceptance/<模块>.json           各模块开发者填的实现映射（页面、操作步骤、接口、测试、工程实现说明、status）
   3. 测试结果                              node --test 的 TAP 输出（测试名以 [编号] 开头）+ 浏览器验收结果 e2e-results.json
 
-一项三级功能「已完成」= 开发者标 done + 该编号所有单元测试通过 + 浏览器验收通过。
+当前报告仅核对前端证据：实现映射 + 该编号单元测试 + 同源码真实后端浏览器记录。
+旧Mock单元/浏览器结果不作为当前证据；前端通过不证明后端算法或合同指标验收。
 
 用法：
   python3 tools/acceptance.py            # 跑测试并生成 dist/acceptance/{index.html,status.json,验收进度表.xlsx}
@@ -15,6 +16,7 @@
 import argparse
 import datetime as dt
 import html
+import hashlib
 import json
 import re
 import subprocess
@@ -25,67 +27,122 @@ ROOT = Path(__file__).resolve().parent.parent
 ACC = ROOT / 'docs' / 'acceptance'
 OUT = ROOT / 'dist' / 'acceptance'
 SGT = dt.timezone(dt.timedelta(hours=8))
-CONSOLE_URL = 'https://share.drluo.cn/share/privacy-console-1014-08675d/'
+CONSOLE_URL = 'http://127.0.0.1:8412/'
+UNIT_SCOPE = 'real-client-isolated-unit'
+BROWSER_SCOPE = 'real-backend-browser'
+RESULT_SCHEMA = 'frontend-unit-evidence/1'
 
 MODULE_ORDER = ['FL', 'HE', 'MPC', 'PSI', 'DP']
 MODULE_CN = {'FL': '联邦学习', 'HE': '同态加密', 'MPC': '多方安全计算', 'PSI': '隐私求交', 'DP': '差分隐私'}
 ID_RX = re.compile(r'\[([A-Z]+-[A-Z]+-\d{2})\]')
 
 
-def run_unit_tests():
-    """跑 web/tests 下全部测试，按 [编号] 汇总通过 / 失败。"""
-    tests = sorted(str(p.relative_to(ROOT / 'web')) for p in (ROOT / 'web' / 'tests').glob('*.test.mjs'))
-    proc = subprocess.run(['node', '--test', '--test-reporter=tap'] + tests, cwd=ROOT / 'web',
-                          capture_output=True, text=True)
-    by_id, total, failed = {}, 0, 0
-    for line in proc.stdout.splitlines():
-        m = re.match(r'^\s*(not ok|ok) \d+ - (.*)$', line)
-        if not m:
+def source_digest():
+    """Bind evidence to executable client/proxy bytes and the tests actually run."""
+    names = [path for path in (ROOT / 'web').rglob('*')
+             if path.is_file() and path.suffix in ('.js', '.mjs', '.css', '.html', '.json', '.svg')
+             and not any(part in ('node_modules', '__pycache__') for part in path.parts)]
+    names.extend(path for path in (ROOT / 'tests').glob('test_*.py') if path.is_file())
+    names.extend(path for path in (ROOT / 'scripts').glob('*.py') if path.is_file())
+    names.append(ROOT / 'tools' / 'acceptance.py')
+    fingerprints = {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                    for path in sorted(set(names)) if path.is_file()}
+    return hashlib.sha256(json.dumps(fingerprints, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+
+
+def parse_tap(stdout, exit_code):
+    by_id, cases = {}, []
+    for line in stdout.splitlines():
+        match = re.match(r'^\s*(not ok|ok) \d+ - (.*)$', line)
+        if not match:
             continue
-        passed = m.group(1) == 'ok'
-        name = m.group(2).strip()
-        if name.endswith('.test.mjs'):
-            continue
-        total += 1
-        failed += 0 if passed else 1
-        for i in ID_RX.findall(name):
-            by_id.setdefault(i, []).append({'name': name, 'pass': passed})
-    res = {
-        'ran_at': dt.datetime.now(SGT).isoformat(timespec='seconds'),
-        'total': total, 'failed': failed, 'exit_code': proc.returncode, 'by_id': by_id
-    }
-    (ACC / 'unit-results.json').write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding='utf-8')
-    return res
+        name = match[2].strip()
+        directive = re.search(r'\s+#\s+(SKIP|TODO)\b', name, re.I)
+        skipped, todo = bool(directive and directive[1].upper() == 'SKIP'), bool(directive and directive[1].upper() == 'TODO')
+        if directive:
+            name = name[:directive.start()].strip()
+        passed = match[1] == 'ok' and not skipped and not todo
+        case = {'name': name, 'pass': passed, 'skipped': skipped, 'todo': todo,
+                'failed': match[1] == 'not ok' and not skipped and not todo}
+        cases.append(case)
+        for identity in ID_RX.findall(name):
+            by_id.setdefault(identity, []).append(case)
+    if not cases:
+        raise ValueError('Node没有产生测试用例记录，不能生成通过结果')
+    return {'schema': RESULT_SCHEMA, 'scope': UNIT_SCOPE,
+            'ran_at': dt.datetime.now(SGT).isoformat(timespec='seconds'),
+            'total': len(cases), 'passed': sum(case['pass'] for case in cases),
+            'failed': sum(case['failed'] for case in cases), 'skipped': sum(case['skipped'] for case in cases),
+            'todo': sum(case['todo'] for case in cases), 'exit_code': exit_code,
+            'by_id': by_id, 'unmapped': [case for case in cases if not ID_RX.findall(case['name'])],
+            'limitation': 'Isolated client transport/DOM tests; not native backend execution, browser acceptance or 129-route coverage.'}
+
+
+def run_unit_tests(destination=None, test_log=None):
+    tests = sorted(str(path.relative_to(ROOT / 'web')) for path in (ROOT / 'web' / 'tests').glob('*.test.mjs'))
+    if not tests:
+        raise ValueError('web/tests下没有当前客户端测试文件')
+    digest = source_digest()
+    command = ['node', '--test', '--test-reporter=tap'] + tests
+    proc = subprocess.run(command, cwd=ROOT / 'web', capture_output=True, text=True)
+    if test_log:
+        test_log = Path(test_log); test_log.parent.mkdir(parents=True, exist_ok=True)
+        test_log.write_text(proc.stdout, encoding='utf-8')
+        test_log.with_suffix(test_log.suffix+'.stderr').write_text(proc.stderr, encoding='utf-8')
+    result = parse_tap(proc.stdout, proc.returncode)
+    result.update(source_sha256=digest, command=command)
+    if source_digest() != digest:
+        result.update(exit_code=1, source_changed_during_tests=True)
+    destination = Path(destination) if destination else ACC / 'unit-results.json'
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding='utf-8')
+    return result
+
+
+def current_unit(unit):
+    return (isinstance(unit, dict) and unit.get('schema') == RESULT_SCHEMA
+            and unit.get('scope') == UNIT_SCOPE and unit.get('source_sha256') == source_digest()
+            and isinstance(unit.get('by_id'), dict)
+            and isinstance(unit.get('unmapped'), list)
+            and all(type(unit.get(key)) is int and unit[key] >= 0 for key in ('total','passed','failed','skipped','todo','exit_code'))
+            and not unit.get('source_changed_during_tests'))
+
+
+def current_browser(document):
+    return (isinstance(document, dict) and document.get('scope') == BROWSER_SCOPE
+            and document.get('source_sha256') == source_digest() and isinstance(document.get('by_id'), dict))
 
 
 def load_json(p, default):
     return json.loads(p.read_text(encoding='utf-8')) if p.exists() else default
 
 
-def build(unit):
+def build(unit, browser_path=None):
     master = load_json(ACC / 'items.json', None)
     impl = {}
     for p in sorted(ACC.glob('*.json')):
         if p.name in ('items.json', 'unit-results.json', 'e2e-results.json'):
             continue
         impl.update(load_json(p, {}))
-    e2e = load_json(ACC / 'e2e-results.json', {}).get('by_id', {})
+    browser_document = load_json(Path(browser_path) if browser_path else ACC / 'e2e-results.json', {})
+    e2e = browser_document.get('by_id', {}) if current_browser(browser_document) else {}
+    valid_unit = current_unit(unit)
 
     rows = []
     for it in master['items']:
         im = impl.get(it['id'], {})
-        ut = unit['by_id'].get(it['id'], [])
-        ut_pass = bool(ut) and all(x['pass'] for x in ut)
+        ut = unit.get('by_id', {}).get(it['id'], []) if valid_unit else []
+        ut_pass = unit.get('exit_code') == 0 and bool(ut) and all(x['pass'] and not x.get('skipped') and not x.get('todo') for x in ut)
         ev = e2e.get(it['id'])
-        # partial = 功能已实现、数值为原型内置评估引擎仿真结果（项目决定接受）：测试与浏览器验收都通过即算完成，并打「仿真数值」标签
-        if im.get('status') in ('done', 'partial') and ut_pass and ev and ev.get('pass'):
+        # partial = 功能已实现、数值为原型内置评估引擎仿真结果：即使前端测试与浏览器均通过，也不能据此确认后端合同指标
+        if im.get('status') in ('done', 'partial') and ut_pass and ev and ev.get('pass') is True:
             state = 'done'
         elif ut and not ut_pass or (ev and not ev.get('pass')):
             state = 'fail'
         elif im.get('status') in ('done', 'partial') and ut_pass:
             state = 'testing'
         elif im:
-            state = 'dev'
+            state = 'unverified'
         else:
             state = 'todo'
         rows.append(dict(it, impl=im, unit=ut, e2e=ev, state=state,
@@ -99,7 +156,7 @@ def build(unit):
     return rows, contract
 
 
-STATE_CN = {'done': '已完成', 'testing': '待验收', 'dev': '开发中', 'fail': '测试未通过', 'todo': '未开始'}
+STATE_CN = {'unverified': '缺当前映射证据', 'done': '前端已验证', 'testing': '待验收', 'dev': '开发中', 'fail': '测试未通过', 'todo': '未开始'}
 
 
 def render_html(rows, contract, unit, generated):
@@ -118,7 +175,7 @@ def render_html(rows, contract, unit, generated):
 
     def check(state):
         if state == 'done':
-            return '<span class="ck on" title="已完成"><svg viewBox="0 0 16 16"><path d="M3.5 8.4l3 3 6-6.4"/></svg></span>'
+            return '<span class="ck on" title="前端已验证"><svg viewBox="0 0 16 16"><path d="M3.5 8.4l3 3 6-6.4"/></svg></span>'
         return '<span class="ck" title="%s"></span>' % STATE_CN[state]
 
     crow = []
@@ -217,7 +274,7 @@ a {{ color:var(--primary); }}
 .ck svg {{ width:14px; height:14px; margin:1px; fill:none; stroke:#fff; stroke-width:2.2; }}
 .st {{ font-size:12px; padding:2px 8px; border-radius:4px; white-space:nowrap; }}
 .st-done {{ background:var(--okbg); color:var(--ok); }} .st-testing {{ background:var(--soft); color:var(--primary); }}
-.st-dev {{ background:var(--warnbg); color:var(--warn); }} .st-fail {{ background:var(--badbg); color:var(--bad); }}
+.st-unverified {{ background:var(--idlebg); color:var(--idle); }} .st-dev {{ background:var(--warnbg); color:var(--warn); }} .st-fail {{ background:var(--badbg); color:var(--bad); }}
 .st-todo {{ background:var(--idlebg); color:var(--idle); }}
 .tag {{ font-size:11px; padding:1px 6px; border-radius:3px; background:var(--soft); color:var(--primary); margin-left:6px; font-weight:400; }}
 .row {{ cursor:pointer; }} .row:hover td {{ background:var(--row); }}
@@ -235,15 +292,15 @@ a {{ color:var(--primary); }}
 .legend {{ font-size:12.5px; color:var(--muted); margin-top:8px; }}
 </style></head><body><div class="wrap">
 <h1>隐私计算联邦学习软件原型 · 验收进度表</h1>
-<div class="sub">2026 年 AI+稀土追溯模型关键技术及应用研究（隐私计算）联合研发项目 · 生成于 {generated} SGT · 演示环境：<a href="{console}" target="_blank" rel="noopener">控制台</a> · <a href="验收进度表.xlsx">下载 Excel 版</a></div>
+<div class="sub">2026 年 AI+稀土追溯模型关键技术及应用研究（隐私计算）联合研发项目 · 生成于 {generated} SGT · 真实客户端入口：<a href="{console}" target="_blank" rel="noopener">控制台</a> · <a href="验收进度表.xlsx">下载 Excel 版</a></div>
 <div class="kpis">
- <div class="kpi"><b>{done} / {total}</b><span>三级功能已完成（V5 60 项 + 合同补充项）</span></div>
- <div class="kpi"><b>{v5done} / {v5}</b><span>自研功能清单 V5 已完成</span></div>
- <div class="kpi"><b>{cdone} / {ctotal}</b><span>合同条目全部子项完成（功能 16 项 + 技术指标 3 项）</span></div>
+ <div class="kpi"><b>{done} / {total}</b><span>具备当前前端映射证据（不是后端合同验收）</span></div>
+ <div class="kpi"><b>{v5done} / {v5}</b><span>V5 前端关联项已验证</span></div>
+ <div class="kpi"><b>{cdone} / {ctotal}</b><span>合同关联前端项已验证（不代表指标达标）</span></div>
  <div class="kpi"><b>{utotal} 个 · 失败 {ufail} 个</b><span>自动化测试用例（最近一次运行 {uran} SGT）</span></div>
 </div>
 <div class="mods">{mods}</div>
-<div class="legend">「已完成」= 功能实现 + 该项全部自动化测试通过 + 浏览器操作验收通过；「待验收」= 已实现且自动化测试通过，等待浏览器操作验收。标「仿真数值」的项：流程、判定口径与报告已实现，指标数值来自原型内置评估引擎的仿真结果。</div>
+<div class="legend">「前端已验证」仅指当前源码下带编号的客户端测试与真实后端浏览器记录匹配；无编号测试不自动分配到验收项。旧Mock证据不复用，后端原生算法、129个接口和合同指标需单独验收。标「仿真数值」的历史映射仅说明原有评估口径，不能据此判断当前原生算法或指标达标。</div>
 
 <h2>一、合同条目对照（附件 1 功能清单 + 技术参数指标）</h2>
 <div class="card"><table><thead><tr><th>编号</th><th>一级模块</th><th>二级模块 / 合同说明</th><th>对应三级功能</th><th>完成度</th></tr></thead><tbody>{crows}</tbody></table></div>
@@ -301,7 +358,7 @@ def write_xlsx(rows, contract, path):
                    '、'.join(r['contract']), STATE_CN[r['state']], im.get('ui', ''), '\n'.join(im.get('api', [])),
                    '%d / %d' % (sum(t['pass'] for t in r['unit']), len(r['unit'])), im.get('impl', '')])
     ws2 = wb.create_sheet('合同条目对照')
-    ws2.append(['编号', '一级模块', '二级模块', '合同说明', '对应三级功能', '已完成 / 子项数'])
+    ws2.append(['编号', '一级模块', '二级模块', '合同说明', '对应三级功能', '前端已验证 / 关联项'])
     for c in contract:
         ws2.append([c['id'], c['module'], c['name'], c['desc'], '、'.join(c['maps']), '%d / %d' % (c['done'], c['total'])])
     font = Font(name='宋体', size=10.5)
@@ -321,29 +378,42 @@ def write_xlsx(rows, contract, path):
     wb.save(path)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--no-test', action='store_true')
-    a = ap.parse_args()
-    unit = load_json(ACC / 'unit-results.json', None) if a.no_test else None
-    if unit is None:
-        unit = run_unit_tests()
-    rows, contract = build(unit)
-    OUT.mkdir(parents=True, exist_ok=True)
-    generated = dt.datetime.now(SGT).strftime('%Y-%m-%d %H:%M')
-    (OUT / 'index.html').write_text(render_html(rows, contract, unit, generated), encoding='utf-8')
-    (OUT / 'status.json').write_text(json.dumps({
-        'generated_at': generated + ' SGT', 'items': [
-            {k: r[k] for k in ('id', 'l1', 'l2', 'l3', 'source', 'state')} for r in rows],
-        'contract': [{k: c[k] for k in ('id', 'name', 'done', 'total')} for c in contract]
-    }, ensure_ascii=False, indent=1), encoding='utf-8')
-    write_xlsx(rows, contract, OUT / '验收进度表.xlsx')
-    cnt = {}
-    for r in rows:
-        cnt[r['state']] = cnt.get(r['state'], 0) + 1
-    print('items %d · %s · unit tests %d (failed %d) → %s' % (
-        len(rows), ' '.join('%s=%d' % (STATE_CN[k], v) for k, v in cnt.items()), unit['total'], unit['failed'], OUT))
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--no-test', action='store_true')
+    parser.add_argument('--output', type=Path, default=OUT)
+    parser.add_argument('--unit-results', type=Path, default=ACC/'unit-results.json')
+    parser.add_argument('--e2e-results', type=Path, default=ACC/'e2e-results.json')
+    parser.add_argument('--test-log', type=Path)
+    args = parser.parse_args(argv)
+    try:
+        unit = load_json(args.unit_results, None) if args.no_test else run_unit_tests(args.unit_results, args.test_log)
+        if not current_unit(unit):
+            raise ValueError('缓存测试结果缺少当前源码/real-client scope，请不带--no-test重新运行')
+        rows, contract = build(unit, args.e2e_results)
+        args.output.mkdir(parents=True, exist_ok=True)
+        generated = dt.datetime.now(SGT).strftime('%Y-%m-%d %H:%M')
+        (args.output/'index.html').write_text(render_html(rows, contract, unit, generated), encoding='utf-8')
+        browser = load_json(args.e2e_results, {})
+        (args.output/'status.json').write_text(json.dumps({
+            'schema': 'frontend-acceptance-progress/1', 'scope': 'frontend-evidence-only',
+            'source_sha256': unit['source_sha256'], 'generated_at': generated+' SGT',
+            'unit': {key: unit[key] for key in ('scope','total','passed','failed','skipped','todo','exit_code')},
+            'unmapped_unit_cases': len(unit['unmapped']),
+            'current_browser_evidence': current_browser(browser),
+            'historical_browser_records_ignored': bool(browser.get('by_id')) and not current_browser(browser),
+            'limitation': 'Client-only evidence. No native-backend, full-API or contract acceptance claim.',
+            'items': [{key: row[key] for key in ('id','l1','l2','l3','source','state')} for row in rows],
+            'contract': [{key: row[key] for key in ('id','name','done','total')} for row in contract]
+        }, ensure_ascii=False, indent=1), encoding='utf-8')
+        write_xlsx(rows, contract, args.output/'验收进度表.xlsx')
+        print('前端单元测试 %d（失败%d，跳过%d，未映射编号%d）；当前浏览器证据=%s → %s' % (
+            unit['total'], unit['failed'], unit['skipped'], len(unit['unmapped']), current_browser(browser), args.output))
+        return 0 if unit['exit_code'] == 0 and not unit['failed'] else 1
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        print('验收资料生成失败：'+str(error), file=sys.stderr)
+        return 2
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

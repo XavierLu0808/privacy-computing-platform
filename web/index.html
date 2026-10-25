@@ -3,18 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="favicon.svg?v=1.2.9">
 <title>隐私计算平台 · 控制台</title>
-<link rel="stylesheet" href="styles.css?v=1.2.2">
-<link rel="stylesheet" href="css/fed.css?v=1.2.2">
-<link rel="stylesheet" href="css/fed-sec.css?v=1.2.2">
-<link rel="stylesheet" href="css/he.css?v=1.2.2">
-<link rel="stylesheet" href="css/mpc.css?v=1.2.2">
-<link rel="stylesheet" href="css/psi.css?v=1.2.2">
-<link rel="stylesheet" href="css/dp.css?v=1.2.2">
+<link rel="stylesheet" href="styles.css?v=1.2.9">
+<link rel="stylesheet" href="css/fed.css?v=1.2.9">
+<link rel="stylesheet" href="css/fed-sec.css?v=1.2.9">
+<link rel="stylesheet" href="css/he.css?v=1.2.9">
+<link rel="stylesheet" href="css/mpc.css?v=1.2.9">
+<link rel="stylesheet" href="css/psi.css?v=1.2.9">
+<link rel="stylesheet" href="css/dp.css?v=1.2.9">
+<link rel="stylesheet" href="css/connection.css?v=1.2.9">
 </head>
 <body>
 
-<div class="app">
+<div class="app" hidden>
 
   <!-- ===== 顶栏 ===== -->
   <header class="topbar">
@@ -542,7 +544,7 @@
 
             <div class="card card-row" style="padding:14px 18px; gap:12px;">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#0E6F6C" stroke-width="1.8" style="flex-shrink:0;" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>
-              <span style="flex-grow:1; font-size:13px; color:var(--muted-3);">已基于隐语原生 DP 模块封装，接口保留可替换性；任务启用 DP 后在梯度聚合前自动调用。</span>
+              <span style="flex-grow:1; font-size:13px; color:var(--muted-3);">差分隐私由后端实际可用的实现提供；支持范围、初始化与预算以服务端返回为准。</span>
               <span class="dp-enabled" id="dpEnabledChip">DP 已启用</span>
             </div>
           </div>
@@ -557,30 +559,24 @@
 
 <div class="toast-wrap" id="toasts"></div>
 
-<script src="vendor/echarts.min.js?v=5.5.1"></script>
-<script src="js/config.js?v=1.2.2"></script>
-<script src="js/mock-server.js?v=1.2.2"></script>
-<script src="js/mock/fed-orch.js?v=1.2.2"></script>
-<script src="js/mock/fed-sec.js?v=1.2.2"></script>
-<script src="js/mock/he.js?v=1.2.2"></script>
-<script src="js/mock/mpc.js?v=1.2.2"></script>
-<script src="js/mock/psi.js?v=1.2.2"></script>
-<script src="js/mock/dp.js?v=1.2.2"></script>
-<script src="js/api.js?v=1.2.2"></script>
-<script src="js/ui.js?v=1.2.2"></script>
-<script src="js/fl.js?v=1.2.2"></script>
-<script src="js/he.js?v=1.2.2"></script>
-<script src="js/mpc.js?v=1.2.2"></script>
-<script src="js/psi.js?v=1.2.2"></script>
-<script src="js/dp.js?v=1.2.2"></script>
-<script src="js/fl-orch.js?v=1.2.2"></script>
-<script src="js/fl-agg.js?v=1.2.2"></script>
-<script src="js/fl-eval.js?v=1.2.2"></script>
-<script src="js/he-algo.js?v=1.2.2"></script>
-<script src="js/mpc-proto.js?v=1.2.2"></script>
-<script src="js/psi-algo.js?v=1.2.2"></script>
-<script src="js/dp-mech.js?v=1.2.2"></script>
-<script src="js/dp-fw.js?v=1.2.2"></script>
-<script src="js/app.js?v=1.2.2"></script>
+<script src="vendor/echarts.min.js?v=1.2.9"></script>
+<script src="js/config.js?v=1.2.9"></script>
+<script src="js/api.js?v=1.2.9"></script>
+<script src="js/ui.js?v=1.2.9"></script>
+<script src="js/connection.js?v=1.2.9"></script>
+<script src="js/fl.js?v=1.2.9"></script>
+<script src="js/he.js?v=1.2.9"></script>
+<script src="js/mpc.js?v=1.2.9"></script>
+<script src="js/psi.js?v=1.2.9"></script>
+<script src="js/dp.js?v=1.2.9"></script>
+<script src="js/fl-orch.js?v=1.2.9"></script>
+<script src="js/fl-agg.js?v=1.2.9"></script>
+<script src="js/fl-eval.js?v=1.2.9"></script>
+<script src="js/he-algo.js?v=1.2.9"></script>
+<script src="js/mpc-proto.js?v=1.2.9"></script>
+<script src="js/psi-algo.js?v=1.2.9"></script>
+<script src="js/dp-mech.js?v=1.2.9"></script>
+<script src="js/dp-fw.js?v=1.2.9"></script>
+<script src="js/app.js?v=1.2.9"></script>
 </body>
 </html>

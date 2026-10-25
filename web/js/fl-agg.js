@@ -47,7 +47,9 @@
   let savedSnap = '';   // 已保存配置的快照，用于判断是否有未保存修改
   let keys = [];
   let estSeq = 0;
-  let alive = false;
+  let alive = false, generation = 0, mutationRequest = 0;
+  function ticket() { return { generation: generation, projectId: ctx.projectId }; }
+  function current(t) { return alive && t.generation === generation && t.projectId === ctx.projectId; }
   let fieldEls = {};    // 'ss.threshold' -> { input, err }
 
   function $(id) { return root.querySelector('#' + id); }
@@ -302,6 +304,7 @@
   }
 
   function changed() {
+    estSeq++;
     renderSaved();
     renderKeys();
     if (form.strategy === 'he') renderStrategy();
@@ -311,15 +314,17 @@
   /* ---------- 实时估算（FL-AGG-07） ---------- */
 
   async function estimate() {
+    const request = ticket();
+    if (!current(request) || !form) return;
     const seq = ++estSeq;
     const box = $('flaEst');
     try {
-      const e = await Api.post('/projects/' + ctx.projectId + '/fl/aggregation/estimate', pick(form));
-      if (!alive || seq !== estSeq) return;
+      const e = await Api.post('/projects/' + request.projectId + '/fl/aggregation/estimate', pick(form));
+      if (!current(request) || seq !== estSeq) return;
       showFieldError(null);
       renderEstimate(e);
     } catch (err) {
-      if (!alive || seq !== estSeq) return;
+      if (!current(request) || seq !== estSeq) return;
       const field = err.data && err.data.field;
       if (field && fieldEls[field]) showFieldError(field, err.message);
       else showFieldError(null);
@@ -381,24 +386,30 @@
   }
 
   async function load() {
-    const pid = ctx.projectId;
+    const request = ticket();
+    const pid = request.projectId;
     try {
       const res = await Promise.all([
         Api.get('/projects/' + pid + '/fl/aggregation'),
         Api.get('/projects/' + pid + '/fl/aggregation/keys')
       ]);
-      if (!alive || pid !== ctx.projectId) return;
+      if (!current(request)) return;
       keys = res[1].items;
       applyView(res[0]);
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(request)) UI.fail(e); }
   }
 
   async function save() {
+    const request = ticket(), mutation = ++mutationRequest;
+    if (!current(request) || !form) return;
+    const signature = JSON.stringify(pick(form));
     try {
-      const v = await Api.put('/projects/' + ctx.projectId + '/fl/aggregation', pick(form));
+      const v = await Api.put('/projects/' + request.projectId + '/fl/aggregation', pick(form));
+      if (!current(request) || mutation !== mutationRequest || signature !== JSON.stringify(pick(form))) return;
       applyView(v);
       UI.toast('已保存' + STRATEGY[v.strategy].label + '配置到「' + v.project_name + '」');
     } catch (e) {
+      if (!current(request)) return;
       const field = e.data && e.data.field;
       if (field && fieldEls[field]) showFieldError(field, e.message);
       UI.fail(e);
@@ -406,12 +417,17 @@
   }
 
   function reset() {
+    const request = ticket();
+    if (!current(request) || !view) return;
     UI.modal({
       title: '恢复默认聚合策略',
       body: UI.el('div', 'hint', '将把「' + view.project_name + '」的聚合策略恢复为平台默认（秘密共享聚合，门限 2，有限域 16 bit，Top-k 保留 15%，量化 8 bit，开启误差反馈）并立即保存。已生成的密钥对保留不动。'),
       submitText: '恢复默认',
       onSubmit: async function () {
-        const v = await Api.post('/projects/' + ctx.projectId + '/fl/aggregation/reset', {});
+        if (!current(request)) throw new Error('项目上下文已变更，请关闭弹窗后重新操作');
+        const mutation = ++mutationRequest;
+        const v = await Api.post('/projects/' + request.projectId + '/fl/aggregation/reset', {});
+        if (!current(request) || mutation !== mutationRequest) return false;
         applyView(v);
         UI.toast('已恢复默认聚合策略');
         return true;
@@ -431,13 +447,18 @@
   }
 
   async function genKey() {
+    const request = ticket();
+    if (!current(request) || !form) return;
     try {
-      const k = await Api.post('/projects/' + ctx.projectId + '/fl/aggregation/keys', { he: form.he });
-      const res = await Api.get('/projects/' + ctx.projectId + '/fl/aggregation/keys');
+      const k = await Api.post('/projects/' + request.projectId + '/fl/aggregation/keys', { he: form.he });
+      if (!current(request)) return;
+      const res = await Api.get('/projects/' + request.projectId + '/fl/aggregation/keys');
+      if (!current(request)) return;
       keys = res.items;
       renderKeys();
       UI.toast('已生成密钥对 ' + k.key_id + (keys.length > 1 ? '，旧密钥已轮换' : ''));
     } catch (e) {
+      if (!current(request)) return;
       const field = e.data && e.data.field;
       if (field && fieldEls[field]) showFieldError(field, e.message);
       UI.fail(e);
@@ -445,8 +466,11 @@
   }
 
   async function viewKey() {
+    const request = ticket();
+    if (!current(request)) return;
     try {
-      const k = await Api.get('/projects/' + ctx.projectId + '/fl/aggregation/public-key');
+      const k = await Api.get('/projects/' + request.projectId + '/fl/aggregation/public-key');
+      if (!current(request)) return;
       const body = UI.el('div', 'fla-key-detail');
       const rows = [
         ['密钥 ID', k.key_id],
@@ -468,7 +492,7 @@
       const pre = UI.el('div', 'fla-pk fla-mono', k.public_key);
       body.appendChild(pre);
       UI.modal({ title: '查看公钥 · ' + k.key_id, body: body, submitText: '确定', width: 620, onSubmit: function () { return true; } });
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(request)) UI.fail(e); }
   }
 
   function bind() {
@@ -486,7 +510,8 @@
 
   window.FLA = {
     mount: function (c, el) {
-      ctx = c;
+      generation++; estSeq++;
+      ctx = { projectId: c.projectId };
       root = el;
       alive = true;
       view = null; form = null; keys = []; fieldEls = {};
@@ -495,7 +520,7 @@
       load();
     },
     unmount: function () {
-      alive = false;
+      alive = false; generation++;
       estSeq += 1;
     }
   };

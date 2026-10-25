@@ -1,0 +1,541 @@
+{
+  "provenance": "Public deterministic encode/optimize response shapes from app/services/he_v12.py; performance is parameter-model estimation, not native measurements.",
+  "encoding": {
+    "paillier": {
+      "request": {
+        "scheme": "paillier",
+        "values": [
+          "1.25"
+        ],
+        "precision": 2
+      },
+      "response": {
+        "mode": "fixed_point",
+        "converted": true,
+        "scale_factor": 100,
+        "scale_exponent": 2,
+        "items": [
+          {
+            "input": "1.25",
+            "encoded_integer": "125",
+            "encoded_bits": 7,
+            "decoded": 1.25,
+            "abs_error": 0.0
+          }
+        ],
+        "max_abs_error": 0.0,
+        "error_bound": 0.005,
+        "overflow": false,
+        "plaintext_space": {
+          "bits": 2046,
+          "label": "目录缺省参数的编码边界"
+        },
+        "sweep": [
+          {
+            "precision": 0,
+            "scale_factor": 1,
+            "max_abs_error": 0.25,
+            "error_bound": 0.5,
+            "max_encoded_bits": 1,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 1,
+            "scale_factor": 10,
+            "max_abs_error": 0.05,
+            "error_bound": 0.05,
+            "max_encoded_bits": 4,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 2,
+            "scale_factor": 100,
+            "max_abs_error": 0.0,
+            "error_bound": 0.005,
+            "max_encoded_bits": 7,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 3,
+            "scale_factor": 1000,
+            "max_abs_error": 0.0,
+            "error_bound": 0.0005,
+            "max_encoded_bits": 11,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 4,
+            "scale_factor": 10000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-05,
+            "max_encoded_bits": 14,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 5,
+            "scale_factor": 100000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-06,
+            "max_encoded_bits": 17,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 6,
+            "scale_factor": 1000000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-07,
+            "max_encoded_bits": 21,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 7,
+            "scale_factor": 10000000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-08,
+            "max_encoded_bits": 24,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 8,
+            "scale_factor": 100000000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-09,
+            "max_encoded_bits": 27,
+            "overflow": false,
+            "mul_overflow": false
+          }
+        ]
+      }
+    },
+    "ckks": {
+      "request": {
+        "scheme": "ckks",
+        "values": [
+          "1.25"
+        ],
+        "precision": 2
+      },
+      "response": {
+        "mode": "native",
+        "converted": false,
+        "scale_factor": 1,
+        "scale_exponent": 0,
+        "items": [
+          {
+            "input": "1.25",
+            "encoded_integer": null,
+            "encoded_bits": 1,
+            "decoded": 1.25,
+            "abs_error": 0.0
+          }
+        ],
+        "max_abs_error": 0.0,
+        "error_bound": 0.5,
+        "overflow": false,
+        "plaintext_space": null,
+        "sweep": [
+          {
+            "precision": 0,
+            "scale_factor": 1,
+            "max_abs_error": 0.0,
+            "error_bound": 0.5,
+            "max_encoded_bits": 1,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 1,
+            "scale_factor": 10,
+            "max_abs_error": 0.0,
+            "error_bound": 0.05,
+            "max_encoded_bits": 4,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 2,
+            "scale_factor": 100,
+            "max_abs_error": 0.0,
+            "error_bound": 0.005,
+            "max_encoded_bits": 7,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 3,
+            "scale_factor": 1000,
+            "max_abs_error": 0.0,
+            "error_bound": 0.0005,
+            "max_encoded_bits": 11,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 4,
+            "scale_factor": 10000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-05,
+            "max_encoded_bits": 14,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 5,
+            "scale_factor": 100000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-06,
+            "max_encoded_bits": 17,
+            "overflow": false,
+            "mul_overflow": true
+          },
+          {
+            "precision": 6,
+            "scale_factor": 1000000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-07,
+            "max_encoded_bits": 21,
+            "overflow": false,
+            "mul_overflow": true
+          },
+          {
+            "precision": 7,
+            "scale_factor": 10000000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-08,
+            "max_encoded_bits": 24,
+            "overflow": false,
+            "mul_overflow": true
+          },
+          {
+            "precision": 8,
+            "scale_factor": 100000000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-09,
+            "max_encoded_bits": 27,
+            "overflow": false,
+            "mul_overflow": true
+          }
+        ]
+      }
+    },
+    "bgv": {
+      "request": {
+        "scheme": "bgv",
+        "values": [
+          "1.25"
+        ],
+        "precision": 2
+      },
+      "response": {
+        "mode": "fixed_point",
+        "converted": true,
+        "scale_factor": 100,
+        "scale_exponent": 2,
+        "items": [
+          {
+            "input": "1.25",
+            "encoded_integer": "125",
+            "encoded_bits": 7,
+            "decoded": 1.25,
+            "abs_error": 0.0
+          }
+        ],
+        "max_abs_error": 0.0,
+        "error_bound": 0.005,
+        "overflow": false,
+        "plaintext_space": {
+          "bits": 49,
+          "label": "目录缺省参数的编码边界"
+        },
+        "sweep": [
+          {
+            "precision": 0,
+            "scale_factor": 1,
+            "max_abs_error": 0.25,
+            "error_bound": 0.5,
+            "max_encoded_bits": 1,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 1,
+            "scale_factor": 10,
+            "max_abs_error": 0.05,
+            "error_bound": 0.05,
+            "max_encoded_bits": 4,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 2,
+            "scale_factor": 100,
+            "max_abs_error": 0.0,
+            "error_bound": 0.005,
+            "max_encoded_bits": 7,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 3,
+            "scale_factor": 1000,
+            "max_abs_error": 0.0,
+            "error_bound": 0.0005,
+            "max_encoded_bits": 11,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 4,
+            "scale_factor": 10000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-05,
+            "max_encoded_bits": 14,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 5,
+            "scale_factor": 100000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-06,
+            "max_encoded_bits": 17,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 6,
+            "scale_factor": 1000000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-07,
+            "max_encoded_bits": 21,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 7,
+            "scale_factor": 10000000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-08,
+            "max_encoded_bits": 24,
+            "overflow": false,
+            "mul_overflow": false
+          },
+          {
+            "precision": 8,
+            "scale_factor": 100000000,
+            "max_abs_error": 0.0,
+            "error_bound": 5e-09,
+            "max_encoded_bits": 27,
+            "overflow": false,
+            "mul_overflow": true
+          }
+        ]
+      }
+    }
+  },
+  "optimization": {
+    "request": {
+      "security_bits": 192,
+      "mult_depth": 2,
+      "precision_digits": 5,
+      "batch_size": 512
+    },
+    "response": {
+      "recommended": {
+        "poly_modulus_degree": 16384,
+        "coeff_modulus_bits": [
+          57,
+          37,
+          37,
+          57
+        ],
+        "total_modulus_bits": 188,
+        "max_modulus_bits": 305,
+        "margin_bits": 117,
+        "scale_bits": 37,
+        "integer_bits": 20,
+        "slots": 8192,
+        "est_add_ms": 0.14,
+        "est_mul_ms": 6.246153846153847,
+        "ciphertext_kb": 768.0,
+        "feasible": true,
+        "reasons": [],
+        "recommended": true
+      },
+      "candidates": [
+        {
+          "poly_modulus_degree": 1024,
+          "coeff_modulus_bits": [
+            57,
+            37,
+            37,
+            57
+          ],
+          "total_modulus_bits": 188,
+          "max_modulus_bits": 19,
+          "margin_bits": -169,
+          "scale_bits": 37,
+          "integer_bits": 20,
+          "slots": 512,
+          "est_add_ms": 0.00875,
+          "est_mul_ms": 0.27884615384615385,
+          "ciphertext_kb": 48.0,
+          "feasible": false,
+          "reasons": [
+            "系数模数超过该安全等级上限"
+          ],
+          "recommended": false
+        },
+        {
+          "poly_modulus_degree": 2048,
+          "coeff_modulus_bits": [
+            57,
+            37,
+            37,
+            57
+          ],
+          "total_modulus_bits": 188,
+          "max_modulus_bits": 37,
+          "margin_bits": -151,
+          "scale_bits": 37,
+          "integer_bits": 20,
+          "slots": 1024,
+          "est_add_ms": 0.0175,
+          "est_mul_ms": 0.6134615384615384,
+          "ciphertext_kb": 96.0,
+          "feasible": false,
+          "reasons": [
+            "系数模数超过该安全等级上限"
+          ],
+          "recommended": false
+        },
+        {
+          "poly_modulus_degree": 4096,
+          "coeff_modulus_bits": [
+            57,
+            37,
+            37,
+            57
+          ],
+          "total_modulus_bits": 188,
+          "max_modulus_bits": 75,
+          "margin_bits": -113,
+          "scale_bits": 37,
+          "integer_bits": 20,
+          "slots": 2048,
+          "est_add_ms": 0.035,
+          "est_mul_ms": 1.3384615384615384,
+          "ciphertext_kb": 192.0,
+          "feasible": false,
+          "reasons": [
+            "系数模数超过该安全等级上限"
+          ],
+          "recommended": false
+        },
+        {
+          "poly_modulus_degree": 8192,
+          "coeff_modulus_bits": [
+            57,
+            37,
+            37,
+            57
+          ],
+          "total_modulus_bits": 188,
+          "max_modulus_bits": 152,
+          "margin_bits": -36,
+          "scale_bits": 37,
+          "integer_bits": 20,
+          "slots": 4096,
+          "est_add_ms": 0.07,
+          "est_mul_ms": 2.9,
+          "ciphertext_kb": 384.0,
+          "feasible": false,
+          "reasons": [
+            "系数模数超过该安全等级上限"
+          ],
+          "recommended": false
+        },
+        {
+          "poly_modulus_degree": 16384,
+          "coeff_modulus_bits": [
+            57,
+            37,
+            37,
+            57
+          ],
+          "total_modulus_bits": 188,
+          "max_modulus_bits": 305,
+          "margin_bits": 117,
+          "scale_bits": 37,
+          "integer_bits": 20,
+          "slots": 8192,
+          "est_add_ms": 0.14,
+          "est_mul_ms": 6.246153846153847,
+          "ciphertext_kb": 768.0,
+          "feasible": true,
+          "reasons": [],
+          "recommended": true
+        },
+        {
+          "poly_modulus_degree": 32768,
+          "coeff_modulus_bits": [
+            57,
+            37,
+            37,
+            57
+          ],
+          "total_modulus_bits": 188,
+          "max_modulus_bits": 611,
+          "margin_bits": 423,
+          "scale_bits": 37,
+          "integer_bits": 20,
+          "slots": 16384,
+          "est_add_ms": 0.28,
+          "est_mul_ms": 13.384615384615385,
+          "ciphertext_kb": 1536.0,
+          "feasible": true,
+          "reasons": [],
+          "recommended": false
+        }
+      ],
+      "rules": [
+        "按安全模数上限、乘法深度、精度和槽位数筛选；性能为参数模型估算，不是实测耗时"
+      ],
+      "security_table": [
+        {
+          "poly_modulus_degree": 1024,
+          "max_modulus_bits": 19
+        },
+        {
+          "poly_modulus_degree": 2048,
+          "max_modulus_bits": 37
+        },
+        {
+          "poly_modulus_degree": 4096,
+          "max_modulus_bits": 75
+        },
+        {
+          "poly_modulus_degree": 8192,
+          "max_modulus_bits": 152
+        },
+        {
+          "poly_modulus_degree": 16384,
+          "max_modulus_bits": 305
+        },
+        {
+          "poly_modulus_degree": 32768,
+          "max_modulus_bits": 611
+        }
+      ],
+      "source": "parameter_estimate"
+    }
+  }
+}

@@ -62,7 +62,10 @@
   const BY_KIND = {};
   ITEMS.forEach(function (it) { BY_KIND[it.kind] = it; });
 
-  let ctx = null, root = null, alive = false;
+  let ctx = null, root = null, alive = false, generation = 0, historyRequest = 0;
+  const following = {};
+  function ticket() { return { generation: generation, projectId: ctx.projectId }; }
+  function current(t) { return alive && t.generation === generation && t.projectId === ctx.projectId; }
   let defaults = null;
   let history = [];
   const subs = {};     // kind -> SSE 订阅
@@ -86,7 +89,7 @@
         '<span class="hint">每项评估可调配置后单独运行；结果确定可复现（同项目、同配置结果一致），可导出 CSV 评估报告</span></div>' +
       '<div class="banner banner-warn fle-source" data-acc="FL-EVAL-01 FL-EVAL-02 FL-EVAL-03" role="note">' +
         '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true" style="flex-shrink:0;"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5M12 7.6v.6"></path></svg>' +
-        '<span><strong>数据来源说明：</strong>当前数值来自原型内置评估引擎的仿真结果，用于演示评估流程、判定口径与报告格式；正式验收需接入真实评估引擎运行或提供离线实验记录。</span>' +
+        '<span><strong>后端能力说明：</strong>当前后端将本页评估标记为原型公式模拟，结果不能作为真实攻击实验或合同指标验收。正式验收需后端接入真实评估引擎或提供离线实验记录。</span>' +
       '</div>' +
       '<div class="card card-lg" data-acc="FL-EVAL-01 FL-EVAL-02 FL-EVAL-03">' +
         '<div class="fla-row"><span class="card-title">指标总览</span><span class="hint">取每项最近一次完成的评估</span></div>' +
@@ -189,14 +192,18 @@
   /* ---------- 运行 ---------- */
 
   async function start(it) {
+    const request = ticket();
+    if (!current(request)) return;
     const err = $('fleErr_' + it.kind);
     err.hidden = true;
     try {
-      const run = await Api.post('/projects/' + ctx.projectId + '/fl/evaluations', { kind: it.kind, config: readForm(it) });
+      const run = await Api.post('/projects/' + request.projectId + '/fl/evaluations', { kind: it.kind, config: readForm(it) });
+      if (!current(request)) return;
       UI.toast('已开始' + it.title + '（' + run.eval_id + '）');
       follow(run);
       loadHistory();
     } catch (e) {
+      if (!current(request)) return;
       err.textContent = e.message;
       err.hidden = false;
       UI.fail(e);
@@ -204,13 +211,16 @@
   }
 
   function follow(run) {
+    const request = ticket();
     const kind = run.kind;
+    following[kind] = run.eval_id;
+    function valid() { return current(request) && following[kind] === run.eval_id; }
     if (subs[kind]) subs[kind].close();
     setRunning(kind, true, run.progress, run.stage);
     subs[kind] = Api.subscribe('/fl/evaluations/' + run.eval_id + '/events', {
-      progress: function (ev) { if (alive) setRunning(kind, true, ev.progress, ev.stage); },
+      progress: function (ev) { if (valid()) setRunning(kind, true, ev.progress, ev.stage); },
       finished: function (ev) {
-        if (!alive) return;
+        if (!valid()) return;
         subs[kind].close();
         delete subs[kind];
         setRunning(kind, false);
@@ -425,24 +435,26 @@
   }
 
   async function loadHistory() {
-    const pid = ctx.projectId;
+    const request = ticket(), requestId = ++historyRequest;
+    const pid = request.projectId;
     try {
       const res = await Api.get('/projects/' + pid + '/fl/evaluations');
-      if (!alive || pid !== ctx.projectId) return;
+      if (!current(request) || requestId !== historyRequest) return;
       history = res.items;
       renderSummary();
       renderHistory();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(request) && requestId === historyRequest) UI.fail(e); }
   }
 
   async function load() {
-    const pid = ctx.projectId;
+    const request = ticket();
+    const pid = request.projectId;
     try {
       const res = await Promise.all([
         Api.get('/projects/' + pid + '/fl/evaluations/defaults'),
         Api.get('/projects/' + pid + '/fl/evaluations')
       ]);
-      if (!alive || pid !== ctx.projectId) return;
+      if (!current(request)) return;
       defaults = res[0];
       history = res[1].items;
       ITEMS.forEach(function (it) {
@@ -454,12 +466,14 @@
       });
       renderSummary();
       renderHistory();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(request)) UI.fail(e); }
   }
 
   window.FLE = {
     mount: function (c, el) {
-      ctx = c;
+      generation++;
+      Object.keys(subs).forEach(function (k) { subs[k].close(); delete subs[k]; });
+      ctx = { projectId: c.projectId };
       root = el;
       alive = true;
       history = [];
@@ -468,7 +482,7 @@
       load();
     },
     unmount: function () {
-      alive = false;
+      alive = false; generation++;
       Object.keys(subs).forEach(function (k) { subs[k].close(); delete subs[k]; });
     }
   };

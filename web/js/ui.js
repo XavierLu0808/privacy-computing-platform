@@ -24,6 +24,7 @@
 
   /** 统一错误提示：ApiError 直接显示后端 message。 */
   function fail(err) {
+    if (err && (err.name === 'AbortError' || err.cancelled)) return;
     console.error(err);
     toast((err && err.message) || '请求失败', true);
   }

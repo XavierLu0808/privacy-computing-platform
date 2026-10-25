@@ -11,12 +11,16 @@
 
   const PROTO_CN = { ss: '秘密共享', gc: '混淆电路', ot: '不经意传输扩展' };
   const ROLE_CN = { input: '输入方', compute: '计算方', output: '输出方' };
+  const OP_CN = { secure_sum: '安全求和', secure_mean: '安全求均值', secure_product: '安全求积',
+    secure_compare: '安全比较', secure_max: '安全最大值', logic_op: '逻辑运算', vector_ot: '向量 OT' };
   const TASK_ST = { pending: '待执行', running: '执行中', stopped: '已停止', finished: '已结束', failed: '失败' };
   const PARTY_ST = { pending: '待执行', running: '执行中', stopped: '已停止', finished: '已结束', abnormal: '异常' };
 
   let ctx = null;
   let root = null;
-  let gen = 0;
+  let gen = 0, selection = 0, selectedId = null, active = false, detailRequest = 0, listRequest = 0, historyRequest = 0;
+  function current(my) { return active && my === gen; }
+  function selected(my, serial, id) { return current(my) && serial === selection && id === selectedId; }
   let task = null;
   let tasks = [];
   let sse = null;
@@ -32,9 +36,11 @@
     if (onClick) b.addEventListener('click', onClick);
     return b;
   }
-  function sec(v) { return v > 0 && v < 0.01 ? '< 0.01 秒' : (v < 10 ? Number(v).toFixed(2) : Number(v).toFixed(1)) + ' 秒'; }
-  function pct(v) { return (v >= 0 ? '+' : '') + Number(v).toFixed(1) + '%'; }
-  function num(v) { return Number(v).toLocaleString('zh-CN'); }
+  function finite(v) { return typeof v === 'number' && Number.isFinite(v); }
+  function sec(v) { return !finite(v) ? '—' : v > 0 && v < 0.01 ? '< 0.01 秒' : (v < 10 ? v.toFixed(2) : v.toFixed(1)) + ' 秒'; }
+  function pct(v) { return finite(v) ? (v >= 0 ? '+' : '') + v.toFixed(1) + '%' : '—'; }
+  function num(v) { return finite(v) ? v.toLocaleString('zh-CN') : '—'; }
+  function wallTiming() { return task.measurement_scope && task.measurement_scope.compute_sec === 'per_party_execution_wall_seconds_including_wait'; }
   function protos(list) { return list.map(function (p) { return PROTO_CN[p] || p; }).join(' + '); }
 
   /* ---------- 骨架 ---------- */
@@ -94,7 +100,9 @@
   /* ---------- 任务选择与控制 ---------- */
 
   async function loadTasks() {
-    const res = await Api.get('/projects/' + ctx.projectId + '/mpc/tasks', { status: 'all', page_size: 100 });
+    const my = gen, request = ++listRequest, projectId = ctx.projectId;
+    const res = await Api.get('/projects/' + projectId + '/mpc/tasks', { status: 'all', page_size: 100 });
+    if (!current(my) || request !== listRequest) return false;
     tasks = res.items;
     const sel = $('mpcTaskSel');
     UI.clear(sel);
@@ -109,73 +117,69 @@
       sel.appendChild(o);
     });
     if (task) sel.value = task.task_id;
+    return true;
   }
 
   async function openTask(id) {
+    if (!active) return;
     if (sse) { sse.close(); sse = null; }
-    const my = gen;
-    if (!id) { task = null; render(); return; }
+    const my = gen, serial = ++selection, request = ++detailRequest;
+    selectedId = id || null; task = null; render();
+    if (!id) return;
     try {
-      const t = await Api.get('/mpc/tasks/' + id);
-      if (my !== gen) return;
-      task = t;
-      $('mpcTaskSel').value = id;
+      const next = await Api.get('/mpc/tasks/' + id);
+      if (!selected(my, serial, id) || request !== detailRequest) return;
+      task = next; $('mpcTaskSel').value = id;
       if (task.status !== 'finished') listen();
       render();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (selected(my, serial, id)) UI.fail(e); }
   }
 
   function listen() {
     if (sse) sse.close();
-    const id = task.task_id;
+    const id = task.task_id, my = gen, serial = selection;
+    const alive = function () { return selected(my, serial, id) && task; };
     sse = Api.subscribe('/mpc/tasks/' + id + '/events', {
+      snapshot: function (value) { if (alive()) { detailRequest++; task = value; render(); } },
       metrics: function (ev) {
-        if (!task || task.task_id !== id) return;
-        task.parties = ev.parties;
-        task.summary = ev.summary;
-        task.progress_pct = ev.progress_pct;
-        if (ev.alarms) task.alarms = ev.alarms;   // 告警文案里的累计值随心跳刷新
+        if (!alive()) return;
+        task.parties = ev.parties; task.summary = ev.summary; task.progress_pct = ev.progress_pct;
+        if (ev.alarms) task.alarms = ev.alarms;
         renderBody();
       },
       alarm_raised: function (a) {
-        if (!task || task.task_id !== id) return;
+        if (!alive()) return;
         if (!task.alarms.some(function (x) { return x.alarm_id === a.alarm_id; })) task.alarms.push(a);
         renderAlarm();
       },
       status_changed: async function (ev) {
-        if (!task || task.task_id !== id) return;
+        if (!alive()) return;
         task.status = ev.status;
         if (ev.status === 'finished') {
           await openTask(id);
+          const latest = selection;
+          if (!selected(my, latest, id)) return;
           await loadTasks();
-          loadHistory();
-        } else {
-          render();
-        }
+          if (selected(my, latest, id)) await loadHistory();
+        } else render();
       }
     });
   }
 
-  async function onRun() {
+  async function taskAction(action) {
     if (!task) return;
-    const action = task.status === 'running' ? 'stop' : 'start';
+    const id = task.task_id, my = gen, serial = selection, request = ++detailRequest;
     try {
-      task = await Api.post('/mpc/tasks/' + task.task_id + '/actions', { action: action });
-      if (action === 'start' && !sse) listen();
-      render();
-      loadTasks();
-    } catch (e) { UI.fail(e); }
+      const next = await Api.post('/mpc/tasks/' + id + '/actions', { action: action });
+      if (!selected(my, serial, id) || request !== detailRequest) return;
+      task = next;
+      if (!sse) listen();
+      render(); await loadTasks();
+    } catch (e) { if (selected(my, serial, id)) UI.fail(e); }
   }
 
-  async function onReset() {
-    if (!task) return;
-    try {
-      task = await Api.post('/mpc/tasks/' + task.task_id + '/actions', { action: 'reset' });
-      if (!sse) listen();
-      render();
-      loadTasks();
-    } catch (e) { UI.fail(e); }
-  }
+  function onRun() { return taskAction(task && task.status === 'running' ? 'stop' : 'start'); }
+  function onReset() { return taskAction('reset'); }
 
   function locate(pid) {
     const card = root.querySelector('.party[data-party="' + pid + '"]');
@@ -233,7 +237,7 @@
     flow.appendChild(el('span', 'hint', '计算流程'));
     task.steps.forEach(function (s, i) {
       if (i) flow.appendChild(el('span', 'hint-2', '→'));
-      flow.appendChild(el('span', 'tag tag-cls', s.name + ' · ' + PROTO_CN[s.protocol]));
+      flow.appendChild(el('span', 'tag tag-cls', (s.name || OP_CN[s.operator] || s.operator || '未提供算子') + ' · ' + (PROTO_CN[s.protocol] || s.protocol || '—')));
     });
     flow.appendChild(el('span', 'divider-v'));
     flow.appendChild(el('span', 'hint', task.parties.length + ' 方 · 每个输入方 ' + num(task.data_rows) + ' 行'));
@@ -250,8 +254,12 @@
     pv.id = 'mpcProgText';
     prog.appendChild(pv);
     box.appendChild(prog);
-    box.appendChild(el('span', 'hint-2', '预估（来自协议管理页的性能预估模型）：计算 ' + sec(task.estimate.est_compute_sec) + '，通信 ' + sec(task.estimate.est_comm_sec) +
-      '，通信量 ' + num(task.estimate.est_comm_mb) + ' MB，' + task.estimate.rounds + ' 轮。演示环境按该模型逐心跳推进指标。'));
+    const estimate = task.estimate;
+    box.appendChild(el('span', 'hint-2', estimate
+      ? '预估（来自协议管理页的性能预估模型）：计算 ' + sec(estimate.est_compute_sec) + '，通信 ' + sec(estimate.est_comm_sec) +
+        '，通信量 ' + (finite(estimate.est_comm_bytes) ? UI.bytes(estimate.est_comm_bytes) : num(estimate.est_comm_mb) + ' MB') +
+        '，' + num(estimate.rounds) + ' 轮。运行指标以执行器实际返回值为准。'
+      : '未提供性能预估；运行指标以执行器实际返回值为准。'));
   }
 
   function renderMetrics() {
@@ -263,10 +271,13 @@
     const s = task.summary;
     const n = task.parties.length;
     g.appendChild(metric('总通信量', UI.bytes(s.total_comm_bytes), '各方累计发送之和；单方均值 ' + UI.bytes(s.mean_comm_bytes)));
-    g.appendChild(metric('最长计算耗时', sec(s.max_compute_sec), '最慢一方的累计本地计算时间；各方均值 ' + sec(s.mean_compute_sec)));
-    g.appendChild(metric('轮次交互数', s.interaction_rounds + ' 轮', '已完成的协议消息往返；预估共 ' + task.estimate.rounds + ' 轮'));
-    const m = metric('异常节点', s.abnormal_parties + ' / ' + n + ' 方', '偏离全部参与方均值超过 ±' + task.anomaly_rule.threshold_pct + '% 判为异常');
-    if (s.abnormal_parties) m.classList.add('mpc-metric-bad');
+    g.appendChild(metric('最长执行耗时', sec(s.max_compute_sec), (wallTiming()
+      ? '单方累计执行墙钟时间，包含等待，未拆分纯计算与通信；均值 ' : '按后端 compute_sec 测量口径；各方均值 ') + sec(s.mean_compute_sec)));
+    g.appendChild(metric('轮次交互数', num(s.interaction_rounds) + ' 轮', '已完成的协议消息往返；预估共 ' + num(task.estimate && task.estimate.rounds) + ' 轮'));
+    const abnormal = Array.isArray(task.alarms)
+      ? new Set(task.alarms.map(function (a) { return a.party_id; }).filter(function (id) { return typeof id === 'string' && id.length; })).size : null;
+    const m = metric('异常节点', num(abnormal) + ' / ' + n + ' 方', '按后端当前告警列表中的参与方去重；同一方多条告警仅计一方');
+    if (abnormal) m.classList.add('mpc-metric-bad');
     g.appendChild(m);
   }
 
@@ -318,7 +329,7 @@
       card.appendChild(head);
       card.appendChild(statBlock('累计通信量', p.comm_bytes ? UI.bytes(p.comm_bytes) : '0 B', p.comm_bytes / maxComm * 100,
         p.comm_deviation_pct, Math.abs(p.comm_deviation_pct) > thr && anom));
-      card.appendChild(statBlock('累计计算耗时', sec(p.compute_sec), p.compute_sec / maxTime * 100,
+      card.appendChild(statBlock('累计执行耗时', sec(p.compute_sec), p.compute_sec / maxTime * 100,
         p.compute_deviation_pct, Math.abs(p.compute_deviation_pct) > thr && anom));
       const rounds = el('div', 'party-rounds');
       rounds.appendChild(el('span', null, '轮次交互次数'));
@@ -413,13 +424,13 @@
   }
 
   async function loadHistory() {
-    const my = gen;
+    const my = gen, request = ++historyRequest;
     try {
       const res = await Api.get('/projects/' + ctx.projectId + '/mpc/tasks', query());
-      if (my !== gen) return;
+      if (!current(my) || request !== historyRequest) return;
       const wrap = $('mpcHistory');
       UI.clear(wrap);
-      $('mpcHistCount').textContent = '共 ' + res.total + ' 条（总耗时 = 最慢一方的计算 + 通信耗时）';
+      $('mpcHistCount').textContent = '共 ' + res.total + ' 条（总耗时为后端已测量尝试的墙钟时间之和；未知中断时间不计入，不额外叠加通信预估）';
       if (!res.items.length) wrap.appendChild(el('div', 'table-empty', '没有符合条件的历史任务'));
       res.items.forEach(function (t) {
         const row = el('div', 'table-row mpc-hist-grid' + (task && task.task_id === t.task_id ? ' current' : ''));
@@ -457,7 +468,7 @@
       });
       updateCmpBtn();
       renderCompare();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(my) && request === historyRequest) UI.fail(e); }
   }
 
   function updateCmpBtn() {
@@ -467,11 +478,13 @@
   }
 
   async function onCompare() {
+    const my = gen, pair = picked.join(',');
     try {
-      cmpData = await Api.get('/projects/' + ctx.projectId + '/mpc/tasks/compare', { task_ids: picked.join(',') });
-      renderCompare();
+      const next = await Api.get('/projects/' + ctx.projectId + '/mpc/tasks/compare', { task_ids: pair });
+      if (!current(my) || pair !== picked.join(',')) return;
+      cmpData = next; renderCompare();
       $('mpcCompare').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(my) && pair === picked.join(',')) UI.fail(e); }
   }
 
   function renderCompare() {
@@ -522,33 +535,33 @@
   /* ---------- 生命周期 ---------- */
 
   async function mount(c, section, opts) {
-    ctx = c;
+    ctx = { projectId: c.projectId }; active = true;
     root = section;
     gen += 1;
     const my = gen;
     if (sse) { sse.close(); sse = null; }
-    task = null;
+    selection++; selectedId = null; task = null;
     picked = [];
     cmpData = null;
     if (!root.getAttribute('data-mpc-built')) {
       skeleton();
       root.setAttribute('data-mpc-built', '1');
     }
+    render(); UI.clear($('mpcHistory')); $('mpcHistCount').textContent = ''; renderCompare();
     try {
-      await loadTasks();
-      if (my !== gen) return;
+      if (!await loadTasks() || !current(my)) return;
       const want = opts && opts.taskId;
       const running = tasks.filter(function (t) { return t.status === 'running'; })[0];
       const target = want || (running || tasks[0] || {}).task_id;
       await openTask(target);
-      if (my !== gen) return;
+      if (!current(my)) return;
       if (!target) render();
       loadHistory();
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (current(my)) UI.fail(e); }
   }
 
   function unmount() {
-    gen += 1;
+    active = false; gen += 1; selection++; selectedId = null; task = null;
     if (sse) { sse.close(); sse = null; }
     clearTimeout(flashTimer);
     flashPid = null;

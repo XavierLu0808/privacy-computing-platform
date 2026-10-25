@@ -31,8 +31,43 @@
   let nodes = [];
   let sse = null;
   let booted = false;
+  let active = false, projectEpoch = 0, selectionEpoch = 0, selectedJobId = null;
+  let jobsRequest = 0, nodesRequest = 0, metricsRequest = 0, detailRequest = 0, historyRequest = 0;
 
-  /** 注册算法 / 自定义模型的任务 algorithm 为 custom，真实名称与版本在 algo_ref_name（任务编排 mock 补充）。 */
+  function projectToken() { return { epoch: projectEpoch, projectId: ctx && ctx.projectId }; }
+  function projectCurrent(t) { return active && t.epoch === projectEpoch && ctx && t.projectId === ctx.projectId; }
+  function selectionToken() { return Object.assign(projectToken(), { selection: selectionEpoch, jobId: selectedJobId }); }
+  function selectionCurrent(t) { return projectCurrent(t) && t.selection === selectionEpoch && t.jobId === selectedJobId; }
+  function closeStream() { if (sse) { sse.close(); sse = null; } }
+
+  function clearHistory() {
+    historyRequest++;
+    UI.clear($('flHqRows')); $('flHqCount').textContent = '';
+  }
+
+  function clearDetails(message) {
+    job = null; nodes = []; series = {};
+    disableControls();
+    $('flJobName').textContent = message || '当前项目暂无训练任务';
+    $('flBadgeText').textContent = '未选择任务';
+    $('flBadge').style.background = '#F0F2F5'; $('flBadge').style.color = '#4C5564';
+    ['flJobType', 'flJobMeta', 'flAggNote', 'flCkpt', 'flRuntimeScope', 'flEtaNote', 'flChartHint'].forEach(function (id) { $(id).textContent = ''; });
+    ['flM1Name', 'flM2Name', 'flM1Better', 'flM2Better', 'flLoss', 'flAcc', 'flLossPrev', 'flAccPrev',
+      'flTotalRounds', 'flEta', 'flElapsed', 'flC1Label', 'flC2Label'].forEach(function (id) { $(id).textContent = '—'; });
+    $('flRound').textContent = '0'; $('flProgress').style.width = '0%';
+    ['flStates', 'flStateInfo', 'flWorkers', 'flNodes', 'flAlgo'].forEach(function (id) { UI.clear($(id)); });
+    $('flAgg').value = ''; $('flViewKey').hidden = true;
+    renderCharts(); charts.forEach(function (c) { c.__flSig = null; });
+    clearHistory();
+  }
+
+  function clearSelection(message) {
+    selectionEpoch++; selectedJobId = null; closeStream();
+    if (booted) clearDetails(message);
+    else { job = null; nodes = []; series = {}; }
+  }
+
+  /** 注册算法 / 自定义模型的任务 algorithm 为 custom，真实名称与版本在 algo_ref_name（后端任务投影返回）。 */
   function algoLabel(j) { return j.algo_ref_name || ALGO_CN[j.algorithm] || j.algorithm; }
 
   function typeDef(t) { return taskTypes.filter(function (x) { return x.task_type === t; })[0]; }
@@ -50,7 +85,7 @@
 
     $('flAlgo').addEventListener('change', function () { patch({ algorithm: $('flAlgo').value }); });
     $('flAgg').addEventListener('change', function () { patch({ aggregation: $('flAgg').value }); });
-    $('flView').addEventListener('change', function () { charts.forEach(hideTips); loadMetrics(); });
+    $('flView').addEventListener('change', function () { charts.forEach(hideTips); loadMetrics().catch(UI.fail); });
     $('flExport').addEventListener('click', exportCsv);
     $('flViewKey').addEventListener('click', viewKey);
     $('flAddNode').addEventListener('click', addNode);
@@ -76,7 +111,8 @@
     const rt = UI.el('div', 'card card-lg');
     rt.dataset.acc = 'FL-PROC-02 FL-PROC-03 FL-PROC-04';
     rt.innerHTML = '<div class="fl-proc-head"><span class="card-title">运行资源与断点</span>' +
-      '<span class="hint">启动前校验项目配置、节点可用性与算法兼容性，通过后为每个参与节点分配一个训练容器；暂停时保存断点，强制终止时以 SIGKILL 结束容器并释放资源</span></div>' +
+      '<span class="hint">启动前校验项目配置、节点可用性与算法兼容性；当前真实训练由共享执行器承载，资源与隔离范围以运行信息为准。暂停等待断点保存，终止等待执行器确认清理与资源释放</span></div>' +
+      '<div id="flRuntimeScope" class="hint"></div>' +
       '<div class="table-head fl-rt-grid"><span>节点</span><span>角色</span><span>容器 ID</span><span>进程 PID</span><span>CPU / 内存</span><span>状态</span></div>' +
       '<div id="flWorkers"></div><div id="flCkpt" class="fl-ckpt"></div>';
     ctl.parentNode.insertBefore(rt, ctl.nextSibling);
@@ -135,8 +171,11 @@
   }
 
   async function queryHistory() {
+    if (!active || !job) return;
+    const token = selectionToken(), request = ++historyRequest;
     try {
       const res = await Api.get('/fl/metrics', Object.assign({ page_size: 50 }, historyQuery()));
+      if (!selectionCurrent(token) || request !== historyRequest) return;
       $('flHqCount').textContent = '共 ' + res.total + ' 条（' + res.job_count + ' 个任务）' + (res.total > res.items.length ? '，下方显示前 ' + res.items.length + ' 条，完整数据请导出' : '');
       const wrap = $('flHqRows');
       UI.clear(wrap);
@@ -153,13 +192,16 @@
         row.appendChild(UI.el('span', 'cell-muted', UI.datetime(r.recorded_at)));
         wrap.appendChild(row);
       });
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (selectionCurrent(token) && request === historyRequest) UI.fail(e); }
   }
 
   async function exportHistory() {
+    if (!active || !job) return;
+    const token = selectionToken();
     try {
       const q = historyQuery();
       const n = await Api.get('/fl/metrics', Object.assign({ page_size: 1 }, q));   // 先校验条件
+      if (!selectionCurrent(token)) return;
       if (!n.total) { UI.toast('该条件下没有指标记录，未导出', true); return; }
       const name = await Api.download('/fl/metrics/export', { query: q });
       UI.toast('已导出 ' + (name || 'CSV') + '（' + n.total + ' 条）');
@@ -186,23 +228,30 @@
     const wrap = $('flWorkers');
     UI.clear(wrap);
     const rt = job.runtime;
+    $('flRuntimeScope').textContent = rt && rt.shared_executor
+      ? '下列节点共用同一执行器；CPU / 内存是共享容器的资源上限，不能按节点累加。节点条目不代表独立容器或独立进程。'
+      : '资源清单取自后端运行信息；未提供的容器、进程或资源数值显示为 —。';
     if (!rt) wrap.appendChild(UI.el('div', 'table-empty', '尚未分配训练容器，点击「启动训练」后完成预检并分配'));
     else rt.workers.forEach(function (w) {
       const row = UI.el('div', 'table-row fl-rt-grid');
       row.appendChild(UI.el('span', 'cell-strong', w.node_id));
       row.appendChild(UI.el('span', 'cell-muted', w.role === 'aggregator' ? '聚合' : '训练'));
-      row.appendChild(UI.el('span', 'cell-muted fl-mono', w.container_id));
-      row.appendChild(UI.el('span', 'cell-muted', String(w.pid)));
-      row.appendChild(UI.el('span', 'cell-muted', w.cpu_cores + ' 核 / ' + (w.memory_mb / 1024) + ' GB'));
+      row.appendChild(UI.el('span', 'cell-muted fl-mono', w.container_id || '—'));
+      row.appendChild(UI.el('span', 'cell-muted', w.pid == null ? '—' : String(w.pid)));
+      row.appendChild(UI.el('span', 'cell-muted', (w.cpu_cores == null ? '—' : w.cpu_cores + ' 核') + ' / ' +
+        (w.memory_mb == null ? '—' : (w.memory_mb / 1024) + ' GB')));
       const st = WORKER_CN[w.status] || [w.status, 'cell-muted'];
       row.appendChild(UI.el('span', st[1], st[0]));
       wrap.appendChild(row);
     });
     const ck = job.checkpoint;
     $('flCkpt').textContent = ck
-      ? '最近断点：第 ' + ck.round + ' 轮 · ' + UI.datetime(ck.saved_at) + ' · ' + ck.path + ' · 全局模型 ' + UI.bytes(ck.global_model_bytes) +
-        '（SHA-256 ' + ck.global_model_sha256.slice(0, 12) + '…）· 含' + ck.optimizer_state + ' 与 ' + ck.node_cursors.length + ' 个训练节点的数据读取位置'
-      : (rt ? '暂无断点：暂停训练时保存当前轮次的全局模型参数，恢复时从该轮次继续' : '');
+      ? '最近断点：第 ' + ck.round + ' 轮 · ' + UI.datetime(ck.saved_at) + ' · ' + ck.path + ' · ' +
+        (ck.hash_scope && ck.hash_scope.indexOf('complete_resume_artifact') === 0 ? '完整恢复制品 ' : '全局模型 ') + UI.bytes(ck.global_model_bytes) +
+        '（SHA-256 ' + ck.global_model_sha256.slice(0, 12) + '…）· ' +
+        (ck.optimizer_state_available === false ? '优化器状态未独立解析' : ck.optimizer_state) + ' · ' +
+        (ck.node_cursors_available === false ? '节点数据读取位置未提供' : ck.node_cursors.length + ' 个训练节点的数据读取位置')
+      : (rt ? '暂无已确认断点：执行器完成轮次并保存恢复制品后更新，恢复范围以该制品为准' : '');
 
     const e = job.eta;
     $('flEtaNote').textContent = e && e.ema_round_sec !== null
@@ -210,7 +259,7 @@
       : '平滑滤波预测（EMA，启动后按每轮耗时计算）';
   }
 
-  /** PATCH 等内核接口的响应不含过程管控字段，沿用上一次的值。 */
+  /** PATCH 等更新接口的响应不含过程管控字段，沿用上一次的值。 */
   function keepProc(prev, next) {
     if (!prev || prev.job_id !== next.job_id) return next;
     const kernelOnly = next.eta === undefined;   // 不含平滑 ETA 的响应，已用时间与剩余时间也沿用
@@ -222,10 +271,12 @@
 
   /** 取平滑 ETA 参数（GET /fl/jobs/{id}/eta）；之后每轮的数值直接来自 SSE 推送。 */
   async function refreshEta() {
+    if (!job) return;
+    const token = selectionToken();
     const id = job.job_id;
     try {
       const e = await Api.get('/fl/jobs/' + id + '/eta');
-      if (!job || job.job_id !== id) return;
+      if (!selectionCurrent(token) || !job) return;
       job.elapsed_sec = e.elapsed_sec;
       job.eta_sec = e.eta_sec;
       job.eta = { method: e.method, alpha: e.alpha, ema_round_sec: e.ema_round_sec, avg_round_sec: e.avg_round_sec, eta_naive_sec: e.eta_naive_sec };
@@ -237,20 +288,24 @@
 
   /** 没有选中任务（空项目或加载中）时控制按钮不可用。 */
   function disableControls() {
-    ['flStart', 'flPause', 'flResume', 'flKill', 'flReset', 'flAlgo', 'flAgg', 'flExport'].forEach(function (id) { $(id).disabled = true; });
+    ['flStart', 'flPause', 'flResume', 'flKill', 'flReset', 'flAlgo', 'flAgg', 'flExport', 'flView', 'flViewKey', 'flHqRun', 'flHqExport'].forEach(function (id) { $(id).disabled = true; });
   }
 
   /** 强制终止前二次确认：写清会丢弃的内容与保留的内容。 */
   function confirmTerminate() {
     if (!job) return;
+    const token = selectionToken();
     const r = job.current_round;
     const ck = job.checkpoint;
     const body = UI.el('div', 'fl-confirm');
-    body.appendChild(UI.el('div', 'banner banner-err', '强制终止会以 SIGKILL 立即结束全部 ' + (job.runtime ? job.runtime.workers.length : job.node_ids.length) +
-      ' 个训练容器并释放资源。' + (job.status === 'Running' ? '正在进行、尚未完成聚合的那一轮中各节点的本地更新将被丢弃。' : '任务处于暂停状态，终止后不能再从断点恢复。')));
+    body.appendChild(UI.el('div', 'banner banner-err', '终止请求由当前执行器处理；清理完成并确认后释放运行资源，不承诺每个节点有独立容器。' +
+      (job.status === 'Running' ? '尚未提交的轮次结果不会计入已完成指标。' : '任务处于暂停状态，终止后不能再从断点恢复。')));
     body.appendChild(UI.el('span', 'hint', '保留：已完成轮次的全局与节点指标（打开本窗口时已完成 ' + r + ' 轮）' + (ck ? '、第 ' + ck.round + ' 轮断点文件' : '') +
       '。终止后任务进入 Terminated，只能从第 0 轮重新启动。'));
-    const m = UI.modal({ title: '确认强制终止「' + job.name + '」', body: body, submitText: '确认终止', onSubmit: function () { return action('terminate'); } });
+    const m = UI.modal({ title: '确认强制终止「' + job.name + '」', body: body, submitText: '确认终止', onSubmit: function () {
+      if (!selectionCurrent(token)) throw new Error('当前任务已变更，请重新确认终止操作');
+      return action('terminate');
+    } });
     const btn = document.querySelector('.modal-mask:last-of-type .modal-foot .btn-primary');
     if (btn) btn.classList.add('btn-danger');
     return m;
@@ -258,35 +313,43 @@
 
   async function action(name) {
     if (!job) return;
+    const token = selectionToken(), request = ++detailRequest;
     try {
-      job = await Api.post('/fl/jobs/' + job.job_id + '/actions', { action: name });
+      const next = await Api.post('/fl/jobs/' + token.jobId + '/actions', { action: name });
+      if (!selectionCurrent(token) || request !== detailRequest) return;
+      job = next;
       if (name === 'start' || name === 'reset') { series = {}; renderCharts(); }
       if (name === 'start' && job.preflight) {
-        UI.toast('启动校验通过（' + job.preflight.map(function (c) { return c.item; }).join('、') + '），已分配 ' + job.runtime.workers.length + ' 个训练容器');
-      } else if (name === 'pause' && job.checkpoint) {
-        UI.toast('已暂停，第 ' + job.checkpoint.round + ' 轮断点已保存');
+        UI.toast('启动校验通过（' + job.preflight.map(function (c) { return c.item; }).join('、') + '）；资源分配与训练状态以执行器确认结果为准');
+      } else if (name === 'pause') {
+        UI.toast(job.status === 'Paused' && job.checkpoint ? '已暂停，第 ' + job.checkpoint.round + ' 轮断点已保存' : '暂停请求已提交，等待执行器保存断点并确认暂停');
       } else if (name === 'resume' && job.resumed_from_round !== undefined) {
         UI.toast('已从第 ' + job.resumed_from_round + ' 轮断点继续训练');
       } else if (name === 'terminate') {
-        UI.toast('已强制终止，训练容器已释放');
+        UI.toast(job.status === 'Terminated' && job.runtime && job.runtime.released
+          ? '已终止，执行器已确认资源释放' : '终止请求已提交，资源清理与释放以执行器确认结果为准');
       }
       syncListItem();
       render();
-      loadNodes();
-    } catch (e) { UI.fail(e); }
+      await loadNodes(token);
+    } catch (e) { if (selectionCurrent(token)) UI.fail(e); }
   }
 
   async function patch(body) {
     if (!job) return;
+    const token = selectionToken(), request = ++detailRequest;
     try {
       const prev = job;
-      job = keepProc(prev, await Api.patch('/fl/jobs/' + job.job_id, body));
+      const next = await Api.patch('/fl/jobs/' + token.jobId, body);
+      if (!selectionCurrent(token) || request !== detailRequest) return;
+      job = keepProc(prev, next);
       // algo_ref_name 只在算法未变时沿用
       if (job.algorithm !== prev.algorithm) job.algo_ref_name = null;
       syncListItem();
       render();
       UI.toast('配置已更新');
     } catch (e) {
+      if (!selectionCurrent(token) || request !== detailRequest) return;
       UI.fail(e);
       render(); // 回滚下拉框到后端真实值
     }
@@ -303,10 +366,13 @@
   }
 
   async function viewKey() {
+    if (!job) return;
+    const token = selectionToken();
     try {
       const k = await Api.get('/fl/jobs/' + job.job_id + '/he-public-key');
+      if (!selectionCurrent(token)) return;
       UI.toast('公钥 ' + k.key_id + ' · ' + k.fingerprint);
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (selectionCurrent(token)) UI.fail(e); }
   }
 
   /* ---------- 弹窗：添加节点 ---------- */
@@ -344,26 +410,30 @@
   /* ---------- 弹窗：新建训练任务 ---------- */
 
   async function openCreate() {
+    if (!active) return;
+    const token = projectToken(), projectId = token.projectId;
     let projNodes, datasets, pipelines, project, library;
     try {
       const r = await Promise.all([
-        Api.get('/projects/' + ctx.projectId + '/nodes'),
-        Api.get('/projects/' + ctx.projectId + '/datasets', { status: 'ready' }),
-        Api.get('/projects/' + ctx.projectId + '/psi/pipelines', { status: 'finished' }),
-        Api.get('/projects/' + ctx.projectId),
-        Api.get('/fl/algorithms', { project_id: ctx.projectId })
+        Api.get('/projects/' + projectId + '/nodes'),
+        Api.get('/projects/' + projectId + '/datasets', { status: 'ready' }),
+        Api.get('/projects/' + projectId + '/psi/pipelines', { status: 'finished' }),
+        Api.get('/projects/' + projectId),
+        Api.get('/fl/algorithms', { project_id: projectId })
       ]);
+      if (!projectCurrent(token)) return;
       projNodes = r[0].items;
       datasets = r[1].items;
       pipelines = r[2].items.filter(function (p) { return p.status === 'finished'; });
       project = r[3];
       library = r[4].items;
-    } catch (e) { UI.fail(e); return; }
+    } catch (e) { if (projectCurrent(token)) UI.fail(e); return; }
 
     // 默认值取任务编排页的项目配置：任务类型跟随训练目标、基准模型、聚合轮数、聚合策略
     let taskType = project.target.task_type || 'classification';
-    let modelFileId = null;
+    let modelFileId = null, uploadRequest = 0;
     const body = UI.el('div');
+    const dialogCurrent = function () { return projectCurrent(token) && body.isConnected; };
     body.style.cssText = 'display:flex; flex-direction:column; gap:14px;';
 
     body.appendChild(UI.formRow('任务名称', UI.inputOf('njName', ''), '不填则自动生成'));
@@ -405,7 +475,7 @@
       if (tplRow.hidden || !window.FLO) return;
       try {
         const r = await Promise.all([Api.get('/fl/algorithms/' + algo.value), Api.get('/fl/algorithms/' + algo.value + '/templates')]);
-        if (seq !== loadSeq) return;
+        if (seq !== loadSeq || !dialogCurrent()) return;
         tplList = r[1].items;
         [{ value: '', label: '不使用模板（schema 默认值）' }].concat(tplList.map(function (t) {
           return { value: t.template_id, label: t.name + (t.preset ? '（平台预置）' : '（自定义）') };
@@ -416,7 +486,7 @@
         });
         paramEd = window.FLO.paramEditor(r[0].params_schema, null, 'njp');
         paramBox.appendChild(paramEd.el);
-      } catch (e) { UI.fail(e); }
+      } catch (e) { if (seq === loadSeq && dialogCurrent()) UI.fail(e); }
     }
     tplSel.addEventListener('change', function () {
       const t = tplList.filter(function (x) { return x.template_id === tplSel.value; })[0];
@@ -432,14 +502,17 @@
     fileRow.appendChild(fileNote);
     body.appendChild(fileRow);
     fileIn.addEventListener('change', async function () {
+      const request = ++uploadRequest, file = fileIn.files[0];
       modelFileId = null;
-      if (!fileIn.files[0]) return;
+      fileNote.textContent = '支持 .py / .zip / .pt / .onnx';
+      if (!file) return;
       try {
         fileNote.textContent = '上传中…';
-        const f = await Api.upload('/files', fileIn.files[0], { purpose: 'fl_model', project_id: ctx.projectId });
+        const f = await Api.upload('/files', file, { purpose: 'fl_model', project_id: projectId });
+        if (!dialogCurrent() || request !== uploadRequest || fileIn.files[0] !== file) return;
         modelFileId = f.file_id;
         fileNote.textContent = '已上传 ' + f.file_name + '（' + f.file_id + ' · ' + UI.bytes(f.size_bytes) + '）';
-      } catch (e) { fileNote.textContent = e.message; }
+      } catch (e) { if (dialogCurrent() && request === uploadRequest && fileIn.files[0] === file) fileNote.textContent = e.message; }
     });
 
     const rounds = UI.inputOf('njRounds', String(project.total_rounds || 30), 'number');
@@ -500,17 +573,33 @@
       const ts = taskType === 'timeseries';
       const shown = datasets.filter(function (d) { return !ts || d.time_column; });
       if (!shown.length) dsList.appendChild(UI.el('span', 'hint', ts ? '没有带时间列的数据集，请先在「隐私求交 · 数据接入」登记' : '暂无数据集'));
-      shown.forEach(function (d, i) {
+      // One source per party. For time series, use a common time column;
+      // prefer the column shared by the most parties, breaking ties by API order.
+      const columns = new Map();
+      if (ts) shown.forEach(function (d) {
+        if (!columns.has(d.time_column)) columns.set(d.time_column, new Set());
+        columns.get(d.time_column).add(d.party_id);
+      });
+      let defaultTimeColumn = null, coverage = 0;
+      columns.forEach(function (parties, column) {
+        if (parties.size > coverage) { defaultTimeColumn = column; coverage = parties.size; }
+      });
+      const selectedParties = new Set();
+      shown.forEach(function (d) {
         const row = UI.el('label', 'check-item');
         const cb = UI.el('input');
         cb.type = 'checkbox'; cb.value = d.dataset_id; cb.name = 'njDs';
-        cb.checked = ts ? i === 0 : d.party_id !== 'party-a' || !d.time_column;
+        cb.checked = !selectedParties.has(d.party_id) && (!ts || d.time_column === defaultTimeColumn);
+        if (cb.checked) selectedParties.add(d.party_id);
         cb.addEventListener('change', renderTimeCols);
         row.appendChild(cb);
         row.appendChild(document.createTextNode(d.name));
         row.appendChild(UI.el('span', 'hint', d.party_name + ' · ' + UI.rows(d.row_count) + '行' + (d.time_column ? ' · 时间列 ' + d.time_column : '')));
         dsList.appendChild(row);
       });
+      if (shown.length) dsList.appendChild(UI.el('span', 'hint', ts && coverage < 2
+        ? '当前没有至少两方使用同一时间列的就绪数据集，请先登记兼容数据；可手动调整选择。'
+        : '默认每个参与方选择第一份兼容数据集，可手动调整；时序数据默认使用同一时间列。'));
       renderTimeCols();
     }
 
@@ -574,6 +663,7 @@
     UI.modal({
       title: '新建训练任务', body: body, submitText: '创建任务', width: 680,
       onSubmit: async function () {
+        if (!dialogCurrent()) throw new Error('项目上下文已变更，请关闭弹窗后重新创建任务');
         const req = {
           task_type: taskType,
           algorithm: algo.value,
@@ -597,9 +687,11 @@
             horizon: Number($('njHorizon').value)
           };
         }
-        const created = await Api.post('/projects/' + ctx.projectId + '/fl/jobs', req);
+        const created = await Api.post('/projects/' + projectId + '/fl/jobs', req);
+        if (!dialogCurrent()) return;
         UI.toast('已创建任务「' + created.name + '」，点击「启动训练」开始');
         await loadJobs();
+        if (!dialogCurrent()) return;
         await selectJob(created.job_id);
       }
     });
@@ -644,6 +736,7 @@
     $('flKill').disabled = allowed.indexOf('terminate') < 0;
     $('flReset').disabled = allowed.indexOf('reset') < 0;
     $('flExport').disabled = false;
+    ['flView', 'flViewKey', 'flHqRun', 'flHqExport'].forEach(function (id) { $(id).disabled = false; });
 
     // 算法下拉随任务类型变化
     const algoSel = $('flAlgo');
@@ -661,9 +754,12 @@
 
     const info = job.aggregation_info;
     $('flAggNote').textContent = info.type === 'he'
-      ? '同态加密聚合 · 密钥对已生成'
-      : '秘密共享聚合 · 门限 ' + info.threshold + ' / ' + info.share_count;
+      ? '同态加密聚合 · ' + (info.he_key_ready ? '训练公钥已就绪' : '训练公钥待后端绑定')
+      : (Number.isFinite(info.threshold) && Number.isFinite(info.share_count)
+        ? '秘密共享聚合 · 门限 ' + info.threshold + ' / ' + info.share_count
+        : '秘密共享聚合 · 等待执行器确认实际协议');
     $('flViewKey').hidden = info.type !== 'he';
+    $('flViewKey').disabled = info.type !== 'he' || !info.he_key_ready;
 
     // 两张指标卡按 metrics_spec 渲染
     const sp = spec();
@@ -875,16 +971,24 @@
   /* ---------- 数据 ---------- */
 
   async function loadJobs() {
-    const res = await Api.get('/projects/' + ctx.projectId + '/fl/jobs');
+    const token = projectToken(), request = ++jobsRequest;
+    const res = await Api.get('/projects/' + token.projectId + '/fl/jobs');
+    if (!projectCurrent(token) || request !== jobsRequest) return false;
     jobs = res.items;
+    if (!jobs.length) clearSelection();
     renderJobs();
+    return true;
   }
 
-  async function loadMetrics() {
-    const scope = $('flView').value;
-    const res = await Api.get('/fl/jobs/' + job.job_id + '/metrics', { scope: scope });
+  async function loadMetrics(token) {
+    token = token || selectionToken();
+    if (!job || !selectionCurrent(token)) return;
+    const scope = $('flView').value, request = ++metricsRequest;
+    let res;
+    try { res = await Api.get('/fl/jobs/' + token.jobId + '/metrics', { scope: scope }); }
+    catch (e) { if (selectionCurrent(token) && request === metricsRequest) throw e; return; }
+    if (!selectionCurrent(token) || request !== metricsRequest || scope !== $('flView').value) return;
     series = {};
-    // 聚合节点不持有训练数据，曲线只画全局与训练节点（CSV 与查询接口仍包含聚合节点记录）
     const aggIds = nodes.filter(function (nd) { return nd.role === 'aggregator'; }).map(function (nd) { return nd.node_id; });
     res.series.filter(function (s) { return aggIds.indexOf(s.key) < 0; }).forEach(function (s) {
       series[s.key] = { label: s.label, points: s.points };
@@ -892,27 +996,41 @@
     renderCharts();
   }
 
-  async function loadNodes() {
-    const res = await Api.get('/fl/jobs/' + job.job_id + '/nodes');
+  async function loadNodes(token) {
+    token = token || selectionToken();
+    if (!job || !selectionCurrent(token)) return;
+    const request = ++nodesRequest;
+    let res;
+    try { res = await Api.get('/fl/jobs/' + token.jobId + '/nodes'); }
+    catch (e) { if (selectionCurrent(token) && request === nodesRequest) throw e; return; }
+    if (!selectionCurrent(token) || request !== nodesRequest) return;
     nodes = res.items;
     renderNodes();
   }
 
   async function selectJob(jobId) {
-    if (sse) { sse.close(); sse = null; }
+    if (!active) return;
+    selectionEpoch++; selectedJobId = jobId; closeStream(); clearDetails('正在加载任务…');
+    const token = selectionToken(), request = ++detailRequest;
     try {
-      job = await Api.get('/fl/jobs/' + jobId);
-      series = {};
-      render();
-      renderJobs();
-      await loadNodes();
-      await loadMetrics();
-      const id = job.job_id;
-      sse = Api.subscribe('/fl/jobs/' + id + '/events', {
-        round_completed: function (ev) { if (job && job.job_id === id) onRound(ev); },
-        status_changed: function () { if (job && job.job_id === id) onStatus(); }
+      const next = await Api.get('/fl/jobs/' + jobId);
+      if (!selectionCurrent(token) || request !== detailRequest) return;
+      job = next;
+      render(); renderJobs();
+      await loadNodes(token);
+      if (!selectionCurrent(token)) return;
+      await loadMetrics(token);
+      if (!selectionCurrent(token)) return;
+      sse = Api.subscribe('/fl/jobs/' + jobId + '/events', {
+        snapshot: async function (value) {
+          if (!selectionCurrent(token)) return;
+          detailRequest++; job = value; render(); syncListItem();
+          await Promise.all([loadNodes(token), loadMetrics(token)]);
+        },
+        round_completed: function (ev) { if (selectionCurrent(token)) onRound(ev); },
+        status_changed: function () { if (selectionCurrent(token)) return onStatus(token); }
       });
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (selectionCurrent(token)) UI.fail(e); }
   }
 
   function onRound(ev) {
@@ -920,7 +1038,7 @@
     job.progress_pct = Math.round((ev.round / job.total_rounds) * 100);
     job.global_metrics_prev = job.global_metrics;
     job.global_metrics = ev.global_metrics;
-    // 推送里的 eta_sec / elapsed_sec 已是 EMA 平滑结果（mock 挂 db.etaOf）；平滑后的每轮耗时 = 剩余时间 / 剩余轮次
+    // 推送里的 eta_sec / elapsed_sec 已是 EMA 平滑结果；平滑后的每轮耗时 = 剩余时间 / 剩余轮次
     job.elapsed_sec = ev.elapsed_sec;
     job.eta_sec = ev.eta_sec;
     const left = job.total_rounds - ev.round;
@@ -955,50 +1073,53 @@
     renderNodes();
   }
 
-  async function onStatus() {
+  async function onStatus(token) {
+    const request = ++detailRequest;
     try {
-      job = await Api.get('/fl/jobs/' + job.job_id);
-      render();
-      syncListItem();
-      loadNodes();
-    } catch (e) { UI.fail(e); }
+      const next = await Api.get('/fl/jobs/' + token.jobId);
+      if (!selectionCurrent(token) || request !== detailRequest) return;
+      job = next; render(); syncListItem();
+      await loadNodes(token);
+    } catch (e) { if (selectionCurrent(token)) UI.fail(e); }
   }
 
   /* ---------- 生命周期 ---------- */
 
   async function mount(c, focusJobId) {
-    ctx = c;
-    bindOnce();
+    projectEpoch++; active = true; ctx = { projectId: c.projectId };
+    const token = projectToken();
+    bindOnce(); clearSelection(); jobs = []; renderJobs();
+    $('flHqScope').value = 'job'; $('flHqSeries').value = 'global';
+    $('flHqFrom').value = ''; $('flHqTo').value = ''; $('flTypeFilter').value = '';
     try {
       if (!taskTypes.length) {
-        taskTypes = (await Api.get('/fl/task-types')).items;
+        const types = await Api.get('/fl/task-types');
+        if (!projectCurrent(token)) return;
+        taskTypes = types.items;
         const f = $('flTypeFilter');
         taskTypes.forEach(function (t) {
           const o = document.createElement('option');
-          o.value = t.task_type; o.textContent = t.name;
-          f.appendChild(o);
+          o.value = t.task_type; o.textContent = t.name; f.appendChild(o);
         });
       }
-      job = null;
-      disableControls();
-      await loadJobs();
-      // 默认看最近一个任务（列表最新在前）
+      if (!await loadJobs() || !projectCurrent(token)) return;
       const target = focusJobId || (jobs[0] && jobs[0].job_id);
       if (target) await selectJob(target);
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (projectCurrent(token)) UI.fail(e); }
   }
 
-  /** 回到 FL 页时刷新列表（PSI 等模块可能新建了任务）；focusJobId 用于「前往训练」跳转。 */
   async function refresh(focusJobId) {
+    if (!active) return;
+    const token = projectToken();
     try {
-      await loadJobs();
+      if (!await loadJobs() || !projectCurrent(token)) return;
       if (focusJobId && (!job || job.job_id !== focusJobId)) await selectJob(focusJobId);
-    } catch (e) { UI.fail(e); }
+    } catch (e) { if (projectCurrent(token)) UI.fail(e); }
   }
 
   function unmount() {
-    if (sse) { sse.close(); sse = null; }
-    disposeCharts();
+    active = false; projectEpoch++;
+    clearSelection(); jobs = []; if (booted) renderJobs(); disposeCharts();
   }
 
   function currentJobId() { return job ? job.job_id : null; }

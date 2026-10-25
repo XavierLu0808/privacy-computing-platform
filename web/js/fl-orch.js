@@ -39,6 +39,7 @@
   let projects = [];
   let nodes = [];
   let iso = null;
+  let auditJobs = [];
   let algos = [];            // GET /fl/algorithms?project_id=
   let tab = 'builtin';
   let algoId = null;
@@ -118,8 +119,9 @@
           '<div class="field"><label class="field-label" for="floTarget">目标数据目录</label><select class="select select-sm" id="floTarget"></select></div>' +
           '<button type="button" class="btn-sm btn-kill" id="floCheckDir">越权访问检测</button>' +
           '<span class="divider-v"></span>' +
-          '<button type="button" class="btn-sm" id="floCheckPayload">传输内容审计</button>' +
-          '<span class="hint">审计最近一个已训练任务最后一轮各节点收发的消息字段</span>' +
+          '<div class="field"><label class="field-label" for="floAuditJob">审计训练任务</label><select class="select select-sm" id="floAuditJob"></select></div>' +
+          '<button type="button" class="btn-sm" id="floCheckPayload" disabled>传输内容审计</button>' +
+          '<span class="hint">审计所选任务最后一轮的编码回执；尚无回执时由后端说明原因</span>' +
         '</div>' +
         '<div class="table-head flo-log-grid"><span>时间</span><span>检测</span><span>对象</span><span>结果</span><span>说明</span></div>' +
         '<div id="floIsoLogs"></div>' +
@@ -153,6 +155,14 @@
     });
   }
 
+  function modalContext(body) {
+    const epoch = gen, projectId = ctx && ctx.projectId;
+    const valid = function () { return epoch === gen && projectId === (ctx && ctx.projectId) && body.isConnected; };
+    return { projectId: projectId, valid: valid, check: function () {
+      if (!valid()) throw new Error('项目上下文已变更，请关闭弹窗后重新操作');
+    } };
+  }
+
   /* ================= 数据 ================= */
 
   function guard(g, fn) { return function (v) { if (g === gen) fn(v); }; }
@@ -165,10 +175,13 @@
         Api.get('/projects/' + pid),
         Api.get('/projects/' + pid + '/nodes'),
         Api.get('/projects/' + pid + '/isolation'),
-        Api.get('/fl/algorithms', { project_id: pid })
+        Api.get('/fl/algorithms', { project_id: pid }),
+        Api.get('/projects/' + pid + '/fl/jobs', { page_size: 100 })
       ]);
       if (g !== gen) return;
       proj = r[0]; nodes = r[1].items; iso = r[2]; algos = r[3].items;
+      auditJobs = r[4].items.filter(function (j) { return j.current_round > 0; });
+      renderAuditJobs();
       renderProject();
       renderNodes();
       renderIso();
@@ -189,7 +202,9 @@
   }
 
   async function reloadNodes() {
+    const g = gen;
     const r = await Promise.all([Api.get('/projects/' + ctx.projectId + '/nodes'), Api.get('/projects/' + ctx.projectId + '/isolation'), Api.get('/projects/' + ctx.projectId)]);
+    if (g !== gen) return;
     nodes = r[0].items; iso = r[1]; proj = r[2];
     renderNodes();
     renderIso();
@@ -270,10 +285,12 @@
 
   /** 新建（p = null）或编辑项目配置。 */
   async function openProject(p) {
+    const epoch = gen, pid = ctx && ctx.projectId;
     let lib;
     try { lib = (await Api.get('/fl/algorithms')).items.filter(function (a) { return a.kind !== 'custom'; }); } catch (e) { UI.fail(e); return; }
+    if (epoch !== gen || pid !== (ctx && ctx.projectId)) return;
     const edit = !!p;
-    const body = col();
+    const body = col(), context = modalContext(body);
     const name = UI.inputOf('fpName', edit ? p.name : '');
     name.maxLength = 64;
     name.placeholder = '例如：稀土氧化物价格联合预测 · 2027Q1';
@@ -306,16 +323,7 @@
     body.appendChild(three);
     const targetNote = el('span', 'hint');
     body.appendChild(targetNote);
-    let demo = null;
-    if (!edit) {
-      const lb = el('label', 'check-item');
-      demo = el('input');
-      demo.type = 'checkbox'; demo.id = 'fpDemo'; demo.checked = true;
-      lb.appendChild(demo);
-      lb.appendChild(document.createTextNode('导入演示数据'));
-      lb.appendChild(el('span', 'hint', '2 个训练节点 + 1 个聚合节点、4 张稀土演示数据集、2 个示例训练任务；不勾选则创建空项目'));
-      body.appendChild(lb);
-    }
+    if (!edit) body.appendChild(el('span', 'hint', '新项目不预填节点、数据集或训练任务；创建后请登记实际参与方与数据来源。'));
 
     async function fillVersions() {
       UI.clear(ver);
@@ -355,6 +363,7 @@
     UI.modal({
       title: edit ? '编辑项目配置' : '新建联邦学习项目', body: body, submitText: edit ? '保存配置' : '创建项目', width: 680,
       onSubmit: async function () {
+        context.check();
         const req = {
           name: name.value.trim(), type: type.value, description: desc.value.trim(),
           base_algorithm: algo.value, model_version: ver.value,
@@ -363,15 +372,18 @@
         };
         if (edit) {
           const saved = await Api.patch('/projects/' + p.project_id, req);
+          if (!context.valid()) return;
           UI.toast('项目配置已保存（第 ' + saved.revision + ' 版）');
           await App.reloadProjects();
+          if (!context.valid()) return;
           proj = saved;
           renderProject();
           loadProjects();
         } else {
-          req.seed_demo = demo.checked;
+          req.seed_demo = false;
           const created = await Api.post('/projects', req);
-          UI.toast('已创建项目「' + created.name + '」并切换到该项目' + (req.seed_demo ? '，已导入演示节点、数据集与任务' : '，请先添加参与方节点'));
+          if (!context.valid()) return;
+          UI.toast('已创建项目「' + created.name + '」并切换到该项目，请先添加参与方节点');
           await App.reloadProjects(created.project_id);
         }
       }
@@ -420,7 +432,7 @@
 
   function openNode(n) {
     const edit = !!n;
-    const body = col();
+    const body = col(), context = modalContext(body);
     const id = UI.inputOf('fnId', edit ? n.node_id : '');
     id.placeholder = 'node-baotou-04';
     body.appendChild(UI.formRow('节点 ID', id, edit ? '已被历史任务引用的节点不能改 ID' : '小写字母 / 数字 / 短横线，项目内唯一'));
@@ -444,7 +456,7 @@
     body.appendChild(two2);
     let online = null;
     if (edit) {
-      online = UI.selectOf('fnOnline', [{ value: 'true', label: '在线' }, { value: 'false', label: '离线（模拟心跳丢失）' }], n.online === false ? 'false' : 'true');
+      online = UI.selectOf('fnOnline', [{ value: 'true', label: '在线' }, { value: 'false', label: '离线' }], n.online === false ? 'false' : 'true');
       body.appendChild(UI.formRow('在线状态', online, '置为离线后，使用该节点的运行中任务转为 Failed，启动校验也会拒绝该节点'));
     }
     if (edit && n.running_job_count) {
@@ -458,6 +470,7 @@
     UI.modal({
       title: edit ? '编辑节点 ' + n.node_id : '添加参与方节点', body: body, submitText: edit ? '保存' : '添加',
       onSubmit: async function () {
+        context.check();
         const req = { node_id: id.value.trim(), ip: ip.value.trim(), port: port.value === '' ? null : Number(port.value), role: role.value };
         if (role.value === 'trainer') { req.data_partition = part.value.trim(); req.data_dir = dir.value.trim() || undefined; }
         if (edit) {
@@ -466,10 +479,12 @@
           Object.keys(req).forEach(function (k) { if (req[k] !== undefined && req[k] !== n[k]) diff[k] = req[k]; });
           if (diff.online === true && n.online === undefined) delete diff.online;
           if (!Object.keys(diff).length) return;
-          await Api.patch('/projects/' + ctx.projectId + '/nodes/' + encodeURIComponent(n.node_id), diff);
+          await Api.patch('/projects/' + context.projectId + '/nodes/' + encodeURIComponent(n.node_id), diff);
+          if (!context.valid()) return;
           UI.toast('节点 ' + req.node_id + ' 已更新');
         } else {
-          await Api.post('/projects/' + ctx.projectId + '/nodes', req);
+          await Api.post('/projects/' + context.projectId + '/nodes', req);
+          if (!context.valid()) return;
           UI.toast('节点 ' + req.node_id + ' 已添加，连通性检查通过');
         }
         await reloadNodes();
@@ -479,10 +494,13 @@
 
   function removeNode(n) {
     const body = el('div', 'hint', '删除后新建任务不能再选择 ' + n.node_id + '，已完成任务的历史记录保留。确认删除？');
+    const context = modalContext(body);
     UI.modal({
       title: '删除节点', body: body, submitText: '删除',
       onSubmit: async function () {
-        await Api.del('/projects/' + ctx.projectId + '/nodes/' + encodeURIComponent(n.node_id));
+        context.check();
+        await Api.del('/projects/' + context.projectId + '/nodes/' + encodeURIComponent(n.node_id));
+        if (!context.valid()) return;
         UI.toast('节点 ' + n.node_id + ' 已删除');
         await reloadNodes();
       }
@@ -578,32 +596,36 @@
       row.appendChild(el('span', 'tag ' + r[1], r[0]));
       const d = el('span', 'hint', c.detail);
       if (c.type === 'payload') {
-        d.textContent = c.detail + '。' + c.nodes.map(function (n) {
-          return n.direction === 'downlink'
-            ? n.node_id + ' 向 ' + n.recipients + ' 个训练节点下发全局参数 ' + n.fields[0].elements.toLocaleString('en-US') + ' 个（单条明文 ' + UI.bytes(n.total_bytes) + '，链路合计 ' + UI.bytes(n.wire_bytes) + '）'
-            : n.node_id + ' 上传梯度 ' + n.fields[0].elements.toLocaleString('en-US') + ' 个（明文 float32 ' + UI.bytes(n.total_bytes) + '，链路 ' + UI.bytes(n.wire_bytes) + '）';
-        }).join('；') + '。' + sparseText(c) + '上行编码：' + c.encoding + '；下行：' + c.downlink_encoding + '。参数来自' +
-          (c.config_source === 'saved' ? '「聚合与安全」页保存的项目配置' : '「聚合与安全」页的默认配置（项目尚未保存）');
+        d.textContent = (c.detail || '') + '。' + (c.nodes || []).map(function (n) {
+          const direction = n.direction === 'downlink' ? '下行' : '上行';
+          const fields = (n.fields || []).map(function (f) {
+            const count = typeof f.elements === 'number' && Number.isFinite(f.elements) ? f.elements.toLocaleString('en-US') + ' 个元素' : '元素数未提供';
+            return f.field + '（' + [f.kind, f.dtype, count].filter(Boolean).join('，') + '）';
+          }).join('、') || '字段未提供';
+          const measured = n.wire_bytes_measured === true && typeof n.wire_bytes === 'number' && Number.isFinite(n.wire_bytes);
+          return n.node_id + ' ' + direction + '字段：' + fields + '；' +
+            (measured ? '编码器序列化实测 ' + UI.bytes(n.wire_bytes) : direction + '未独立测量') +
+            ((n.wire_fields || []).length ? '；编码字段：' + n.wire_fields.join('、') : '') +
+            (n.logical_source ? '；来源：' + n.logical_source : '');
+        }).join('；') + '。' +
+          (typeof c.model_params === 'number' && Number.isFinite(c.model_params) ? '模型参数数：' + c.model_params.toLocaleString('en-US') + '。' : '') +
+          (c.basis ? '审计依据：' + c.basis + '。' : '') + (c.scope_note ? '范围：' + c.scope_note : '');
       }
       row.appendChild(d);
       wrap.appendChild(row);
     });
   }
 
-  function sparseText(c) {
-    const P = c.model_params.toLocaleString('en-US'), K = c.kept_params.toLocaleString('en-US');
-    return c.sparsity_keep_ratio < 1
-      ? '启用 Top-k 稀疏化：每轮只传绝对值最大的 ' + Number((c.sparsity_keep_ratio * 100).toFixed(2)) + '% 参数（' + K + ' / ' + P + '），各训练节点个数一致。'
-      : '未做稀疏化：各训练节点均上传全部 ' + P + ' 个参数。';
-  }
-
   async function runCheck(body) {
+    const epoch = gen, pid = ctx && ctx.projectId;
+    if (!pid || !iso) return null;
     try {
-      const rec = await Api.post('/projects/' + ctx.projectId + '/isolation/checks', body);
+      const rec = await Api.post('/projects/' + pid + '/isolation/checks', body);
+      if (epoch !== gen || pid !== (ctx && ctx.projectId)) return null;
       iso.checks.unshift(rec);
       renderIsoLogs();
       return rec;
-    } catch (e) { UI.fail(e); return null; }
+    } catch (e) { if (epoch === gen && pid === (ctx && ctx.projectId)) UI.fail(e); return null; }
   }
 
   async function checkDir() {
@@ -611,8 +633,23 @@
     if (rec) UI.toast(rec.result === 'denied' ? '越权访问已被拒绝，已写入审计日志' : '本节点访问自己的目录：允许');
   }
 
+  function renderAuditJobs() {
+    const select = $('floAuditJob'), keep = select.value;
+    UI.clear(select);
+    auditJobs.forEach(function (job) {
+      const option = el('option', null, (job.name || job.job_id) + ' · ' + job.job_id + ' · 第 ' + job.current_round + ' 轮');
+      option.value = job.job_id; select.appendChild(option);
+    });
+    if (auditJobs.some(function (job) { return job.job_id === keep; })) select.value = keep;
+    else select.value = auditJobs.length ? auditJobs[0].job_id : '';
+    select.disabled = !auditJobs.length;
+    $('floCheckPayload').disabled = !auditJobs.length;
+  }
+
   async function checkPayload() {
-    const rec = await runCheck({ type: 'payload' });
+    const selected = $('floAuditJob').value;
+    if (!auditJobs.some(function (job) { return job.job_id === selected; })) return;
+    const rec = await runCheck({ type: 'payload', job_id: selected });
     if (rec) UI.toast('传输内容审计' + (rec.result === 'passed' ? '通过：未发现原始数据字段' : '未通过'));
   }
 
@@ -796,14 +833,14 @@
     box.appendChild(ts);
   }
 
-  function shape(a) { return '(' + a.join(', ') + ')'; }
+  function shape(a) { return Array.isArray(a) ? '(' + a.join(', ') + ')' : '未解析'; }
 
   function structureView(r) {
     const wrap = el('div', 'flo-struct');
     if (r.valid) {
       const g = el('div', 'metric-grid');
-      [['层数', r.layers + ' 层', '各层输入输出维度首尾相接'],
-        ['参数量', r.param_count.toLocaleString('en-US') + ' 个', r.param_count_basis],
+      [['层数', r.layers == null ? '未解析' : r.layers + ' 层', '各层输入输出维度首尾相接'],
+        ['参数量', typeof r.param_count === 'number' ? r.param_count.toLocaleString('en-US') + ' 个' : '未提供', r.param_count_basis],
         ['输入形状', shape(r.input_shape), 'batch 为批大小'],
         ['输出形状', shape(r.output_shape), r.framework]].forEach(function (m) {
         const c = el('div', 'metric');
@@ -816,7 +853,7 @@
     } else {
       wrap.appendChild(el('div', 'banner banner-err', '校验失败：' + r.reason));
     }
-    r.checks.forEach(function (c) {
+    (r.checks || []).forEach(function (c) {
       const row = el('div', 'flo-pay-row');
       row.appendChild(el('span', 'tag ' + (c.passed ? 'flo-ok' : 'flo-deny'), c.passed ? '通过' : '失败'));
       row.appendChild(el('span', 'cell-strong', c.item));
@@ -927,7 +964,8 @@
   /* --- FL-ORCH-07 上传自定义模型 --- */
 
   function openUpload() {
-    const body = col();
+    const body = col(), context = modalContext(body);
+    let revision = 0;
     const file = el('input');
     file.type = 'file';
     file.id = 'fuFile';
@@ -946,19 +984,22 @@
     let nameTouched = false;   // 用户手动改过名称后，换选文件不再覆盖
     name.addEventListener('input', function () { nameTouched = name.value.trim() !== ''; });
     file.addEventListener('change', function () {
-      UI.clear(result);
+      revision++; UI.clear(result);
       if (file.files[0] && !nameTouched) name.value = file.files[0].name.replace(/\.[^.]+$/, '');
     });
 
     const m = UI.modal({
       title: '上传自定义模型', body: body, submitText: '上传并校验', width: 680,
       onSubmit: async function () {
-        UI.clear(result);
+        context.check(); UI.clear(result);
+        const selected = file.files[0], request = revision, modelName = name.value.trim(), taskType = tt.value;
         if (!file.files[0]) throw new Error('请先选择模型文件');
-        const f = await Api.upload('/files', file.files[0], { purpose: 'fl_model', project_id: ctx.projectId });
+        const f = await Api.upload('/files', selected, { purpose: 'fl_model', project_id: context.projectId });
+        if (!context.valid() || request !== revision || file.files[0] !== selected || name.value.trim() !== modelName || tt.value !== taskType) return false;
         try {
-          const model = await Api.post('/projects/' + ctx.projectId + '/fl/models', { file_id: f.file_id, name: name.value.trim(), task_type: tt.value });
-          UI.toast('模型 ' + model.name + ' ' + model.current_version + ' 校验通过：' + model.report.layers + ' 层，' + model.report.param_count.toLocaleString('en-US') + ' 个参数');
+          const model = await Api.post('/projects/' + context.projectId + '/fl/models', { file_id: f.file_id, name: modelName, task_type: taskType });
+          if (!context.valid()) return;
+          UI.toast('模型 ' + model.name + ' ' + model.current_version + ' 校验通过：' + (model.report.layers == null ? '层数未解析' : model.report.layers + ' 层') + '，' + (typeof model.report.param_count === 'number' ? model.report.param_count.toLocaleString('en-US') + ' 个参数' : '参数量未提供'));
           tab = 'custom';
           await reloadAlgos(model.algo_id);
         } catch (e) {
@@ -1029,13 +1070,19 @@
   /* ================= 生命周期 ================= */
 
   function mount(c, section) {
-    ctx = c;
+    ctx = { projectId: c.projectId };
     gen += 1;
     if (root !== section || !section.querySelector('#floProjKv')) { root = section; build(); }
+    auditJobs = []; iso = null;
+    renderAuditJobs(); $('floCheckDir').disabled = true;
     load();
   }
 
-  function unmount() { gen += 1; }
+  function unmount() {
+    gen += 1; auditJobs = []; iso = null;
+    if (root) { renderAuditJobs(); $('floCheckDir').disabled = true; }
+  }
 
-  window.FLO = { mount: mount, unmount: unmount, paramEditor: paramEditor };
+  window.FLO = { mount: mount, unmount: unmount, paramEditor: paramEditor,
+    createProject: function () { return openProject(null); } };
 })();
