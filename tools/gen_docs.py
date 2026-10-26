@@ -10,7 +10,7 @@
 
 用法：
   python3 tools/acceptance.py            # 先刷新 unit-results.json
-  python3 tools/gen_docs.py              # 生成 docs/test/测试报告.md、docs/manual/操作手册.md 及对应 .docx
+  python3 tools/gen_docs.py              # 生成 output/documents/ 下的 Markdown 和 Word
 """
 import datetime as dt
 import json
@@ -231,10 +231,11 @@ def build(md_text, md_path, docx_path):
 
 def main():
     master, rows, unit, e2e, defects = data()
-    build(report_md(master, rows, unit, e2e, defects), ROOT / 'docs' / 'test' / '测试报告.md',
-          ROOT / 'docs' / 'test' / (SYSTEM + '_测试报告_' + VERSION + '.docx'))
-    build(manual_md(master, rows), ROOT / 'docs' / 'manual' / '操作手册.md',
-          ROOT / 'docs' / 'manual' / (SYSTEM + '_操作手册_' + VERSION + '.docx'))
+    output = ROOT / 'output' / 'documents'
+    build(report_md(master, rows, unit, e2e, defects), output / 'test' / '测试报告.md',
+          output / 'test' / (SYSTEM + '_测试报告_' + VERSION + '.docx'))
+    build(manual_md(master, rows), output / 'manual' / '操作手册.md',
+          output / 'manual' / (SYSTEM + '_操作手册_' + VERSION + '.docx'))
 
 
 if __name__ == '__main__':

@@ -1,73 +1,93 @@
 # 隐私计算平台前端
 
-本仓库提供连接真实 `sfl_backend` 的静态控制台。运行目录为 `web/`，无需 npm 安装或构建。已移除浏览器 Mock 服务、模拟状态流转、演示重置入口和假令牌；数据、任务、指标和导出均来自后端 API。
+连接 `sfl_backend` API v1.2 的静态控制台，包含联邦学习、同态加密、多方安全计算、隐私求交和差分隐私页面。运行源码在 `web/`，无需 npm 安装或构建；任务、数据、指标与导出均通过真实后端获取。
 
-## 本地启动
+## 环境与目录
 
-目录建议保持同级：
+- 本地启动：Python 3.9+、现代浏览器。
+- 自动化测试：Node.js 22+；代理测试使用 Python 标准库。
+- 后端需单独部署，并提供有效的访问令牌。部署步骤见后端仓库 README。
+
+推荐目录：
 
 ```text
 rare_earth/
-  sfl_backend/
-  sfl_frontend/
+├── sfl_backend/
+└── sfl_frontend/
 ```
 
-当前本机后端已运行于 `https://localhost:18443`。前端执行：
+本仓库是前端源码的维护入口。后端仓库的 `web/` 是用于独立部署的静态发布副本；前端修改后需同步发布副本，再构建后端镜像。
+
+## 本地启动
 
 ```sh
+git clone https://github.com/XavierLu0808/privacy-computing-platform.git sfl_frontend
 cd sfl_frontend
-sh start.sh
 ```
 
-打开 **http://127.0.0.1:8412/**，输入运维签发的 Bearer 令牌。当前本地实例的令牌保存在 `../sfl_backend/deployment/.generated/demo-token.json`，用编辑器查看 `access_token` 后输入连接页面，不要把令牌写进源码。
-
-启动器需要 Python 3.9+，会在同一个源提供静态文件并把 `/api/v1`、`/health` 转发给真实后端。默认信任后端生成的 `tls.crt`，保持 TLS 校验；后端未启动时显示连接失败，不会回退到演示数据。不能继续用普通 `python -m http.server` 作为真实联调入口，因为它不会代理 API。
-
-首次部署后端时，可在后端目录执行（会构建实际计算镜像）：
+先启动后端，再从本仓库根目录运行：
 
 ```sh
-sh start.sh --project sfl-local --http-port 18080 --tls-port 18443 \
-  --subnet 172.29.220.0/24
+sh start.sh --backend-url https://localhost:18443 \
+  --ca ../sfl_backend/deployment/.generated/tls.crt
 ```
 
-后端已有本目录部署配置时使用 `sh start.sh --resume`，复用已有端口和持久数据。状态与停止操作使用后端的 `scripts/deploy.py`。前端通过 Ctrl+C 停止，后端不随前端静态进程关闭。
-
-其他后端地址通过启动参数设置：
+打开 [http://127.0.0.1:8412/](http://127.0.0.1:8412/)。此示例假定后端 HTTPS 端口为 `18443`，应替换为实际部署端口；后端默认端口 `8443` 可这样连接：
 
 ```sh
+sh start.sh --backend-url https://localhost:8443 \
+  --ca ../sfl_backend/deployment/.generated/tls.crt
+```
+
+直接执行 `sh start.sh` 时，代理默认连接 `https://localhost:18443`，并读取上述同级后端证书。以下参数适用于其他环境：
+
+```sh
+# 后端使用受系统信任的 HTTPS 证书，无需 --ca
+sh start.sh --backend-url https://backend.example.com --port 8412
+
+# 仅用于本机 HTTP 开发服务
 sh start.sh --backend-url http://127.0.0.1:8000
-sh start.sh --backend-url https://backend.example.com --ca /safe/backend-ca.crt
-# 当前环境默认 python3；也可显式指定，不修改用户级配置
-SFL_FRONTEND_PYTHON=/path/to/python3 sh start.sh
+
+# 查看全部参数，或指定 Python 解释器
+sh start.sh --help
+SFL_FRONTEND_PYTHON=/path/to/python3 sh start.sh --help
 ```
 
-`--backend-url` 是服务源地址，不含 `/api/v1`、凭证或查询参数。前端 `web/js/config.js` 默认 `apiBase: '/api/v1'`，`accessToken` 为空；无需将令牌或后端私密配置写入该文件。
+`--backend-url` 必须是服务源地址，不含 `/api/v1`、凭证或查询参数。代理将 `/api/*`、`/health/*` 转发到固定后端并校验 TLS；Ctrl+C 停止前端，不会关闭后端。端口占用时使用 `--port` 更换端口。普通 `python -m http.server` 不提供 API 代理，不能替代这个本地入口。
 
-## 真实连接行为
+## 访问令牌
 
-- 连接页先验证 `/me`，成功后才加载项目；令牌只存当前标签页的 `sessionStorage`，失效后回到连接页。
-- JSON、上传、下载与 SSE 均携带 Bearer Header；导出错误会显示错误，不会保存成伪文件；SSE支持游标、重连、410快照恢复和关闭隔离。
-- 切到空项目会清空上一项目详情、指标、图表、节点和历史；快速切任务时，旧响应和事件不能覆盖新选择。失效的上传或弹窗不能把旧文件提交给新项目。
-- 新项目不会自动导入节点、数据集或任务。文件接入由服务端实际解析，不用浏览器猜测行数或合成样例。
-- MPC 性能预估的假设行数不会冒充实际执行输入；PSI 对齐后的训练配置由后端按登记拓扑绑定。
-- DP未知效用显示 `—` 及原因；未部署实现不能切换。训练和其他操作以实际后端状态及能力错误为准。
+连接页面会先请求 `/api/v1/me` 校验令牌，成功后加载项目。当前系统没有普通用户注册、密码登录或自助领取令牌入口；访问令牌由后端管理员签发。
 
-当前本地后端初始化提供持久化示例项目和公开数据资产；它们来自真实 API，并非浏览器生成的数据。实际业务使用自己的项目、节点和数据源。前端不扩大后端能力：动态机构拓扑、部分密码参数和DP框架尚有限制；技术指标评估当前后端明确标识为原型公式模拟，不是实际攻击实验或合同验收。
+后端演示初始化会生成私密文件 `deployment/.generated/demo-token.json`。管理员可用编辑器查看其中的 `access_token`，在前端连接页输入。演示令牌默认有效期为 8 小时，过期后由管理员重新签发。不要将文件或令牌写入前端配置、Git 或分享链接。
+
+令牌只保存在当前标签页的 `sessionStorage` 中。JSON、上传、下载和 SSE 均通过 Bearer Header 鉴权；令牌失效后回到连接页。`web/js/config.js` 默认使用同源 `/api/v1`，无需写入令牌或修改后端地址。
+
+## 服务器部署
+
+将 `web/` 部署为静态站点根目录，通过 HTTPS 对外提供服务；同一个域名下将 `/api/` 和 `/health/` 反向代理到后端。页面使用 Hash 路由，无需额外的前端路由重写。本地 Python 代理只监听回环地址，服务器部署请使用 nginx 等反向代理。
+
+部署代理时需要：
+
+- 保留 `Authorization` 请求头和 API 原始路径。
+- 关闭 SSE 响应缓冲与缓存，允许长连接，并设置适合计算任务的超时。
+- 上传请求体上限至少覆盖后端允许的文件大小及 multipart 开销；本地代理上限为 257 MiB。
+- HTTPS 上游校验证书；使用自签证书时配置可信 CA，不关闭校验。
+
+后端 Compose 已包含 nginx 和静态控制台。只使用后端自带控制台时，按后端 README 构建、启动并访问后端 HTTPS 入口即可，无需再运行本仓库的 Python 代理。
 
 ## 测试
 
-Node.js 22+，无需第三方依赖：
+从仓库根目录执行：
 
 ```sh
 node --test web/tests/*.test.mjs
 python3 -m unittest discover -s tests -v
 ```
 
-现有测试覆盖真实传输契约、认证/失效重连、下载/上传、SSE恢复、DP空值/参数、项目与任务乱序响应、上传上下文，以及本地HTTP/TLS/SSE代理。测试请求桩仅用于隔离单元场景，不会被网页加载。
+测试覆盖请求与鉴权、文件传输、SSE 恢复、项目和任务切换、旧响应隔离、空数据状态，以及 HTTP/TLS/SSE 代理。请求桩只在测试中使用，不会被网页加载。真实算法、端到端业务与部署环境应在实际后端上另行验证。
 
-旧106条只针对已删除Mock实现的测试不再作为真实后端验收；原始内容可从Git历史 `6578ca3` 查看。本轮浏览器与请求证据保存在本机 `output/playwright/real-backend-20261025/`，运行产物由Git忽略。
-
-## 验收资料工具
+可生成带当前源码摘要的前端证据汇总：
 
 ```sh
 python3 tools/acceptance.py \
@@ -76,13 +96,24 @@ python3 tools/acceptance.py \
   --test-log output/acceptance/node.tap
 ```
 
-该工具只汇总当前源码摘要绑定的客户端隔离测试；未带验收编号的用例保留为“未映射”，不会自动视为功能覆盖。浏览器记录需明确 `scope: real-backend-browser` 且 `source_sha256` 匹配；仓库内旧 Mock 浏览器记录仅作历史资料。`--no-test` 拒绝旧 scope 或源码已变化的缓存，Node 失败会返回非零状态。报告不能证明原生算法、129 个接口或合同指标全部通过。Excel 导出可选依赖 `openpyxl`，未安装时仍生成 HTML/JSON。
+Excel 导出可选安装 `openpyxl`；未安装时仍生成 HTML/JSON。浏览器证据可通过 `--e2e-results /path/to/e2e-results.json` 传入，必须包含 `scope: real-backend-browser` 和匹配的 `source_sha256`。未映射编号、旧 Mock 结果和截图不能自动计为当前验收通过。
 
-历史 `tools/gen_docs.py` / `tools/md2docx.py` 用于资料转换，可选依赖 `python-docx`；旧需求映射与截图不能直接作为当前操作或验收结论。本仓库未新增 CI workflow，以上本地测试和浏览器证据应独立核对。
+## 目录与文档
 
-## 部署资料
+| 路径 | 内容 |
+| --- | --- |
+| `web/` | 唯一运行前端：静态资源和客户端测试 |
+| `scripts/serve.py`、`start.sh` | 本地同源静态服务及固定后端代理 |
+| `tests/` | Python 代理与证据工具测试 |
+| `tools/` | 证据汇总、Markdown/Word 文档生成与转换 |
+| `API.md` | v1.2 接口字段与响应约定 |
+| `docs/acceptance/` | 需求原始资料、固定功能编号和历史实现映射 |
+| `docs/api/`、`docs/design/` | 历史接口设计片段与设计源稿，使用范围见文档索引 |
+| `output/` | 本地报告、截图和文档输出，Git 忽略 |
 
-- [前端文件说明](web/README.md)
-- [API契约](API.md)
+- [前端源码说明](web/README.md)
+- [当前开发约定](docs/DEV-CONVENTIONS.md)
+- [文档索引与资料范围](docs/README.md)
+- [API 契约](API.md)
 
-生产部署将 `web/` 作为静态根目录，并同源反代 API；SSE关闭代理缓冲。原设计HTML与需求文档仅保留为设计资料，不参与当前站点运行。
+已移除旧单页演示、Mock 验收截图、过期报告和重复 Word 输出；历史版本可从 Git 历史查看。业务能力以实际后端为准：动态机构拓扑、部分密码参数与 DP 框架仍有限制，技术指标评估当前明确标为原型公式模拟。

@@ -4,6 +4,11 @@ node_modules/
 *.log
 dist/
 docs/acceptance/unit-results.json
-__pycache__/
+docs/acceptance/e2e-results.json
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.bak
 .playwright-cli/
 output/

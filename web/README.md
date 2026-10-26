@@ -1,32 +1,33 @@
-# 控制台运行目录
+# 控制台源码
 
-此目录只包含真实后端客户端与静态资源。已移除Mock服务、模拟数据与模拟定时器；所有数据通过 `js/api.js` 请求后端。
+`web/` 是前端的维护主源，也是静态部署根目录。后端仓库的 `web/` 是它的发布副本，用于后端独立部署；请在此维护页面，再同步到后端并重新构建镜像。
 
-从仓库根目录运行：
+所有业务数据通过 `js/api.js` 请求真实后端，运行目录中不包含 Mock 服务。页面使用 Hash 路由，未登录连接状态下先显示令牌输入页。
+
+从前端仓库根目录启动本地代理：
 
 ```sh
-sh start.sh
+sh start.sh --backend-url https://localhost:8443 \
+  --ca ../sfl_backend/deployment/.generated/tls.crt
 ```
 
-访问 [http://127.0.0.1:8412/](http://127.0.0.1:8412/)，在连接页输入有效访问令牌。默认通过同源代理连接 `https://localhost:18443`；参数、证书和后端启动见 [根README](../README.md)。不要使用普通静态服务器替代代理来联调 `/api/v1`。
+访问 [http://127.0.0.1:8412/](http://127.0.0.1:8412/)，输入管理员签发的访问令牌。后端地址、端口、证书及部署说明见[前端 README](../README.md)。后端发布副本的访问方式与部署命令以该后端仓库根 README 为准。
 
 | 路径 | 用途 |
 | --- | --- |
-| `index.html`、`styles.css`、`css/` | 控制台与连接页 |
-| `js/config.js` | 同源API地址，空令牌 |
-| `js/connection.js` | `/me`校验、标签页会话与失效重连 |
-| `js/api.js`、`js/sse-client.mjs` | 真实JSON、multipart、Bearer Blob下载和可恢复事件流 |
-| `js/app.js` | 项目上下文、导航、空项目及启动恢复 |
-| `js/fl*.js`、`he*.js`、`mpc*.js`、`psi*.js`、`dp*.js` | 业务页面与后端结果展示 |
-| `tests/` | 无生产模拟服务依赖的传输/DOM回归 |
-| `vendor/echarts.min.js` | 本地图表库 |
+| `index.html`、`styles.css`、`css/` | 页面外壳、样式和连接页 |
+| `js/config.js` | 同源 `/api/v1` 配置；不保存令牌 |
+| `js/connection.js` | `/me` 校验、标签页会话和失效重连 |
+| `js/api.js`、`js/sse-client.mjs` | JSON、multipart、Bearer 下载和可恢复事件流 |
+| `js/app.js` | 项目上下文、导航和空项目恢复 |
+| `js/fl*.js`、`he*.js`、`mpc*.js`、`psi*.js`、`dp*.js` | 业务页面 |
+| `tests/` | 客户端传输、DOM 与状态回归测试，不在生产页面加载 |
+| `vendor/echarts.min.js` | 本地图表依赖 |
 
-新建项目不注入演示数据；上传的行数、字段和状态由后端实际解析。未知DP效用显示空态，未部署DP实现不能切换。后端能力不支持的组合会显示明确原因，不生成假的训练、解密或求交结果；评估页明确展示后端当前的原型公式模拟限制。
+部署时保留同源 API 反向代理和 SSE 流式响应。切换空项目会清除旧详情；异步响应和流按当前上下文隔离。行数、字段与任务状态由后端返回；未知 DP 效用使用空态，不支持的功能显示后端原因。
 
-所有页面资源版本为 `1.2.9`；本地服务器设置重新验证缓存。现有浏览器原Mock数据库键会被一次性删除，其他存储和真实访问令牌不受影响。
+从仓库根目录验证：
 
 ```sh
-# 从仓库根目录运行
 node --test web/tests/*.test.mjs
-python3 -m unittest discover -s tests -v
 ```
